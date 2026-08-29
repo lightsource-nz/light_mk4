@@ -5,6 +5,9 @@
 //! binding generator can export, so every SDK call from Rust would need a hand-written C shim.
 //! The spike measures how far the pac gets on its own; pico-sdk stays in charge of the RUNTIME
 //! (crt0, boot2, clocks, timer start, multicore, USB) in the C shell that links this.
+//!
+//! Ownership of peripherals is by convention, not by the pac's `take()`: the C shell owns the
+//! runtime blocks and this crate owns what it constructs, and each constructor says so.
 
 #![no_std]
 
@@ -13,11 +16,12 @@
 #[cfg(target_os = "none")]
 mod critical;
 
-use light_core::Board;
-use rp235x_pac as pac;
+pub mod gpio;
+pub mod i2c;
+pub mod spi;
 
-/// GPIO function select for the single-cycle IO block, the same value on RP2040 and RP2350.
-const FUNCSEL_SIO: u8 = 5;
+use light_core::{Board, Clock};
+use rp235x_pac as pac;
 
 /// Microseconds since boot from the 64-bit TIMER0, which pico-sdk's runtime has already started.
 ///
@@ -35,55 +39,76 @@ pub fn now_us() -> u64 {
         }
 }
 
-/// The Waveshare RP2350-Touch-LCD-1.69, as far as the spike needs it so far.
-pub struct Touch169 {
-        p: pac::Peripherals,
+/// The system timer as a [`Clock`], for init sequences.
+pub struct SysClock;
+
+impl Clock for SysClock {
+        fn now_us(&self) -> u64 {
+                now_us()
+        }
 }
 
-impl Touch169 {
-        /// Backlight enable, active high -- pin 25 per the board schematic (mk3's
-        /// `ST_DISPLAY_PIN_BL`).
-        pub const PIN_BACKLIGHT: usize = 25;
+/// The Waveshare RP2350-Touch-LCD-1.69: pins from the board schematic, as recorded in mk3's
+/// `light_ui_hw_ws_touch169.h`.
+pub mod touch169 {
+        pub const PIN_DISPLAY_DC: usize = 8;
+        pub const PIN_DISPLAY_CS: usize = 9;
+        pub const PIN_DISPLAY_SCK: usize = 10;
+        pub const PIN_DISPLAY_MOSI: usize = 11;
+        pub const PIN_DISPLAY_RESET: usize = 13;
+        pub const PIN_DISPLAY_BL: usize = 25;
+        pub const DISPLAY_WIDTH: u16 = 240;
+        pub const DISPLAY_HEIGHT: u16 = 280;
+        /// The visible glass is GDDRAM rows 20..299 -- measured (mk3 board wiring).
+        pub const DISPLAY_ROW_OFFSET: u16 = 20;
+        /// 40 MHz confirmed clean on hardware; 10 MHz would cap a full frame at 9.3 fps.
+        pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
 
+        pub const PIN_TOUCH_SDA: usize = 6;
+        pub const PIN_TOUCH_SCL: usize = 7;
+        pub const PIN_TOUCH_INT: usize = 21;
+        pub const PIN_TOUCH_RST: usize = 22;
+        pub const TOUCH_I2C_HZ: u32 = 300_000;
+
+        /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
+        pub const DISPLAY_DMA_CH: usize = 15;
+}
+
+/// The backlight line, the first thing the spike drove.
+pub struct Backlight {
+        pin: gpio::Output,
+}
+
+impl Backlight {
         /// # Safety
         ///
-        /// Takes the pac's peripheral singleton by `steal`, because ownership of the hardware is
-        /// shared with the pico-sdk runtime in the C shell and the pac's `take()` cannot know
-        /// that. The caller must construct this exactly once and must not use the same
-        /// peripherals from C while it lives.
+        /// Takes the backlight pin; construct once.
         pub unsafe fn new() -> Self {
-                let p = unsafe { pac::Peripherals::steal() };
-                let mut board = Self { p };
-                board.init_output(Self::PIN_BACKLIGHT);
-                board
-        }
-
-        fn init_output(&mut self, pin: usize) {
-                //   pads first: RP2350 pads power up ISOLATED (ISO set), which RP2040's do not;
-                // leaving it set makes every later step look correct while the pin does nothing
-                self.p.PADS_BANK0.gpio(pin).modify(|_, w| {
-                        w.iso().clear_bit().od().clear_bit().ie().set_bit()
-                });
-                self.p.IO_BANK0.gpio(pin).gpio_ctrl().write(|w| unsafe { w.funcsel().bits(FUNCSEL_SIO) });
-                self.p.SIO.gpio_oe_set().write(|w| unsafe { w.bits(1 << pin) });
-        }
-
-        fn write(&mut self, pin: usize, high: bool) {
-                let mask = 1u32 << pin;
-                if high {
-                        self.p.SIO.gpio_out_set().write(|w| unsafe { w.bits(mask) });
-                } else {
-                        self.p.SIO.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
-                }
+                Self { pin: gpio::Output::new(touch169::PIN_DISPLAY_BL, false) }
         }
 }
 
-impl Board for Touch169 {
+impl Board for Backlight {
         fn set_backlight(&mut self, on: bool) {
-                self.write(Self::PIN_BACKLIGHT, on);
+                self.pin.set(on);
         }
 
         fn now_us(&self) -> u64 {
                 now_us()
         }
+}
+
+/// Pulse the touch controller's reset line: high, low, high, 100 ms each, the way mk3's
+/// `light_ioport_signal_reset` does. Blocking; init only.
+///
+/// # Safety
+///
+/// Takes the reset pin; call once, before the touch driver starts polling.
+pub unsafe fn touch_reset_pulse(clock: &mut dyn Clock) {
+        let mut rst = gpio::Output::new(touch169::PIN_TOUCH_RST, true);
+        clock.delay_ms(100);
+        rst.set(false);
+        clock.delay_ms(100);
+        rst.set(true);
+        clock.delay_ms(100);
 }

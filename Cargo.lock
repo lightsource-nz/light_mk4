@@ -112,6 +112,7 @@ dependencies = [
 name = "light_app_touch169"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
  "light-core",
  "light-rp2350",
 ]

@@ -50,3 +50,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   BOOTSEL, console shows `shell up, entering rust` then `rust: up, blinking backlight on GPIO25`
   and a toggle count advancing at the expected 2 Hz. Zero C shims for peripherals; the FFI
   surface is three functions (`light_app_main` in, `light_shell_panic` / `light_shell_log` out).
+- 2026-08-29 — **milestone 2 hardware-verified**: explicit module registry + poll runtime
+  (`light_core::module`), bounded never-blocking log queue (`light_core::log`), and a
+  nesting-safe RP2350 critical section (PRIMASK + SIO spinlock 31) in Rust. 15 host tests.
+  Still zero C shims for peripherals.
+- 2026-08-29 — **milestone 3 hardware-verified**: ST7789 over SPI1 + DMA through the chunk
+  protocol (`light_core::display`, host-tested against the three bugs that shaped it), CST816T
+  over I2C1, all register-level through the pac (`light-rp2350::{spi,i2c,gpio}`). A red square
+  bounces at 30 fps with region updates, zero chunk timeouts at 37.5 MHz; taps land with
+  coordinates and move it. 25 host tests. The one wrinkle found: the touch controller
+  auto-sleeps within a second of its reset, so the probe must follow the pulse immediately.
+  Still zero C shims; FFI surface unchanged at three functions.

@@ -8,10 +8,16 @@
 #![no_std]
 
 pub mod blink;
+pub mod bus;
+pub mod cst816t;
+pub mod display;
 pub mod log;
 pub mod module;
+pub mod st7789;
 
 pub use blink::Blinker;
+pub use bus::{Clock, I2cBus, I2cError, InputPin, SpiDisplayBus};
+pub use display::{Display, DisplayDriver, Region, UpdateError};
 pub use module::{Error, Module, Poll, Runtime};
 
 /// What the spike needs of a board so far: one output and a clock.

@@ -13,3 +13,4 @@ crate-type = ["staticlib"]
 [dependencies]
 light-core = { path = "../../../crates/light-core" }
 light-rp2350 = { path = "../../../crates/light-rp2350" }
+critical-section = "1.2"
