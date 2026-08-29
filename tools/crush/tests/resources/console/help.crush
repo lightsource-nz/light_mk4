@@ -1,0 +1,5 @@
+# the help builtin: answerable before the user knows enough to ask anything else.
+help
+help font
+# an unknown topic is reported, but does not fail the script -- help is not a build step
+help nosuch

@@ -1,0 +1,5 @@
+# a script whose second command fails. Without --keep-going the third line must never run:
+# a build step that carried on after a failed font add would generate against stale sources.
+font list
+font info
+font info tail-marker

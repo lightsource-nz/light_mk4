@@ -1,0 +1,6 @@
+# fed to `console -i`, which reads and QUEUES one line per scheduler tick rather than
+# running them inline. Three identical failing commands, so the count of the resulting
+# error says how many actually made it through the queue.
+font info
+font info
+font info

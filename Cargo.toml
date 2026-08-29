@@ -2,10 +2,20 @@
 resolver = "2"
 members = [
         "crates/light-core",
+        "crates/light-font",
         "crates/light-rp2350",
+        "tools/crush",
         "module/light_mk4_touch169/rust",
         "module/light_mk4_pico2/rust",
 ]
+
+#   freetype-sys 0.23's bundled build compiles libpng with `-I libz-sys/src/zlib`, a path that
+# exists in its git checkout (a submodule) but not in the crates.io package -- so on a machine
+# with no system zlib the build stops at "Cannot open include file: 'zlib.h'". The vendored copy
+# is byte-identical except that build.rs takes the include directory libz-sys exports
+# (DEP_Z_INCLUDE) instead
+[patch.crates-io]
+freetype-sys = { path = "tools/vendor/freetype-sys" }
 
 [workspace.package]
 edition = "2024"

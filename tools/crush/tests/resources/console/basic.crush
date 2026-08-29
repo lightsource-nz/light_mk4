@@ -1,0 +1,11 @@
+# a crush batch script. Comments and blank lines are not commands, and must not be
+# echoed as though they were.
+
+font list
+
+# the leading program name is tolerated, because that is how the documentation and every
+# shell history entry spell it -- pasting one at a prompt has to work
+crush font list
+
+# a quoted argument keeps its spaces, and the quotes must not survive into the path
+font add --local-file "font dir/TypeLightSans.ttf"

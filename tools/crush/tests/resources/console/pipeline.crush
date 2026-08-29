@@ -1,0 +1,10 @@
+# the full font-target pipeline in ONE session -- the same three commands that
+# crush_add_font_target() generates into its .crush script. What this pins is `render new`
+# finding the font and display added two lines earlier IN MEMORY: separate processes each
+# re-read the context from disk, which parses every number as a real
+# (JSON_DECODE_INT_AS_REAL), and that hid the extract format strings rejecting the
+# integers a same-session serialize packs -- see crush_font_object_extract().
+
+font add --local-file "font dir/TypeLightSans.ttf"
+display add pipeline_disp 64 128 --dimension 17.2x32.3
+render new pipeline_render 7 8 --font TypeLightSans.ttf --display pipeline_disp

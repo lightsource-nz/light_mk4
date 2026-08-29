@@ -2,6 +2,7 @@
 build*/
 stage/
 target/
+.crush/
 CMakeUserPresets.json
 .vscode/*.log
 .vscode/.cortex-debug.*

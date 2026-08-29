@@ -20,7 +20,10 @@ This is a spike, not the framework. It exists to retire specific unknowns before
 
     Cargo.toml              workspace
     crates/light-core       portable, no_std, host-testable framework code
+    crates/light-font       the LGF bitmap font format: no_std reader, encoder behind `alloc`
     crates/light-rp2350     RP2350 board/peripheral access via rp235x-pac
+    tools/crush             font-crusher in Rust: renders TrueType into LGF (and mk3's C pair)
+    tools/vendor            freetype-sys, vendored with a one-line build.rs fix (see Cargo.toml)
     module/light_mk4_touch169/rust   the staticlib crate the firmware links (light_app_touch169)
     module/light_mk4_touch169        the C shell: main.c + pico-sdk executable (module/<target>/
                                      is where light-flash.ps1 looks for <target>.uf2)
@@ -31,6 +34,10 @@ This is a spike, not the framework. It exists to retire specific unknowns before
     scripts/build.ps1                 # default target, touch169
     scripts/flash.ps1                 # UF2 over BOOTSEL
     scripts/test.ps1                  # host tree; runs `cargo test` on the portable crates
+    cargo run -p crush -- help        # the font tool (host only; not part of a firmware build)
+
+`cargo build --workspace --target thumbv8m...` will not work: `crush` is a std binary. Build the
+firmware through the scripts, or `cargo build -p light_app_touch169 --target ...`.
 
 Needs `rustup` with `thumbv8m.main-none-eabi` (soft-float ABI, to match pico-sdk's `-mfloat-abi=softfp`
 on Cortex-M33 — NOT `eabihf`, which fails at link with a VFP-args mismatch) and the usual mk3
@@ -97,3 +104,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   that fault by construction; a C one using `gpio_put()` would have hard-faulted on the next
   write. Not yet seen: the Pico 2's own CDC console (no PID_0009 port enumerated -- check the
   board's USB cable), so its console was exercised only on the touch169.
+- 2026-08-29 — **plan step 1: crush in Rust, and the LGF font format.** `tools/crush` reproduces
+  mk3's command surface (`font add`, `display add`, `render new`, `console` with scripts, `-c`,
+  `--interactive`, `--keep-going`, `help`/`exit` builtins) over a JSON context in `.crush/`,
+  rendering through FreeType (bundled; `freetype-sys` vendored with a one-line fix because its
+  crates.io package points at a zlib include path that only exists in its git checkout). Output
+  is the **LGF blob** (`crates/light-font`: 48-byte header, presence bitmap, fixed-cell 1bpp
+  glyphs, popcount lookup, zero-copy `no_std` reader) *and* mk3's C pair, so both stacks share
+  one crush. 18 acceptance tests port the C suite's assertions -- and one more the C suite could
+  not make: every glyph, and the whole generated `.c`, is **byte-identical to the C crush's**
+  for the same font/display/size. The 93-case C suite's behaviours reduce to those 18 because
+  the Rust tests assert directly instead of through CMake fixtures.

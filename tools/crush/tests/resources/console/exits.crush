@@ -1,0 +1,5 @@
+# 'exit' ends a script just as it ends an interactive session, and the process still
+# succeeds -- stopping early on purpose is not a failure
+font list
+exit
+font info tail-marker
