@@ -305,6 +305,7 @@ dependencies = [
  "light-core",
  "light-font",
  "light-rp2350",
+ "static_cell",
 ]
 
 [[package]]

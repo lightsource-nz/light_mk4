@@ -73,7 +73,7 @@ pub struct Transform {
 }
 
 impl Transform {
-        const IDENTITY: Transform = Transform { a: 1, b: 0, tx: 0, c: 0, d: 1, ty: 0 };
+        pub const IDENTITY: Transform = Transform { a: 1, b: 0, tx: 0, c: 0, d: 1, ty: 0 };
 
         /// `second . first`: a point is mapped by `first`, then by `second`.
         fn compose(first: Transform, second: Transform) -> Transform {

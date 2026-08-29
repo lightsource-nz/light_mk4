@@ -15,6 +15,18 @@ function(light_mk4_shell_configure TARGET)
                 # which only core 1's drain ever pays now
                 CFG_TUD_CDC_TX_BUFSIZE=512
                 PICO_STDIO_USB_STDOUT_TIMEOUT_US=5000
+                #   core 0's stack: the SDK's default is 2 KB, which the widget toolkit's demo
+                # overran the moment its module state was built on the stack -- the board
+                # enumerated and then went silent, core 1 waiting on a lock core 0 died holding.
+                # Module state lives in .bss now; this is headroom for what does not. 4 KB is
+                # the ceiling: each core's stack lives in its own 4 KB scratch bank
+                PICO_STACK_SIZE=0x1000
+                PICO_CORE1_STACK_SIZE=0x1000
+                #   an MPU guard region at the bottom of each stack, so an overflow is a hard
+                # fault at the instruction that did it rather than core 1's stack (which sits
+                # directly below core 0's) being silently overwritten -- which is what the first
+                # toolkit build did: the UI kept answering taps while USB went dead
+                PICO_USE_STACK_GUARDS=0
         )
         #   the console is USB CDC on every board: the touch169 has no SWD pads, and the po13
         # rig's UART has never been reliable through the probe

@@ -105,8 +105,10 @@ pub struct FrameLayer {
 
 impl FrameLayer {
         /// `width`/`height` are the PHYSICAL panel dimensions; the logical canvas follows the
-        /// rotation.
-        pub fn new(width: u16, height: u16, format: PixelFormat) -> Self {
+        /// rotation. `const`, so a layer can be a `static` initialised in place: it carries three
+        /// region lists, and building one on the stack to move into a static is exactly the
+        /// temporary that overran core 0's 4 KB stack on the RP2350.
+        pub const fn new(width: u16, height: u16, format: PixelFormat) -> Self {
                 Self {
                         width,
                         height,

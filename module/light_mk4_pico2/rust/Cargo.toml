@@ -12,3 +12,4 @@ crate-type = ["staticlib"]
 light-core = { path = "../../../crates/light-core" }
 light-rp2350 = { path = "../../../crates/light-rp2350" }
 light-font = { path = "../../../crates/light-font" }
+static_cell = "2"

@@ -186,3 +186,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   steering the square, the QMI8658 reading gravity and 31 C on first contact. The controller
   still wedges and is reset every few seconds under tapping -- mk3 parity, the logic-analyser
   job. The touch demo now reports how many Move samples a touch produced on release.
+- 2026-08-30 — **plan step 5: the widget toolkit.** `light_core::ui` is mk3's `light_ui`
+  ported whole: a fixed-arena tree of windows, buttons and labels; `const` descriptors and
+  `static` pages with parent-not-history navigation; the stack layout with min/max
+  constraints and the flush-corner and end-cap geometry; scrolling with the clamp and
+  scroll-into-view; focus cycling; the tap-versus-drag touch tracker; swipe classification in
+  the logical frame; painting under per-subtree clips; and `render` over the frame layer. One
+  design change: a button EMITS an application event (and optionally navigates) instead of
+  carrying a callback and a command string, so a tap goes over the bus a console line does.
+  8 host tests, one of them the touch169 demo painted at every rotation, dragged and
+  navigated. Both apps run mk3's demo on it -- the touch169 with taps, drags, swipe-back and
+  IMU rotation, the po13 as the two-key rig -- and both are hardware-verified, the touch169
+  driven from the console (`ui activate`, `ui press 120 250` opening the list, `ui back`).
+  What the bench cost: the first build overflowed core 0's 4 KB stack with the toolkit and
+  frame-layer state built as temporaries, and since core 1's stack sits directly below,
+  core 1 (USB) died silently while the UI kept answering taps -- diagnosed over SWD on the
+  po13 as a hard fault with a garbage stack pointer. Those objects are `const`-constructed
+  statics now. `PICO_USE_STACK_GUARDS=1` was tried and faults core 1 at boot on this SDK
+  configuration (it died holding the log lock; core 0 then spun at its first `log::set_clock`),
+  so it is off. Also learned: reading SIO spinlock 31 from the debugger ACQUIRES it. A full
+  repaint costs 36 ms at opt-level 1; the release profile is still to come.

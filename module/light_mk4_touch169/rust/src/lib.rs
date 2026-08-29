@@ -8,8 +8,13 @@
 //! The application is a set of modules over one event bus: the console parses lines into
 //! events, the touch driver publishes touches, and every module subscribes and matches on what
 //! it cares about. The board's peripherals are taken once as an owned set and handed to the
-//! drivers that need them. Drawing goes through the frame layer: every frame is a full repaint
-//! into the back buffer, and only what changed reaches the panel.
+//! drivers that need them.
+//!
+//! What it shows is mk3's `light_ui` demo: one rounded window filling the glass with a stack of
+//! buttons in it, a second page reached from the last row and returned from with a swipe, and a
+//! scrolling list. The widget tree is `static` data; a button EMITS an application event, which
+//! goes over the same bus a console line does, so a tap, `ui activate` at the console and a
+//! script are three spellings of one thing.
 
 #![no_std]
 
@@ -19,8 +24,9 @@ use light_core::cst816t::{self, Cst816t};
 use light_core::imu::{Imu, Orientation};
 use light_core::qmi8658::Qmi8658;
 use light_core::st7789::St7789;
-use light_core::touch::{Gesture, Swipe, Tracker};
-use light_core::{info, log, warn, Display, EventBus, Flip, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Rotation, Runtime, Subscription, UpdateError};
+use light_core::touch::{Gesture, Tracker};
+use light_core::ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
+use light_core::{debug, info, log, warn, Display, EventBus, FrameLayer, LineReader, Mailbox, Module, PixelFormat, Poll, Rotation, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
@@ -59,7 +65,7 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 // --- the event bus --------------------------------------------------------------------------
 
 /// Everything that happens in this application, as one type. The console is one producer of
-/// `Command`s; a test, a boot script or a UI would be others, without going through text.
+/// `Command`s; a widget, a test or a boot script are others, without going through text.
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
         Touch(cst816t::Event),
@@ -68,14 +74,32 @@ enum AppEvent {
         /// The board's settled orientation changed.
         Orientation(Orientation),
         Command(Command),
+        /// Something a widget emitted.
+        Ui(UiAction),
 }
 
 #[derive(Clone, Copy, Debug)]
 enum Command {
         Stats,
         Backlight(bool),
-        Square { x: u16, y: u16 },
-        Speed { dx: i32, dy: i32 },
+        /// The UI events as commands: `ui focus next|prev`, `ui activate`, `ui press X Y`,
+        /// `ui back`. Most of their value is on a bring-up rig: a console drives a board whose
+        /// only physical input is a touch panel, and a host script replays an interaction.
+        UiFocus { next: bool },
+        UiActivate,
+        UiPress { x: u16, y: u16 },
+        UiBack,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum UiAction {
+        /// One of the three toggle buttons.
+        Toggle(u8),
+        /// A list row.
+        Item(u8),
+        /// A drag scrolled a window: the finger's movement is spent, and the touch module must
+        /// not let its release classify as a swipe as well.
+        DragConsumed,
 }
 
 /// 16 events deep, 5 subscribers: display, touch, imu, board, and one spare.
@@ -108,33 +132,72 @@ pub extern "C" fn light_app_core1_service() {
         }
 }
 
+// --- the interface, as data ---------------------------------------------------------------
+
+/// The glass's corner radius, near enough: the root window's frame follows it instead of
+/// floating in a square inside it.
+const CORNER_RADIUS: u8 = 24;
+const ROW_GAP: u8 = 2;
+/// Rows in the scrolling list are pinned to this, so the list overflows rather than shrinking.
+const LIST_MIN_ROW: i32 = 44;
+const FPS: u32 = 30;
+const BG: u16 = 0x0000;
+const FG: u16 = 0xFFFF;
+
+const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
+const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
+
+static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Ui(UiAction::Toggle(0))).tag(1);
+static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Ui(UiAction::Toggle(1))).tag(2);
+static BTN_GAMMA: Desc<AppEvent> = Desc::button(LABEL_OFF[2]).emit(AppEvent::Ui(UiAction::Toggle(2))).tag(3);
+static BTN_MORE: Desc<AppEvent> = Desc::button("More >").navigate(&PAGE_DETAIL);
+static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
+static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 demo").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_GAMMA, &BTN_MORE, &BTN_LIST]);
+
+static LBL_DETAIL: Desc<AppEvent> = Desc::label("swipe right to go back");
+//   the whole press IS the command: no handler, the button emits the same event the console's
+// `backlight off` does
+static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(false)));
+static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(true)));
+static BTN_BACK: Desc<AppEvent> = Desc::button("< Back").back();
+static DETAIL_WINDOW: Desc<AppEvent> = Desc::window("More").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
+
+static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Ui(UiAction::Item(1))).min_size(0, LIST_MIN_ROW);
+static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Ui(UiAction::Item(2))).min_size(0, LIST_MIN_ROW);
+static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Ui(UiAction::Item(3))).min_size(0, LIST_MIN_ROW);
+static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Ui(UiAction::Item(4))).min_size(0, LIST_MIN_ROW);
+static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Ui(UiAction::Item(5))).min_size(0, LIST_MIN_ROW);
+static ITEM_6: Desc<AppEvent> = Desc::button("Item 6").emit(AppEvent::Ui(UiAction::Item(6))).min_size(0, LIST_MIN_ROW);
+static ITEM_7: Desc<AppEvent> = Desc::button("Item 7").emit(AppEvent::Ui(UiAction::Item(7))).min_size(0, LIST_MIN_ROW);
+// the back row is a list item like any other, and deliberately LAST: reaching it means
+// scrolling the whole list, so navigating out doubles as the end-to-end check
+static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
+static LIST_WINDOW: Desc<AppEvent> =
+        Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &ITEM_6, &ITEM_7, &BTN_LIST_BACK]);
+
+static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
+static PAGE_DETAIL: Page<AppEvent> = Page::new(&DETAIL_WINDOW, Some(&PAGE_MAIN));
+static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
+
+/// The widest page is the list: a window and eight rows.
+const UI_WIDGETS: usize = 12;
+
 // --- the modules --------------------------------------------------------------------------
 
-const BG: u16 = 0x0000;
-const FG: u16 = 0xF800; // red, RGB565
-const TEXT: u16 = 0xFFFF;
-const SQUARE: i32 = 24;
-const CAPTION: Point = Point::new(8, 8);
-const FPS: u32 = 30;
-
-/// Owns the panel. Every frame repaints the caption and the square; the frame layer works out
-/// which panel pixels changed -- the square's old and new places, the caption when its text
-/// changes -- and pushes only those. A tap moves the square.
+/// Owns the panel and the widget tree. Input arrives as bus events; what a widget emits goes
+/// back onto the bus; the frame layer works out which panel pixels changed.
 struct DisplayMod {
         display: Display<'static, St7789<Spi1Display>>,
-        layer: FrameLayer,
+        //   the two big objects live in .bss as statics built in place (their constructors are
+        // const): a stack temporary of either overran core 0's 4 KB stack, and what sits
+        // directly below it is core 1's
+        layer: &'static mut FrameLayer,
         font: Font<'static>,
+        ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
         events: Subscription,
-        x: i32,
-        y: i32,
-        dx: i32,
-        dy: i32,
-        caption: StackString<32>,
-        caption_second: u64,
-        /// The caption changed and no frame has yet invalidated its box. Stays set across
-        /// passes where the panel was busy; consuming it before a frame is open froze the
-        /// caption on the po13's panel while its buffer kept updating.
-        caption_dirty: bool,
+        toggled: [bool; 3],
+        /// Whether the drag in progress has already told the touch module it consumed the touch.
+        drag_reported: bool,
         /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
         /// push (frame_end until the panel is idle) seen, in microseconds.
         draw_us_max: u64,
@@ -143,39 +206,48 @@ struct DisplayMod {
 }
 
 impl DisplayMod {
-        fn square(&self) -> LogicalRegion {
-                LogicalRegion::new(self.x, self.y, self.x + SQUARE - 1, self.y + SQUARE - 1)
+        fn publish(ev: Option<AppEvent>) {
+                if let Some(ev) = ev {
+                        if let Err(e) = EVENTS.publish(ev) {
+                                warn!("event bus full; dropped {e:?}");
+                        }
+                }
         }
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        AppEvent::Touch(cst816t::Event::Down { x, y }) => {
-                                // the panel reports in its own frame; the square lives in the
-                                // canvas's, which the layer's orientation defines
-                                let p = self.layer.untransform_point(i32::from(x), i32::from(y));
-                                self.place(p.x, p.y);
-                        }
-                        AppEvent::Command(Command::Square { x, y }) => self.place(i32::from(x), i32::from(y)),
-                        AppEvent::Command(Command::Speed { dx, dy }) => {
-                                self.dx = dx;
-                                self.dy = dy;
+                        AppEvent::Touch(t) => {
+                                //   the panel's own coordinates go straight in: the toolkit
+                                // untransforms them, which keeps touches landing on the right
+                                // widget once the interface has been rotated. The tracker runs
+                                // the whole tap-versus-drag interaction; this module's part is
+                                // one rule: a drag that scrolled has SPENT the finger's movement
+                                let outcome = match t {
+                                        cst816t::Event::Down { x, y } | cst816t::Event::Move { x, y } => self.ui.touch(x, y, true),
+                                        cst816t::Event::Up => self.ui.touch(0, 0, false),
+                                        cst816t::Event::Reset => return,
+                                };
+                                match outcome {
+                                        Touch::Drag if !self.drag_reported => {
+                                                self.drag_reported = true;
+                                                Self::publish(Some(AppEvent::Ui(UiAction::DragConsumed)));
+                                        }
+                                        Touch::Tap { hit, emitted } => {
+                                                debug!("tap: {}", if hit { "hit" } else { "no widget there" });
+                                                Self::publish(emitted);
+                                        }
+                                        Touch::DragEnd | Touch::None => self.drag_reported = false,
+                                        _ => {}
+                                }
                         }
                         AppEvent::Gesture(g) => {
-                                // a swipe sends the square that way, in the panel's frame
-                                let speed = self.dx.abs().max(self.dy.abs()).max(2);
-                                let (dx, dy) = match g.swipe {
-                                        Swipe::Left => (-speed, 0),
-                                        Swipe::Right => (speed, 0),
-                                        Swipe::Up => (0, -speed),
-                                        Swipe::Down => (0, speed),
-                                };
-                                let t = self.layer.transform();
-                                // rotate the panel-frame direction into the canvas frame: the
-                                // transform's inverse, applied to a vector (no translation)
-                                let det = t.a * t.d - t.b * t.c;
-                                self.dx = (t.d * dx - t.b * dy) * det;
-                                self.dy = (t.a * dy - t.c * dx) * det;
-                                info!("swipe {:?} ({}): square now moving ({}, {})", g.swipe, if g.from_hardware { "hw" } else { "sw" }, self.dx, self.dy);
+                                //   swipe right returns to the previous page. Classified from the
+                                // gesture's ENDPOINTS in the frame the user is looking at: the
+                                // controller's own code is in the panel's frame, which is wrong
+                                // in landscape
+                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.ui.navigate_back() {
+                                        debug!("swipe: returned to the previous page");
+                                }
                         }
                         AppEvent::Orientation(o) => {
                                 let rotation = match o {
@@ -188,14 +260,42 @@ impl DisplayMod {
                                         _ => None,
                                 };
                                 if let Some(r) = rotation {
-                                        self.layer.set_orientation(r, Flip::None);
-                                        self.layer.invalidate_all();
-                                        let (w, h) = self.layer.logical_size();
-                                        self.x = self.x.clamp(0, i32::from(w) - SQUARE);
-                                        self.y = self.y.clamp(0, i32::from(h) - SQUARE);
-                                        info!("orientation {o:?}: canvas now {}x{}", w, h);
+                                        self.ui.set_rotation(self.layer, r);
+                                        let (w, h) = self.ui.logical_size();
+                                        info!("orientation {o:?}: canvas now {w}x{h}");
                                 }
                         }
+                        AppEvent::Command(Command::UiFocus { next }) => {
+                                if next {
+                                        self.ui.focus_next()
+                                } else {
+                                        self.ui.focus_prev()
+                                }
+                        }
+                        AppEvent::Command(Command::UiActivate) => {
+                                let emitted = self.ui.activate();
+                                Self::publish(emitted);
+                        }
+                        AppEvent::Command(Command::UiPress { x, y }) => {
+                                // a miss is not an error: tapping empty space is legitimate
+                                let (hit, emitted) = self.ui.press_at(x, y);
+                                info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
+                                Self::publish(emitted);
+                        }
+                        AppEvent::Command(Command::UiBack) => {
+                                if !self.ui.navigate_back() {
+                                        info!("ui back: nowhere to go from this page");
+                                }
+                        }
+                        AppEvent::Ui(UiAction::Toggle(i)) => {
+                                let i = usize::from(i) % 3;
+                                self.toggled[i] = !self.toggled[i];
+                                if let Some(id) = self.ui.find(i as u8 + 1) {
+                                        self.ui.set_label(id, if self.toggled[i] { LABEL_ON[i] } else { LABEL_OFF[i] });
+                                }
+                                info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
+                        }
+                        AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
                         AppEvent::Command(Command::Stats) => {
                                 info!(
                                         "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
@@ -212,62 +312,13 @@ impl DisplayMod {
                 }
         }
 
-        fn place(&mut self, x: i32, y: i32) {
-                let (w, h) = self.layer.logical_size();
-                self.x = (x - SQUARE / 2).clamp(0, i32::from(w) - SQUARE);
-                self.y = (y - SQUARE / 2).clamp(0, i32::from(h) - SQUARE);
-        }
-
-        fn step(&mut self) {
-                let (w, h) = self.layer.logical_size();
-                let (w, h) = (i32::from(w), i32::from(h));
-                let top = CAPTION.y + i32::from(self.font.cell_height()) + 4;
-                self.x += self.dx;
-                self.y += self.dy;
-                if self.x <= 0 || self.x >= w - SQUARE {
-                        self.dx = -self.dx;
-                        self.x = self.x.clamp(0, w - SQUARE);
+        fn render(&mut self) {
+                let now = light_rp2350::now_us();
+                if self.ui.render(self.layer, &mut self.display, &self.font, now) {
+                        let done = light_rp2350::now_us();
+                        self.draw_us_max = self.draw_us_max.max(done - now);
+                        self.push_started_us = Some(done);
                 }
-                if self.y <= top || self.y >= h - SQUARE {
-                        self.dy = -self.dy;
-                        self.y = self.y.clamp(top, h - SQUARE);
-                }
-        }
-
-        /// One frame: full repaint, invalidate what is wrong on the panel.
-        fn frame(&mut self, now_us: u64) -> bool {
-                let second = now_us / 1_000_000;
-                if second != self.caption_second {
-                        self.caption_second = second;
-                        self.caption = StackString::new();
-                        let _ = write!(self.caption, "mk4 {}s {}f", second, self.layer.frames());
-                        self.caption_dirty = true;
-                }
-                let font = self.font;
-                //   nothing moves until a frame is actually open: a refused pass must leave the
-                // animation and the caption's dirtiness exactly as they were
-                let Some(c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
-                drop(c);
-                self.step();
-                let square = self.square();
-                let Some(frame) = self.display.frame_mut() else { return false };
-                let mut c = self.layer.canvas(frame);
-                c.fg = TEXT;
-                let caption_box = c.text(&font, CAPTION, self.caption.as_str());
-                c.fill_region(&Region::new(square.x0 as u16, square.y0 as u16, square.x1 as u16, square.y1 as u16), FG);
-                drop(c);
-                self.layer.invalidate(square);
-                if self.caption_dirty {
-                        if let Some(r) = caption_box {
-                                self.layer.invalidate(r.into());
-                                self.caption_dirty = false;
-                        }
-                }
-                self.layer.frame_end(&mut self.display);
-                let done = light_rp2350::now_us();
-                self.draw_us_max = self.draw_us_max.max(done - now_us);
-                self.push_started_us = Some(done);
-                true
         }
 }
 
@@ -282,9 +333,15 @@ impl Module for DisplayMod {
                 self.display.driver().clear(BG);
                 self.layer.set_frame_rate(FPS);
                 self.layer.bg = BG;
-                // the first frame: nothing on the panel corresponds to what is drawn
-                self.layer.invalidate_all();
-                self.frame(light_rp2350::now_us());
+                self.ui.fit(self.layer);
+                //   entered through the page system rather than built directly, so the toolkit
+                // knows which page it is showing and back has something to reason from
+                if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
+                        warn!("the main page did not build: {e:?}");
+                }
+                // nothing on the panel matches the freshly built tree yet
+                self.ui.invalidate_all();
+                self.render();
                 info!(
                         "display up: {}x{}, double-buffered at {} fps, font {}px cell {}x{} ({} glyphs, {} bytes)",
                         DISPLAY_WIDTH,
@@ -313,7 +370,8 @@ impl Module for DisplayMod {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         self.handle(ev);
                 }
-                if self.frame(light_rp2350::now_us()) || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
+                self.render();
+                if self.ui.is_dirty() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
@@ -350,15 +408,20 @@ impl Module for TouchMod {
         }
         fn poll(&mut self) -> Poll {
                 while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Stats) = ev {
-                                info!(
-                                        "touch: {} failed reads ({} nack, {} timeout, {} bus), {} resets",
-                                        self.touch.failures,
-                                        self.touch.nacks,
-                                        self.touch.timeouts,
-                                        self.touch.bus_errors,
-                                        self.touch.recoveries
-                                );
+                        match ev {
+                                AppEvent::Command(Command::Stats) => {
+                                        info!(
+                                                "touch: {} failed reads ({} nack, {} timeout, {} bus), {} resets",
+                                                self.touch.failures,
+                                                self.touch.nacks,
+                                                self.touch.timeouts,
+                                                self.touch.bus_errors,
+                                                self.touch.recoveries
+                                        );
+                                }
+                                // the interface scrolled with this touch: its release is not a swipe
+                                AppEvent::Ui(UiAction::DragConsumed) => self.tracker.suppress(),
+                                _ => {}
                         }
                 }
                 let now_ms = (light_rp2350::now_us() / 1000) as u32;
@@ -366,9 +429,9 @@ impl Module for TouchMod {
                 match ev {
                         cst816t::Event::Down { x, y } => {
                                 self.moves = 0;
-                                info!("touch down at {x},{y}");
+                                debug!("touch down at {x},{y}");
                         }
-                        cst816t::Event::Up => info!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
+                        cst816t::Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
                         cst816t::Event::Reset => match self.touch.probe() {
                                 Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
                                 Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
@@ -468,10 +531,9 @@ impl ConsoleMod {
                 let mut words = line.split_whitespace();
                 let Some(cmd) = words.next() else { return Poll::Idle };
                 let mut args = words;
-                let mut num = |what: &str| -> Option<i32> { args.next().and_then(|s| s.parse().ok()).or_else(|| { warn!("usage: {what}"); None }) };
                 let event = match cmd {
                         "help" => {
-                                info!("commands: help | stats | backlight on|off | square X Y | speed DX DY | loglevel error|warn|info|debug|trace | quit");
+                                info!("commands: help | stats | backlight on|off | ui focus next|prev | ui activate | ui press X Y | ui back | loglevel error|warn|info|debug|trace | quit");
                                 None
                         }
                         "stats" => {
@@ -486,13 +548,22 @@ impl ConsoleMod {
                                         None
                                 }
                         },
-                        "square" => match (num("square X Y"), num("square X Y")) {
-                                (Some(x), Some(y)) => Some(Command::Square { x: x.clamp(0, i32::from(DISPLAY_WIDTH)) as u16, y: y.clamp(0, i32::from(DISPLAY_HEIGHT)) as u16 }),
-                                _ => None,
-                        },
-                        "speed" => match (num("speed DX DY"), num("speed DX DY")) {
-                                (Some(dx), Some(dy)) => Some(Command::Speed { dx, dy }),
-                                _ => None,
+                        "ui" => match (args.next(), args.next(), args.next()) {
+                                (Some("focus"), Some("next"), _) => Some(Command::UiFocus { next: true }),
+                                (Some("focus"), Some("prev"), _) => Some(Command::UiFocus { next: false }),
+                                (Some("activate"), _, _) => Some(Command::UiActivate),
+                                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
+                                        (Ok(x), Ok(y)) => Some(Command::UiPress { x, y }),
+                                        _ => {
+                                                warn!("usage: ui press X Y (panel coordinates)");
+                                                None
+                                        }
+                                },
+                                (Some("back"), _, _) => Some(Command::UiBack),
+                                _ => {
+                                        warn!("usage: ui focus next|prev | ui activate | ui press X Y | ui back");
+                                        None
+                                }
                         },
                         "loglevel" => {
                                 let level = match args.next() {
@@ -577,29 +648,37 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
-        let mut display_mod = DisplayMod {
+        //   built in place in .bss -- see DisplayMod. SAFETY: each static is referenced exactly
+        // once, here, before anything else can reach it
+        static mut LAYER: FrameLayer = FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565);
+        static mut UI: Ui<AppEvent, UI_WIDGETS> = Ui::new();
+        let layer: &'static mut FrameLayer = unsafe { &mut *core::ptr::addr_of_mut!(LAYER) };
+        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = unsafe { &mut *core::ptr::addr_of_mut!(UI) };
+        layer.bg = BG;
+        ui.set_font(&font);
+        let _ = FG;
+        // module state is 'static in any case: the runtime never returns
+        static DISPLAY_MOD: static_cell::StaticCell<DisplayMod> = static_cell::StaticCell::new();
+        let display_mod = DISPLAY_MOD.init(DisplayMod {
                 display,
-                layer: FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565),
+                layer,
                 font,
+                ui,
                 events: EVENTS.subscribe().expect("subscriber slot"),
-                x: 40,
-                y: 60,
-                dx: 3,
-                dy: 2,
-                caption: StackString::new(),
-                caption_second: u64::MAX,
-                caption_dirty: true,
+                toggled: [false; 3],
+                drag_reported: false,
                 draw_us_max: 0,
                 push_us_max: 0,
                 push_started_us: None,
-        };
-        let mut touch_mod = TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 };
+        });
+        static TOUCH_MOD: static_cell::StaticCell<TouchMod> = static_cell::StaticCell::new();
+        let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
         let mut rt: Runtime<5> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");
-        rt.add(&mut display_mod).expect("capacity");
-        rt.add(&mut touch_mod).expect("capacity");
+        rt.add(display_mod).expect("capacity");
+        rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
@@ -624,9 +703,6 @@ struct StackString<const N: usize> {
 impl<const N: usize> StackString<N> {
         const fn new() -> Self {
                 Self { buf: [0; N], len: 0 }
-        }
-        fn as_str(&self) -> &str {
-                core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
         }
 }
 

@@ -310,7 +310,9 @@ mod tests {
                         if r.target == "light_core::log" {
                                 let n: u32 = r.text.as_str().split(' ').nth(1).unwrap().parse().unwrap();
                                 *dropped += n;
-                        } else {
+                        } else if r.target == module_path!() {
+                                // only this test's producers: the queue is global, and other
+                                // tests running alongside log records of their own
                                 *delivered += 1;
                         }
                 };

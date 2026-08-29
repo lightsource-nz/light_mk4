@@ -24,6 +24,7 @@ pub mod qmi8658;
 pub mod sh1107;
 pub mod st7789;
 pub mod touch;
+pub mod ui;
 
 pub use blink::Blinker;
 pub use console::LineReader;

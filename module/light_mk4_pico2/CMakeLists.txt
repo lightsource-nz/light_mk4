@@ -16,7 +16,7 @@ target_link_libraries(light_mk4_pico2 PRIVATE
 light_mk4_add_font(light_mk4_pico2_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY po13 WIDTH 64 HEIGHT 128 DIMENSION 17.2x32.3
-        POINT_SIZE 9 PIXEL_SIZE 12
+        POINT_SIZE 6 PIXEL_SIZE 8
         CRATE light_app_pico2 ENV LIGHT_FONT_LGF
 )
 
