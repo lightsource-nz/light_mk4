@@ -22,6 +22,8 @@ pub mod gpio;
 pub mod i2c;
 pub mod pwm;
 pub mod spi;
+#[cfg(feature = "usb-host")]
+pub mod tinyusb_midi;
 
 use light_core::{Clock, Idle};
 use rp235x_pac as pac;

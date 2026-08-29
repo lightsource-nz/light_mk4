@@ -244,3 +244,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   is a scope on the controller's VDD and INT during a push -- the analyser job it always was,
   now with the bus-side explanations eliminated. The console keeps the instruments:
   `render pause|resume|repush` and `touch hold|free`.
+- 2026-08-30 — **plan step 6: crossfire.** mk3's USB-MIDI forwarder on the mk4 stack, on the
+  po13 rig: the Pico 2's native USB port in the HOST role, the OLED as the status display, the
+  console on the UART through the debug probe. `light_core::midi::Forwarder` is the engine --
+  the one rule (cable C of any device to cable C of every other that has one), the padding
+  drop, hub-port tracking learned from the devices behind a hub, the reset-only-when-the-bus-
+  is-empty rule, the activity indicators -- portable, callback-free, and host-tested with
+  eleven ports of mk3's `crossfire_forward_test`. The transport is TinyUSB through
+  `light_rp2350::tinyusb_midi`, with the class callbacks implemented in Rust and handed to the
+  module's own poll through a mailbox. The shell gained its host role
+  (`light_mk4_shell_configure(... USB_HOST)`): the whole host stack runs on core 0 under the
+  Rust runtime, since TinyUSB is not cross-core safe, and core 1 keeps the UART drain.
+  Console-verified over the probe's UART: the stack up, the runtime polling, the OLED drawn.
+  An instrument on the port is the next check.
+  **A debugging lesson that rewrites an earlier one:** openocd's reset on this RP2350 config
+  can leave a core parked in the bootrom's RAM helper at 0x2001xxxx with SIO spinlock 31
+  held, and the next boot then spins at its first log lock on both cores. Every "hard fault
+  at 0x200104xx" and "core 1 died holding the lock" this log recorded was that, including the
+  one blamed on `PICO_USE_STACK_GUARDS`, which is unproven either way. Reading the lock from
+  gdb acquires it too. The reliable sequence after a load is `monitor reset halt`, write 1 to
+  0xd000017c, `monitor resume`.

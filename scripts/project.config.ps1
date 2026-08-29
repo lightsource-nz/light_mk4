@@ -14,9 +14,13 @@
                 # ones stay warm: build/flash with -Preset conf-light_mk4-<board>-release
                 'conf-light_mk4-touch169-release' = 'build-touch169-release'
                 'conf-light_mk4-pico2-release'    = 'build-pico2-release'
+                # crossfire: the Pico 2 with its USB port in the host role, own tree
+                'conf-light_mk4-crossfire-debug'  = 'build-crossfire'
         }
 
         Targets = @{
+                # the po13 rig again, flashed over SWD like the pico2 demo
+                'light_mk4_crossfire' = @{ Preset = 'conf-light_mk4-crossfire-debug'; Flash = 'swd' }
                 # uf2 because the 1.69 exposes no SWD pads
                 'light_mk4_touch169' = @{ Preset = 'conf-light_mk4-touch169-debug'; Flash = 'uf2' }
                 # the po13 rig flashes over SWD; Flash='swd' records that light-flash.ps1's
@@ -52,6 +56,13 @@
                         Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
                         CMAKE_BUILD_TYPE  = 'Release'
                 }
+                'conf-light_mk4-crossfire-debug'  = @{
+                        LIGHT_PLATFORM      = 'TARGET'
+                        LIGHT_BOARD         = 'pico2'
+                        PICO_PLATFORM       = 'rp2350-arm-s'
+                        Rust_CARGO_TARGET   = 'thumbv8m.main-none-eabi'
+                        LIGHT_MK4_PICO2_APP = 'crossfire'
+                }
         }
 
         # which OpenOCD config and SVD belong to which board -- see screen-test's config for
@@ -62,6 +73,10 @@
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                 }
                 'conf-light_mk4-pico2-release' = @{
+                        Config = 'openocd-rp2350.cfg'
+                        Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                }
+                'conf-light_mk4-crossfire-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                 }

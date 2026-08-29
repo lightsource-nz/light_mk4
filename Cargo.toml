@@ -7,6 +7,7 @@ members = [
         "tools/crush",
         "module/light_mk4_touch169/rust",
         "module/light_mk4_pico2/rust",
+        "module/light_mk4_crossfire/rust",
 ]
 
 #   freetype-sys 0.23's bundled build compiles libpng with `-I libz-sys/src/zlib`, a path that

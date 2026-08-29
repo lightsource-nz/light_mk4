@@ -5,6 +5,11 @@ edition.workspace = true
 license.workspace = true
 description = "RP2350 board access for the light framework via rp235x-pac (mk4 spike)"
 
+[features]
+#   the TinyUSB host transport, which resolves against tinyusb_host at link time: only a
+# firmware whose shell was built in the host role can carry it
+usb-host = []
+
 [dependencies]
 light-core = { path = "../light-core" }
 #   no `rt` feature: the vector table, reset handler and linker script belong to pico-sdk's

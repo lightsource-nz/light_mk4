@@ -19,6 +19,7 @@ pub mod hal;
 pub mod imu;
 pub mod log;
 pub mod mailbox;
+pub mod midi;
 pub mod module;
 pub mod qmi8658;
 pub mod sh1107;

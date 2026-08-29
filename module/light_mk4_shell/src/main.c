@@ -88,6 +88,56 @@ void __attribute__((noreturn)) light_shell_panic_sdk(const char *fmt, ...)
         shell_panic_finish();
 }
 
+#ifdef LIGHT_SHELL_USB_HOST
+//   THE HOST ROLE, for crossfire: the native USB port is a HOST -- USB-MIDI instruments plug
+// into it -- so there is no CDC console, and stdio is the UART (through the debug probe on the
+// po13 rig). The whole host stack runs on CORE 0, driven from the Rust runtime through the three
+// calls below: TinyUSB guards its queues with per-core IRQ-disable sections that are not
+// cross-core safe, dcd/hcd_int_enable() enables the IRQ on the CALLING core, and the class
+// callbacks (tuh_midi_mount_cb, implemented on the Rust side) then run in the same context as
+// the packet reads and writes. Core 1 keeps the log drain and the console read, which the UART
+// serves from either core without a USB stack to protect.
+void light_shell_usb_host_init(void)
+{
+        tusb_rhport_init_t host_init = {
+                .role = TUSB_ROLE_HOST,
+                .speed = TUSB_SPEED_AUTO,
+        };
+        tusb_init(BOARD_TUH_RHPORT, &host_init);
+}
+
+void light_shell_usb_host_task(void)
+{
+        tuh_task();
+}
+
+//   the RP2 native host controller can leave stale buffer-control state behind across a
+// disconnect (hathach/tinyusb#3533), which panics the next enumeration; mk3's answer is a full
+// teardown and re-init once the root port is EMPTY, from the main loop and never from inside a
+// callback the stack is still unwinding. The settle delay matches TinyUSB's own dynamic_switch
+// example
+void light_shell_usb_host_reset(void)
+{
+        tusb_deinit(BOARD_TUH_RHPORT);
+        sleep_ms(100);
+        light_shell_usb_host_init();
+}
+
+static void core1_main(void)
+{
+        core1_ready = true;
+        while (true) {
+                if (panic_pending) {
+                        printf("\n*** PANIC (core 0) ***\n%s\n", panic_message);
+                        stdio_flush();
+                        panic_printed = true;
+                        while (true)
+                                tight_loop_contents();
+                }
+                light_app_core1_service();
+        }
+}
+#else
 static void core1_main(void)
 {
         tusb_init();
@@ -108,6 +158,7 @@ static void core1_main(void)
                 light_app_core1_service();
         }
 }
+#endif
 
 int main(void)
 {
@@ -118,6 +169,8 @@ int main(void)
         multicore_launch_core1(core1_main);
         while (!core1_ready)
                 tight_loop_contents();
+        //   stdio: USB CDC on the device-role builds (with the connect wait the SDK does for it),
+        // the UART on the host-role build -- selected by pico_enable_stdio_* in the CMake
         stdio_init_all();
         struct light_shell_info info = {
                 .clk_sys_hz = clock_get_hz(clk_sys),
