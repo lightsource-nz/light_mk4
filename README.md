@@ -230,3 +230,17 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   transition waits for it. A mono or single-buffered panel snaps, correctly. Tested on the
   host (a full turn at 50 ms a pass, taps refused, the settled tree at the new size) and on
   the touch169: four page transitions in 24 frames, none skipped, 6.8 ms worst draw.
+- 2026-08-30 — **the CST816T wedge, bisected as far as software can.** Five 40-second runs of
+  continuous tapping on the touch169, counting the controller's failed reads and recovery
+  resets, all in the release build. Rendering on: 78 failed / 6 resets. Rendering paused
+  (nothing drawn or pushed, controller polled identically): 26 / 1. SPI at 20 MHz instead of
+  40: 84 / 6. The UNCHANGED frame re-pushed on every touch (all the bus and DMA activity,
+  nothing changing on the glass): 88 / 7. I2C deadline raised from 2 ms to 10 ms: 74 / 8.
+  Controller left unread while a push is in flight: 52 / 4. So: the failures track the
+  SPI/DMA burst itself -- not the clock edge rate, not the picture changing, not a slow
+  controller, and only partly a controller being read at a bad moment. The controller is
+  disturbed by the burst and does not answer for tens of milliseconds afterwards, whatever the
+  bus does. That is a supply, ground or coupling question on the board, and the next probe
+  is a scope on the controller's VDD and INT during a push -- the analyser job it always was,
+  now with the bus-side explanations eliminated. The console keeps the instruments:
+  `render pause|resume|repush` and `touch hold|free`.

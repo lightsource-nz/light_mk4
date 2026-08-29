@@ -90,6 +90,18 @@ enum Command {
         UiActivate,
         UiPress { x: u16, y: u16 },
         UiBack,
+        /// The rendering bisect: normal; paused (nothing drawn or pushed); or repushing the
+        /// UNCHANGED frame on every touch -- all the bus and DMA activity, nothing changing on
+        /// the glass -- which separates electrical coupling from the LCD itself disturbing the
+        /// touch sensor.
+        RenderMode(RenderMode),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RenderMode {
+        Normal,
+        Paused,
+        Repush,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -107,6 +119,12 @@ enum UiAction {
 static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
 /// Raw console bytes, core 1 → core 0. Sized for a burst of pasted text.
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
+/// The display module says whether a panel push is in flight; the touch module reads it. One
+/// bisect found the CST816T fails its reads while the SPI/DMA burst runs, whatever the clock
+/// rate and whether the picture changes, and a read that fails counts toward its reset --
+/// so while `touch hold` is on, the controller is left alone until the push is over.
+static PUSHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static TOUCH_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -200,6 +218,8 @@ struct DisplayMod {
         ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
         events: Subscription,
         toggled: [bool; 3],
+        /// See Command::RenderMode.
+        mode: RenderMode,
         /// Whether the drag in progress has already told the touch module it consumed the touch.
         drag_reported: bool,
         /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
@@ -226,6 +246,14 @@ impl DisplayMod {
                                 // widget once the interface has been rotated. The tracker runs
                                 // the whole tap-versus-drag interaction; this module's part is
                                 // one rule: a drag that scrolled has SPENT the finger's movement
+                                if self.mode == RenderMode::Repush {
+                                        if let cst816t::Event::Down { .. } = t {
+                                                // the front buffer as it stands, to the whole panel
+                                                if !self.display.busy() {
+                                                        let _ = self.display.update_async(light_core::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+                                                }
+                                        }
+                                }
                                 let outcome = match t {
                                         cst816t::Event::Down { x, y } | cst816t::Event::Move { x, y } => self.ui.touch(x, y, true),
                                         cst816t::Event::Up => self.ui.touch(0, 0, false),
@@ -286,6 +314,10 @@ impl DisplayMod {
                                 info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
                                 Self::publish(emitted);
                         }
+                        AppEvent::Command(Command::RenderMode(m)) => {
+                                self.mode = m;
+                                info!("render mode {m:?}");
+                        }
                         AppEvent::Command(Command::UiBack) => {
                                 if !self.ui.navigate_back() {
                                         info!("ui back: nowhere to go from this page");
@@ -317,7 +349,7 @@ impl DisplayMod {
         }
 
         fn render(&mut self) {
-                if !self.ui.is_dirty() && !self.ui.is_animating() {
+                if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
                         return;
                 }
                 let now = light_rp2350::now_us();
@@ -382,7 +414,9 @@ impl Module for DisplayMod {
                         self.handle(ev);
                 }
                 self.render();
-                if self.ui.is_dirty() || self.ui.is_animating() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
+                let busy = self.layer.busy(&self.display);
+                PUSHING.store(busy, core::sync::atomic::Ordering::Relaxed);
+                if self.ui.is_dirty() || self.ui.is_animating() || busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
@@ -434,6 +468,9 @@ impl Module for TouchMod {
                                 AppEvent::Ui(UiAction::DragConsumed) => self.tracker.suppress(),
                                 _ => {}
                         }
+                }
+                if TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed) {
+                        return Poll::Idle;
                 }
                 let now_ms = (light_rp2350::now_us() / 1000) as u32;
                 let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
@@ -547,7 +584,7 @@ impl ConsoleMod {
                 let mut args = words;
                 let event = match cmd {
                         "help" => {
-                                info!("commands: help | stats | backlight N | ui focus next|prev | ui activate | ui press X Y | ui back | loglevel error|warn|info|debug|trace | quit");
+                                info!("commands: help | stats | backlight N | ui focus next|prev | ui activate | ui press X Y | ui back | render pause|resume|repush | touch hold|free | loglevel error|warn|info|debug|trace | quit");
                                 None
                         }
                         "stats" => {
@@ -575,6 +612,31 @@ impl ConsoleMod {
                                 (Some("back"), _, _) => Some(Command::UiBack),
                                 _ => {
                                         warn!("usage: ui focus next|prev | ui activate | ui press X Y | ui back");
+                                        None
+                                }
+                        },
+                        "touch" => match args.next() {
+                                Some("hold") => {
+                                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
+                                        info!("touch: reads held while the panel is being pushed");
+                                        None
+                                }
+                                Some("free") => {
+                                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
+                                        info!("touch: reads not held");
+                                        None
+                                }
+                                _ => {
+                                        warn!("usage: touch hold|free");
+                                        None
+                                }
+                        },
+                        "render" => match args.next() {
+                                Some("pause") => Some(Command::RenderMode(RenderMode::Paused)),
+                                Some("resume") => Some(Command::RenderMode(RenderMode::Normal)),
+                                Some("repush") => Some(Command::RenderMode(RenderMode::Repush)),
+                                _ => {
+                                        warn!("usage: render pause|resume|repush");
                                         None
                                 }
                         },
@@ -679,6 +741,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 ui,
                 events: EVENTS.subscribe().expect("subscriber slot"),
                 toggled: [false; 3],
+                mode: RenderMode::Normal,
                 drag_reported: false,
                 draw_us_max: 0,
                 push_us_max: 0,
