@@ -14,9 +14,8 @@
 
 use core::fmt::Write;
 use light_core::cst816t::{self, Cst816t};
-use light_core::draw::Rgb565;
 use light_core::st7789::St7789;
-use light_core::{info, log, warn, Display, EventBus, LineReader, Mailbox, Module, Poll, Region, Runtime, Subscription, UpdateError};
+use light_core::{info, log, warn, Canvas, Display, EventBus, LineReader, Mailbox, Module, PixelFormat, Point, Poll, Region, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
@@ -41,8 +40,7 @@ pub struct ShellInfo {
         clk_peri_hz: u32,
 }
 
-const BYTES_PER_PIXEL: usize = 2;
-const FRAME_BYTES: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * BYTES_PER_PIXEL;
+const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
 /// The frame buffer: 134 KB, so it lives in .bss rather than on the 2 KB main stack. Handed
 /// out exactly once, in `light_app_main`.
@@ -164,13 +162,20 @@ impl DisplayMod {
                 }
         }
 
+        fn canvas(frame: &mut [u8]) -> Canvas<'_> {
+                let mut c = Canvas::new(frame, PixelFormat::Rgb565, DISPLAY_WIDTH, DISPLAY_HEIGHT);
+                c.fg = TEXT;
+                c.bg = BG;
+                c
+        }
+
         fn draw_caption(&mut self, now_us: u64) {
                 let Some(frame) = self.display.frame_mut() else { return };
-                let mut fb = Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT };
+                let mut c = Self::canvas(frame);
                 let mut text = StackString::<32>::new();
                 let _ = write!(text, "mk4 {}s {}f", now_us / 1_000_000, self.frames);
                 let font = self.font;
-                if let Some(r) = fb.text(&font, CAPTION_X, CAPTION_Y, text.as_str(), TEXT, BG) {
+                if let Some(r) = c.text_boxed(&font, Point::new(i32::from(CAPTION_X), i32::from(CAPTION_Y)), text.as_str()) {
                         self.caption_dirty = Some(self.caption_dirty.map_or(r, |d| d.union(&r)));
                 }
         }
@@ -187,8 +192,9 @@ impl Module for DisplayMod {
                 self.display.driver().clear(BG);
                 let square = self.square();
                 let frame = self.display.frame_mut().ok_or(())?;
-                Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT }.fill(&Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT), BG);
-                Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT }.fill(&square, FG);
+                let mut c = Self::canvas(frame);
+                c.clear();
+                c.fill_region(&square, FG);
                 self.draw_caption(light_rp2350::now_us());
                 self.caption_dirty = None;
                 self.display.update_async(Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT)).map_err(|_| ())?;
@@ -228,9 +234,9 @@ impl Module for DisplayMod {
                 self.step();
                 let new = self.square();
                 let Some(frame) = self.display.frame_mut() else { return Poll::Busy };
-                let mut fb = Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT };
-                fb.fill(&old, BG);
-                fb.fill(&new, FG);
+                let mut c = Self::canvas(frame);
+                c.fill_region(&old, BG);
+                c.fill_region(&new, FG);
                 let mut region = old.union(&new);
                 if let Some(c) = self.caption_dirty.take() {
                         region = region.union(&c);
@@ -434,7 +440,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         // SAFETY: the one and only reference to FRAME, taken before anything can alias it
         let frame: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
-        let display = Display::new(St7789::new(p.display_bus), frame, DISPLAY_WIDTH, DISPLAY_HEIGHT, BYTES_PER_PIXEL as u16, light_rp2350::now_us);
+        let display = Display::new(St7789::new(p.display_bus), frame, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2350::now_us);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),

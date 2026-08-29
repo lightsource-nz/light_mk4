@@ -82,22 +82,54 @@ pub mod touch169 {
         }
 }
 
-/// A bare Raspberry Pi Pico 2.
+/// The po13 rig: a Raspberry Pi Pico 2 wearing the Waveshare Pico-OLED-1.3 (SH1107, 64x128
+/// portrait glass, 1 bpp) on SPI1, pins from mk3's `light_display_po13.h`.
 pub mod pico2 {
         use super::*;
 
         pub const PIN_LED: usize = 25;
 
+        pub const PIN_OLED_DC: usize = 8;
+        pub const PIN_OLED_CS: usize = 9;
+        pub const PIN_OLED_SCK: usize = 10;
+        pub const PIN_OLED_MOSI: usize = 11;
+        pub const PIN_OLED_RESET: usize = 12;
+        /// The glass is physically portrait: 64 wide, 128 tall (mk3 chased a sideways photo of
+        /// this board for a while before establishing that on the device).
+        pub const OLED_WIDTH: u16 = 64;
+        pub const OLED_HEIGHT: u16 = 128;
+        /// The controller's RAM offset the panel sits at (0xD3), mk3's verified value.
+        pub const OLED_DISPLAY_OFFSET: u8 = 96;
+        /// mk3's `SPI_BAUDRATE` for the OLED rigs; this panel was never re-clocked.
+        pub const OLED_SPI_HZ: u32 = 10_000_000;
+        pub const OLED_DMA_CH: usize = 15;
+
         pub struct Peripherals {
                 pub led: Output,
+                pub oled_bus: Spi1Display,
         }
 
         static TAKEN: AtomicBool = AtomicBool::new(false);
 
-        pub fn take(_clocks: &Clocks) -> Option<Peripherals> {
+        pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                 if TAKEN.swap(true, Ordering::AcqRel) {
                         return None;
                 }
-                Some(Peripherals { led: Output::new(PIN_LED, false) })
+                // SAFETY: the flag above makes this the one construction of each peripheral
+                unsafe {
+                        Some(Peripherals {
+                                led: Output::new(PIN_LED, false),
+                                oled_bus: Spi1Display::new(
+                                        clocks.peri_hz,
+                                        PIN_OLED_SCK,
+                                        PIN_OLED_MOSI,
+                                        PIN_OLED_CS,
+                                        PIN_OLED_DC,
+                                        Some(PIN_OLED_RESET),
+                                        OLED_SPI_HZ,
+                                        OLED_DMA_CH,
+                                ),
+                        })
+                }
         }
 }

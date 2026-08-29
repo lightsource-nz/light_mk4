@@ -137,3 +137,15 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   clock rather than a board. Hardware-verified on the touch169: commands fan out over the bus to
   three subscribers; `Breathe` is the RP2350 idle hook. Not done from the step-2 list:
   deferred (`defmt`-style) log formatting -- same queue contract, later.
+- 2026-08-29 — **plan step 3, first half: the rasteriser and the second panel.**
+  `light_core::draw::Canvas` is mk3's `light_draw` ported with its conventions intact: a 2x3
+  integer transform from rotation and flip (exact inverse for touch input), an inclusive clip
+  every primitive honours, 1 bpp (leftmost pixel in bit 0) and RGB565 formats, lines, rects,
+  rounded rects with per-corner rounding, circles filled from their own outline spans, arcs
+  sampled at half a pixel so joins never open, LGF text. 10 tests, including that every
+  rotation/flip round-trips exactly and that a rounded outline is closed.
+  `light_core::sh1107` is the Pico-OLED-1.3's driver (vertical addressing, one column per
+  chunk, eight per poll), and the Pico 2 app draws the same demo as the touch169 on it through
+  a 90-degree-rotated canvas, mapping logical regions to physical columns through the transform.
+  The touch169 app moved onto `Canvas`. The OLED build is ready; its hardware check waits on
+  the po13 rig being plugged back in.

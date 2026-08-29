@@ -11,3 +11,4 @@ crate-type = ["staticlib"]
 [dependencies]
 light-core = { path = "../../../crates/light-core" }
 light-rp2350 = { path = "../../../crates/light-rp2350" }
+light-font = { path = "../../../crates/light-font" }

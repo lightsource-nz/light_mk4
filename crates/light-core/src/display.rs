@@ -11,6 +11,7 @@
 //! What Rust adds: while an update is in flight the frame buffer cannot be mutated, because
 //! [`Display::frame_mut`] returns `None`. mk3 documented that rule; here it is the borrow.
 
+use crate::draw::PixelFormat;
 use crate::hal::Clock;
 
 /// An inclusive rectangle in physical (panel) coordinates.
@@ -68,15 +69,18 @@ pub struct Frame<'a> {
         pub buf: &'a [u8],
         pub width: u16,
         pub height: u16,
-        pub bytes_per_pixel: u16,
+        pub format: PixelFormat,
+        /// Bytes per row.
+        pub stride: usize,
 }
 
 impl Frame<'_> {
-        /// The bytes of one row-run inside `region` at row `y` (absolute).
+        /// The bytes of one row-run inside `region` at row `y` (absolute). Whole-pixel formats
+        /// only: a packed 1 bpp row has no byte-aligned run for an arbitrary x range.
         pub fn row(&self, region: &Region, y: u16) -> &[u8] {
-                let bpp = self.bytes_per_pixel as usize;
-                let start = (y as usize * self.width as usize + region.x0 as usize) * bpp;
-                let len = region.width() as usize * bpp;
+                debug_assert!(self.format == PixelFormat::Rgb565);
+                let start = y as usize * self.stride + region.x0 as usize * 2;
+                let len = region.width() as usize * 2;
                 &self.buf[start..start + len]
         }
 
@@ -84,10 +88,8 @@ impl Frame<'_> {
         /// spans the full width, which is when consecutive rows are adjacent in memory.
         pub fn rows(&self, region: &Region) -> &[u8] {
                 debug_assert!(region.x0 == 0 && region.x1 == self.width - 1);
-                let bpp = self.bytes_per_pixel as usize;
-                let stride = self.width as usize * bpp;
-                let start = region.y0 as usize * stride;
-                let len = region.height() as usize * stride;
+                let start = region.y0 as usize * self.stride;
+                let len = region.height() as usize * self.stride;
                 &self.buf[start..start + len]
         }
 }
@@ -142,7 +144,7 @@ pub struct Display<'b, D: DisplayDriver> {
         buf: &'b mut [u8],
         width: u16,
         height: u16,
-        bytes_per_pixel: u16,
+        format: PixelFormat,
         update: Option<Update>,
         now: fn() -> u64,
         /// Updates abandoned on a chunk deadline, for the caller to report.
@@ -150,10 +152,14 @@ pub struct Display<'b, D: DisplayDriver> {
 }
 
 impl<'b, D: DisplayDriver> Display<'b, D> {
-        /// `buf` must hold `width * height * bytes_per_pixel` bytes.
-        pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, bytes_per_pixel: u16, now: fn() -> u64) -> Self {
-                assert!(buf.len() >= width as usize * height as usize * bytes_per_pixel as usize);
-                Self { driver, buf, width, height, bytes_per_pixel, update: None, now, timeouts: 0 }
+        /// `buf` must hold `format.buffer_len(width, height)` bytes.
+        pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, format: PixelFormat, now: fn() -> u64) -> Self {
+                assert!(buf.len() >= format.buffer_len(width, height));
+                Self { driver, buf, width, height, format, update: None, now, timeouts: 0 }
+        }
+
+        pub fn format(&self) -> PixelFormat {
+                self.format
         }
 
         pub fn init(&mut self, clock: &mut dyn Clock) {
@@ -193,7 +199,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                         return Ok(());
                 }
                 let per_poll = self.driver.chunks_per_poll(&region);
-                let frame = Frame { buf: self.buf, width: self.width, height: self.height, bytes_per_pixel: self.bytes_per_pixel };
+                let frame = Frame { buf: self.buf, width: self.width, height: self.height, format: self.format, stride: self.format.stride(self.width) };
                 self.driver.kick(&frame, &region, 0);
                 self.update = Some(Update { region, chunk_index: 0, chunk_count, per_poll, chunk_started_us: (self.now)() });
                 Ok(())
@@ -201,9 +207,9 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
 
         /// Advance the update in flight. `Ok(true)` while still busy, `Ok(false)` when idle.
         pub fn poll(&mut self) -> Result<bool, UpdateError> {
-                let Self { driver, buf, width, height, bytes_per_pixel, update, now, timeouts } = self;
+                let Self { driver, buf, width, height, format, update, now, timeouts } = self;
                 let Some(u) = update else { return Ok(false) };
-                let frame = Frame { buf, width: *width, height: *height, bytes_per_pixel: *bytes_per_pixel };
+                let frame = Frame { buf, width: *width, height: *height, format: *format, stride: format.stride(*width) };
                 let budget = u.per_poll;
                 let mut completed = 0u16;
                 loop {
@@ -301,7 +307,7 @@ mod tests {
         }
 
         fn display(buf: &mut [u8], mock: Mock) -> Display<'_, Mock> {
-                Display::new(mock, buf, 16, 8, 2, now)
+                Display::new(mock, buf, 16, 8, PixelFormat::Rgb565, now)
         }
 
         #[test]
@@ -393,7 +399,7 @@ mod tests {
                 for (i, b) in buf.iter_mut().enumerate() {
                         *b = i as u8;
                 }
-                let f = Frame { buf: &buf, width: 16, height: 8, bytes_per_pixel: 2 };
+                let f = Frame { buf: &buf, width: 16, height: 8, format: PixelFormat::Rgb565, stride: 32 };
                 let row = f.row(&Region::new(2, 0, 5, 7), 3);
                 assert_eq!(row.len(), 8);
                 assert_eq!(row[0], ((3 * 16 + 2) * 2) as u8);

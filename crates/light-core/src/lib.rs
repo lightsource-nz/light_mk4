@@ -17,11 +17,13 @@ pub mod hal;
 pub mod log;
 pub mod mailbox;
 pub mod module;
+pub mod sh1107;
 pub mod st7789;
 
 pub use blink::Blinker;
 pub use console::LineReader;
 pub use display::{Display, DisplayDriver, Region, UpdateError};
+pub use draw::{Canvas, Flip, PixelFormat, Point, Rotation};
 pub use events::{EventBus, Subscription};
 pub use hal::{Clock, I2cBus, I2cError, Idle, InputPin, OutputPin, SpiDisplayBus};
 pub use mailbox::Mailbox;
