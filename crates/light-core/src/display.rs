@@ -141,7 +141,10 @@ struct Update {
 
 pub struct Display<'b, D: DisplayDriver> {
         driver: D,
+        /// What updates read from.
         buf: &'b mut [u8],
+        /// Under double buffering, what drawing goes into; swapped with `buf` per frame.
+        back: Option<&'b mut [u8]>,
         width: u16,
         height: u16,
         format: PixelFormat,
@@ -155,7 +158,29 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// `buf` must hold `format.buffer_len(width, height)` bytes.
         pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, format: PixelFormat, now: fn() -> u64) -> Self {
                 assert!(buf.len() >= format.buffer_len(width, height));
-                Self { driver, buf, width, height, format, update: None, now, timeouts: 0 }
+                Self { driver, buf, back: None, width, height, format, update: None, now, timeouts: 0 }
+        }
+
+        /// Give the display a second buffer. Drawing then goes into the back buffer while an
+        /// update reads the front, and [`swap`](Self::swap) exchanges them between frames.
+        pub fn set_back_buffer(&mut self, back: &'b mut [u8]) {
+                assert!(back.len() >= self.format.buffer_len(self.width, self.height));
+                self.back = Some(back);
+        }
+
+        pub fn is_double_buffered(&self) -> bool {
+                self.back.is_some()
+        }
+
+        /// Exchange front and back. Refused while an update is reading the front buffer.
+        pub fn swap(&mut self) -> Result<(), UpdateError> {
+                if self.update.is_some() {
+                        return Err(UpdateError::Busy);
+                }
+                if let Some(back) = self.back.as_mut() {
+                        core::mem::swap(&mut self.buf, back);
+                }
+                Ok(())
         }
 
         pub fn format(&self) -> PixelFormat {
@@ -182,9 +207,20 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                 self.update.is_some()
         }
 
-        /// The frame buffer for drawing -- unless an update is reading it, in which case
-        /// `None`. Poll or wait first.
+        /// The buffer for drawing: the back buffer under double buffering, always available;
+        /// otherwise the one buffer -- unless an update is reading it, in which case `None`.
+        /// Poll or wait first.
         pub fn frame_mut(&mut self) -> Option<&mut [u8]> {
+                match self.back.as_mut() {
+                        Some(back) => Some(back),
+                        None if self.update.is_some() => None,
+                        None => Some(self.buf),
+                }
+        }
+
+        /// The buffer updates read from, for a caller that wants to inspect what is on the way
+        /// to the panel. `None` while an update is reading it.
+        pub fn front(&self) -> Option<&[u8]> {
                 if self.update.is_some() { None } else { Some(self.buf) }
         }
 
@@ -207,7 +243,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
 
         /// Advance the update in flight. `Ok(true)` while still busy, `Ok(false)` when idle.
         pub fn poll(&mut self) -> Result<bool, UpdateError> {
-                let Self { driver, buf, width, height, format, update, now, timeouts } = self;
+                let Self { driver, buf, width, height, format, update, now, timeouts, .. } = self;
                 let Some(u) = update else { return Ok(false) };
                 let frame = Frame { buf, width: *width, height: *height, format: *format, stride: format.stride(*width) };
                 let budget = u.per_poll;

@@ -149,3 +149,15 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   a 90-degree-rotated canvas, mapping logical regions to physical columns through the transform.
   The touch169 app moved onto `Canvas`. The OLED build is ready; its hardware check waits on
   the po13 rig being plugged back in.
+- 2026-08-29 — **plan step 3, second half: the frame layer.** `light_core::frames::FrameLayer`
+  is mk3's `light_canvas` ported with both its contracts -- every frame a full repaint,
+  invalidate means "the panel is wrong here" -- and its subtle rule: what carries to the next
+  frame is what the caller invalidated, never what was pushed. Regions merge where they overlap
+  (transitively, restarting after each merge), stay separate where they do not, collapse to the
+  whole canvas past eight, are re-clipped against the canvas as it is now, and are mapped to the
+  panel through the canvas transform. Disjoint regions are queued and fed to the display one
+  update at a time from `poll`. `Display` gained a back buffer and `swap`. 7 tests, including
+  the carry-forward rule and a rotation forgetting stale regions. Both apps draw through it;
+  the touch169 is double-buffered at 30 fps (hardware-verified: 187 frames in 10 s, 11 skipped,
+  0 chunk timeouts -- below target, being measured). The OLED firmware runs on the po13 rig
+  (LED confirmed over SWD); the panel itself awaits a look.

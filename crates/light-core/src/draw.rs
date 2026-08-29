@@ -87,8 +87,38 @@ impl Transform {
                 }
         }
 
-        fn apply(&self, x: i32, y: i32) -> (i32, i32) {
+        pub fn apply(&self, x: i32, y: i32) -> (i32, i32) {
                 (self.a * x + self.b * y + self.tx, self.c * x + self.d * y + self.ty)
+        }
+
+        /// The logical-to-physical transform a canvas of this geometry and orientation uses.
+        /// Flip is applied first, in logical space; then rotation maps onto the buffer.
+        pub fn for_canvas(rotation: Rotation, flip: Flip, phys_w: u16, phys_h: u16) -> Transform {
+                let (pw, ph) = (i32::from(phys_w), i32::from(phys_h));
+                let (dx, dy) = match rotation {
+                        Rotation::R90 | Rotation::R270 => (ph, pw),
+                        _ => (pw, ph),
+                };
+                let flip = match flip {
+                        Flip::None => Transform::IDENTITY,
+                        Flip::Horizontal => Transform { a: -1, b: 0, tx: dx - 1, c: 0, d: 1, ty: 0 },
+                        Flip::Vertical => Transform { a: 1, b: 0, tx: 0, c: 0, d: -1, ty: dy - 1 },
+                        Flip::Both => Transform { a: -1, b: 0, tx: dx - 1, c: 0, d: -1, ty: dy - 1 },
+                };
+                let rotate = match rotation {
+                        Rotation::R0 => Transform::IDENTITY,
+                        Rotation::R90 => Transform { a: 0, b: -1, tx: pw - 1, c: 1, d: 0, ty: 0 },
+                        Rotation::R180 => Transform { a: -1, b: 0, tx: pw - 1, c: 0, d: -1, ty: ph - 1 },
+                        Rotation::R270 => Transform { a: 0, b: 1, tx: 0, c: -1, d: 0, ty: ph - 1 },
+                };
+                Transform::compose(flip, rotate)
+        }
+
+        /// A logical axis-aligned rectangle's physical bounds.
+        pub fn rect(&self, r: &Region) -> Region {
+                let (ax, ay) = self.apply(i32::from(r.x0), i32::from(r.y0));
+                let (bx, by) = self.apply(i32::from(r.x1), i32::from(r.y1));
+                Region::new(ax.min(bx) as u16, ay.min(by) as u16, ax.max(bx) as u16, ay.max(by) as u16)
         }
 }
 
@@ -188,7 +218,6 @@ impl<'a> Canvas<'a> {
         }
 
         fn recompute(&mut self) {
-                let (pw, ph) = (i32::from(self.phys_w), i32::from(self.phys_h));
                 if matches!(self.rotation, Rotation::R90 | Rotation::R270) {
                         self.dim_x = self.phys_h;
                         self.dim_y = self.phys_w;
@@ -196,21 +225,7 @@ impl<'a> Canvas<'a> {
                         self.dim_x = self.phys_w;
                         self.dim_y = self.phys_h;
                 }
-                let (dx, dy) = (i32::from(self.dim_x), i32::from(self.dim_y));
-                let flip = match self.flip {
-                        Flip::None => Transform::IDENTITY,
-                        Flip::Horizontal => Transform { a: -1, b: 0, tx: dx - 1, c: 0, d: 1, ty: 0 },
-                        Flip::Vertical => Transform { a: 1, b: 0, tx: 0, c: 0, d: -1, ty: dy - 1 },
-                        Flip::Both => Transform { a: -1, b: 0, tx: dx - 1, c: 0, d: -1, ty: dy - 1 },
-                };
-                let rotate = match self.rotation {
-                        Rotation::R0 => Transform::IDENTITY,
-                        Rotation::R90 => Transform { a: 0, b: -1, tx: pw - 1, c: 1, d: 0, ty: 0 },
-                        Rotation::R180 => Transform { a: -1, b: 0, tx: pw - 1, c: 0, d: -1, ty: ph - 1 },
-                        Rotation::R270 => Transform { a: 0, b: 1, tx: 0, c: -1, d: 0, ty: ph - 1 },
-                };
-                // flip first, in logical space; then rotate onto the physical buffer
-                self.transform = Transform::compose(flip, rotate);
+                self.transform = Transform::for_canvas(self.rotation, self.flip, self.phys_w, self.phys_h);
                 //   any clip was expressed in the logical space just redefined
                 self.clip = Region::full(self.dim_x, self.dim_y);
         }
@@ -232,9 +247,7 @@ impl<'a> Canvas<'a> {
         /// A logical axis-aligned rectangle's physical bounds. Every transform here maps
         /// axis-aligned rectangles to axis-aligned rectangles, so two opposite corners suffice.
         pub fn transform_rect(&self, r: &Region) -> Region {
-                let (ax, ay) = self.transform.apply(i32::from(r.x0), i32::from(r.y0));
-                let (bx, by) = self.transform.apply(i32::from(r.x1), i32::from(r.y1));
-                Region::new(ax.min(bx) as u16, ay.min(by) as u16, ax.max(bx) as u16, ay.max(by) as u16)
+                self.transform.rect(r)
         }
 
         /// A physical point back into logical space -- for input, which arrives in the panel's

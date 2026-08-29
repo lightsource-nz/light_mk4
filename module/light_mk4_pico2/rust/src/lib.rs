@@ -9,7 +9,7 @@
 
 use core::fmt::Write;
 use light_core::sh1107::Sh1107;
-use light_core::{info, log, warn, Blinker, Canvas, Display, EventBus, LineReader, Mailbox, Module, PixelFormat, Point, Poll, Region, Rotation, Runtime, Subscription, UpdateError};
+use light_core::{info, log, warn, Blinker, Display, EventBus, Flip, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Rotation, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::pico2::*;
 use light_rp2350::gpio::Output;
@@ -105,52 +105,72 @@ impl Module for LedMod {
 }
 
 const SQUARE: i32 = 12;
-const FRAME_INTERVAL_US: u64 = 50_000;
-const CAPTION: Point = Point::new(2, 2);
+const FPS: u32 = 20;
+const CAPTION: Point = Point::new(4, 3);
 
 /// The OLED, drawn on sideways: the glass is 64x128 portrait, the demo is 128x64 landscape, so
-/// the canvas is rotated 90 degrees and every region the demo reports is mapped to physical
-/// columns for the driver through the same transform.
+/// the frame layer's canvas is rotated 90 degrees and it maps the regions the demo invalidates
+/// to physical columns for the driver through the same transform. Every frame is a full repaint
+/// -- border, caption, square -- and only the changed columns reach the panel.
 struct OledMod {
         display: Display<'static, Sh1107<Spi1Display>>,
+        layer: FrameLayer,
         font: Font<'static>,
         events: Subscription,
         x: i32,
         y: i32,
         dx: i32,
         dy: i32,
-        prev: Option<Region>,
-        next_frame_us: u64,
-        next_caption_us: u64,
-        frames: u32,
-        caption_dirty: Option<Region>,
+        caption: StackString<24>,
+        caption_second: u64,
 }
 
 impl OledMod {
-        fn canvas<'a>(frame: &'a mut [u8]) -> Canvas<'a> {
-                let mut c = Canvas::new(frame, PixelFormat::Mono1, OLED_WIDTH, OLED_HEIGHT);
-                c.set_rotation(Rotation::R90);
-                c.fg = 1;
-                c.bg = 0;
-                c
-        }
-
-        fn square(&self) -> Region {
-                Region::new(self.x as u16, self.y as u16, (self.x + SQUARE - 1) as u16, (self.y + SQUARE - 1) as u16)
+        fn square(&self) -> LogicalRegion {
+                LogicalRegion::new(self.x, self.y, self.x + SQUARE - 1, self.y + SQUARE - 1)
         }
 
         fn step(&mut self, top: i32) {
-                let (w, h) = (i32::from(OLED_HEIGHT), i32::from(OLED_WIDTH)); // logical, rotated
+                let (w, h) = self.layer.logical_size();
+                let (w, h) = (i32::from(w), i32::from(h));
                 self.x += self.dx;
                 self.y += self.dy;
-                if self.x <= 0 || self.x >= w - SQUARE {
+                if self.x <= 1 || self.x >= w - SQUARE - 1 {
                         self.dx = -self.dx;
-                        self.x = self.x.clamp(0, w - SQUARE);
+                        self.x = self.x.clamp(1, w - SQUARE - 1);
                 }
-                if self.y <= top || self.y >= h - SQUARE {
+                if self.y <= top || self.y >= h - SQUARE - 1 {
                         self.dy = -self.dy;
-                        self.y = self.y.clamp(top, h - SQUARE);
+                        self.y = self.y.clamp(top, h - SQUARE - 1);
                 }
+        }
+
+        fn frame(&mut self, now_us: u64) -> bool {
+                let second = now_us / 1_000_000;
+                let caption_changed = second != self.caption_second;
+                if caption_changed {
+                        self.caption_second = second;
+                        self.caption = StackString::new();
+                        let _ = write!(self.caption, "mk4 {}s {}f", second, self.layer.frames());
+                }
+                let top = CAPTION.y + i32::from(self.font.cell_height()) + 2;
+                self.step(top);
+                let square = self.square();
+                let font = self.font;
+                let (w, h) = self.layer.logical_size();
+                let Some(mut c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
+                c.rect_rounded(Point::new(0, 0), Point::new(i32::from(w) - 1, i32::from(h) - 1), 6, light_core::draw::corner::ALL, false);
+                let caption_box = c.text(&font, CAPTION, self.caption.as_str());
+                c.fill_region(&Region::new(square.x0 as u16, square.y0 as u16, square.x1 as u16, square.y1 as u16), 1);
+                drop(c);
+                self.layer.invalidate(square);
+                if caption_changed {
+                        if let Some(r) = caption_box {
+                                self.layer.invalidate(r.into());
+                        }
+                }
+                self.layer.frame_end();
+                true
         }
 }
 
@@ -163,71 +183,31 @@ impl Module for OledMod {
                 self.display.driver().set_display_offset(OLED_DISPLAY_OFFSET);
                 self.display.init(&mut clock);
                 self.display.driver().clear(false);
-                let sq = self.square();
-                let font = self.font;
-                let frame = self.display.frame_mut().ok_or(())?;
-                let mut c = Self::canvas(frame);
-                c.clear();
-                c.rect_rounded(Point::new(0, 0), Point::new(127, 63), 6, light_core::draw::corner::ALL, false);
-                c.text(&font, CAPTION, "mk4 po13");
-                c.fill_region(&sq, 1);
-                self.prev = Some(sq);
-                self.display.update_async(Region::full(OLED_WIDTH, OLED_HEIGHT)).map_err(|_| ())?;
+                self.layer.set_orientation(Rotation::R90, Flip::None);
+                self.layer.set_frame_rate(FPS);
+                self.layer.invalidate_all();
+                self.frame(now_us());
                 info!("oled up: {}x{} glass, {}x{} logical, font {}px cell {}x{}", OLED_WIDTH, OLED_HEIGHT, OLED_HEIGHT, OLED_WIDTH, self.font.pixel_size(), self.font.cell_width(), self.font.cell_height());
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
-                match self.display.poll() {
-                        Ok(true) => return Poll::Busy,
-                        Ok(false) => {}
+                match self.layer.poll(&mut self.display) {
+                        Ok(_) => {}
                         Err(UpdateError::Timeout) => warn!("oled chunk timed out; update abandoned"),
                         Err(UpdateError::Busy) => unreachable!(),
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
                                 AppEvent::Square { x, y } => {
-                                        self.x = (x - SQUARE / 2).clamp(0, i32::from(OLED_HEIGHT) - SQUARE);
-                                        self.y = (y - SQUARE / 2).clamp(0, i32::from(OLED_WIDTH) - SQUARE);
+                                        let (w, h) = self.layer.logical_size();
+                                        self.x = (x - SQUARE / 2).clamp(1, i32::from(w) - SQUARE - 1);
+                                        self.y = (y - SQUARE / 2).clamp(1, i32::from(h) - SQUARE - 1);
                                 }
-                                AppEvent::Stats => info!("oled: {} frames, {} chunk timeouts", self.frames, self.display.timeouts),
+                                AppEvent::Stats => info!("oled: {} frames, {} skipped, {} chunk timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts),
                                 _ => {}
                         }
                 }
-                let now = now_us();
-                if now < self.next_frame_us {
-                        return Poll::Idle;
-                }
-                self.next_frame_us = now + FRAME_INTERVAL_US;
-                let caption_due = now >= self.next_caption_us;
-                if caption_due {
-                        self.next_caption_us = now + 1_000_000;
-                }
-                let top = CAPTION.y + i32::from(self.font.cell_height()) + 2;
-                let old = self.prev.unwrap_or_else(|| self.square());
-                self.step(top);
-                let new = self.square();
-                let font = self.font;
-                let frames = self.frames;
-                let Some(frame) = self.display.frame_mut() else { return Poll::Busy };
-                let mut c = Self::canvas(frame);
-                c.fill_region(&old, 0);
-                c.fill_region(&new, 1);
-                let mut logical = old.union(&new);
-                if caption_due {
-                        let mut text = StackString::<24>::new();
-                        let _ = write!(text, "mk4 {}s {}f", now / 1_000_000, frames);
-                        if let Some(r) = c.text_boxed(&font, CAPTION, text.as_str()) {
-                                logical = logical.union(&r);
-                        }
-                }
-                // the driver addresses physical columns; the demo thinks in logical rows
-                let physical = c.transform_rect(&logical);
-                if self.display.update_async(physical).is_ok() {
-                        self.prev = Some(new);
-                        self.frames += 1;
-                }
-                let _ = self.caption_dirty.take();
-                Poll::Busy
+                if self.frame(now_us()) || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
@@ -312,17 +292,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut led_mod = LedMod { led: p.led, blinker: Blinker::new(500_000), blinking: true, toggles: 0, events: EVENTS.subscribe().expect("slot") };
         let mut oled_mod = OledMod {
                 display,
+                layer: FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1),
                 font,
                 events: EVENTS.subscribe().expect("slot"),
                 x: 20,
                 y: 30,
                 dx: 2,
                 dy: 1,
-                prev: None,
-                next_frame_us: 0,
-                next_caption_us: 0,
-                frames: 0,
-                caption_dirty: None,
+                caption: StackString::new(),
+                caption_second: u64::MAX,
         };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 

@@ -8,14 +8,15 @@
 //! The application is a set of modules over one event bus: the console parses lines into
 //! events, the touch driver publishes touches, and every module subscribes and matches on what
 //! it cares about. The board's peripherals are taken once as an owned set and handed to the
-//! drivers that need them.
+//! drivers that need them. Drawing goes through the frame layer: every frame is a full repaint
+//! into the back buffer, and only what changed reaches the panel.
 
 #![no_std]
 
 use core::fmt::Write;
 use light_core::cst816t::{self, Cst816t};
 use light_core::st7789::St7789;
-use light_core::{info, log, warn, Canvas, Display, EventBus, LineReader, Mailbox, Module, PixelFormat, Point, Poll, Region, Runtime, Subscription, UpdateError};
+use light_core::{info, log, warn, Display, EventBus, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
@@ -42,9 +43,10 @@ pub struct ShellInfo {
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
-/// The frame buffer: 134 KB, so it lives in .bss rather than on the 2 KB main stack. Handed
-/// out exactly once, in `light_app_main`.
-static mut FRAME: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
+/// Two frame buffers, 134 KB each, in .bss: the panel is pushed from one while the next frame
+/// is drawn into the other. Handed out exactly once, in `light_app_main`.
+static mut FRAME_FRONT: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
+static mut FRAME_BACK: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
 
 /// The demo's font, rendered by crush at build time and handed over as a path by
 /// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
@@ -103,81 +105,104 @@ pub extern "C" fn light_app_core1_service() {
 const BG: u16 = 0x0000;
 const FG: u16 = 0xF800; // red, RGB565
 const TEXT: u16 = 0xFFFF;
-const SQUARE: u16 = 24;
-const FRAME_INTERVAL_US: u64 = 33_333;
-const CAPTION_X: u16 = 8;
-const CAPTION_Y: u16 = 8;
+const SQUARE: i32 = 24;
+const CAPTION: Point = Point::new(8, 8);
+const FPS: u32 = 30;
 
-/// Owns the panel. Paints a bouncing square with region updates, honouring the rule that a
-/// region must cover what was drawn before as well as what is drawn now, and a caption in the
-/// build-time font, redrawn once a second. A tap moves the square.
+/// Owns the panel. Every frame repaints the caption and the square; the frame layer works out
+/// which panel pixels changed -- the square's old and new places, the caption when its text
+/// changes -- and pushes only those. A tap moves the square.
 struct DisplayMod {
         display: Display<'static, St7789<Spi1Display>>,
+        layer: FrameLayer,
         font: Font<'static>,
         events: Subscription,
         x: i32,
         y: i32,
         dx: i32,
         dy: i32,
-        prev: Option<Region>,
-        next_frame_us: u64,
-        next_caption_us: u64,
-        frames: u32,
-        caption_dirty: Option<Region>,
+        caption: StackString<32>,
+        caption_second: u64,
+        /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
+        /// push (frame_end until the panel is idle) seen, in microseconds.
+        draw_us_max: u64,
+        push_us_max: u64,
+        push_started_us: Option<u64>,
 }
 
 impl DisplayMod {
-        fn square(&self) -> Region {
-                Region::new(self.x as u16, self.y as u16, self.x as u16 + SQUARE - 1, self.y as u16 + SQUARE - 1)
+        fn square(&self) -> LogicalRegion {
+                LogicalRegion::new(self.x, self.y, self.x + SQUARE - 1, self.y + SQUARE - 1)
         }
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
                         AppEvent::Touch(cst816t::Event::Down { x, y }) | AppEvent::Command(Command::Square { x, y }) => {
-                                self.x = (i32::from(x) - i32::from(SQUARE) / 2).clamp(0, i32::from(DISPLAY_WIDTH - SQUARE));
-                                self.y = (i32::from(y) - i32::from(SQUARE) / 2).clamp(0, i32::from(DISPLAY_HEIGHT - SQUARE));
+                                self.x = (i32::from(x) - SQUARE / 2).clamp(0, i32::from(DISPLAY_WIDTH) - SQUARE);
+                                self.y = (i32::from(y) - SQUARE / 2).clamp(0, i32::from(DISPLAY_HEIGHT) - SQUARE);
                         }
                         AppEvent::Command(Command::Speed { dx, dy }) => {
                                 self.dx = dx;
                                 self.dy = dy;
                         }
                         AppEvent::Command(Command::Stats) => {
-                                info!("display: {} frames, {} chunk timeouts", self.frames, self.display.timeouts);
+                                info!(
+                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
+                                        self.layer.frames(),
+                                        self.layer.skipped,
+                                        self.display.timeouts,
+                                        self.draw_us_max,
+                                        self.push_us_max
+                                );
+                                self.draw_us_max = 0;
+                                self.push_us_max = 0;
                         }
                         _ => {}
                 }
         }
 
         fn step(&mut self) {
-                let top = i32::from(CAPTION_Y) + i32::from(self.font.cell_height()) + 4;
+                let top = CAPTION.y + i32::from(self.font.cell_height()) + 4;
                 self.x += self.dx;
                 self.y += self.dy;
-                if self.x <= 0 || self.x >= i32::from(DISPLAY_WIDTH - SQUARE) {
+                if self.x <= 0 || self.x >= i32::from(DISPLAY_WIDTH) - SQUARE {
                         self.dx = -self.dx;
-                        self.x = self.x.clamp(0, i32::from(DISPLAY_WIDTH - SQUARE));
+                        self.x = self.x.clamp(0, i32::from(DISPLAY_WIDTH) - SQUARE);
                 }
-                if self.y <= top || self.y >= i32::from(DISPLAY_HEIGHT - SQUARE) {
+                if self.y <= top || self.y >= i32::from(DISPLAY_HEIGHT) - SQUARE {
                         self.dy = -self.dy;
-                        self.y = self.y.clamp(top, i32::from(DISPLAY_HEIGHT - SQUARE));
+                        self.y = self.y.clamp(top, i32::from(DISPLAY_HEIGHT) - SQUARE);
                 }
         }
 
-        fn canvas(frame: &mut [u8]) -> Canvas<'_> {
-                let mut c = Canvas::new(frame, PixelFormat::Rgb565, DISPLAY_WIDTH, DISPLAY_HEIGHT);
-                c.fg = TEXT;
-                c.bg = BG;
-                c
-        }
-
-        fn draw_caption(&mut self, now_us: u64) {
-                let Some(frame) = self.display.frame_mut() else { return };
-                let mut c = Self::canvas(frame);
-                let mut text = StackString::<32>::new();
-                let _ = write!(text, "mk4 {}s {}f", now_us / 1_000_000, self.frames);
+        /// One frame: full repaint, invalidate what is wrong on the panel.
+        fn frame(&mut self, now_us: u64) -> bool {
+                let second = now_us / 1_000_000;
+                let caption_changed = second != self.caption_second;
+                if caption_changed {
+                        self.caption_second = second;
+                        self.caption = StackString::new();
+                        let _ = write!(self.caption, "mk4 {}s {}f", second, self.layer.frames());
+                }
+                self.step();
+                let square = self.square();
                 let font = self.font;
-                if let Some(r) = c.text_boxed(&font, Point::new(i32::from(CAPTION_X), i32::from(CAPTION_Y)), text.as_str()) {
-                        self.caption_dirty = Some(self.caption_dirty.map_or(r, |d| d.union(&r)));
+                let Some(mut c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
+                c.fg = TEXT;
+                let caption_box = c.text(&font, CAPTION, self.caption.as_str());
+                c.fill_region(&Region::new(square.x0 as u16, square.y0 as u16, square.x1 as u16, square.y1 as u16), FG);
+                drop(c);
+                self.layer.invalidate(square);
+                if caption_changed {
+                        if let Some(r) = caption_box {
+                                self.layer.invalidate(r.into());
+                        }
                 }
+                self.layer.frame_end();
+                let done = light_rp2350::now_us();
+                self.draw_us_max = self.draw_us_max.max(done - now_us);
+                self.push_started_us = Some(done);
+                true
         }
 }
 
@@ -190,19 +215,16 @@ impl Module for DisplayMod {
                 self.display.init(&mut clock);
                 self.display.driver().set_offset(0, DISPLAY_ROW_OFFSET);
                 self.display.driver().clear(BG);
-                let square = self.square();
-                let frame = self.display.frame_mut().ok_or(())?;
-                let mut c = Self::canvas(frame);
-                c.clear();
-                c.fill_region(&square, FG);
-                self.draw_caption(light_rp2350::now_us());
-                self.caption_dirty = None;
-                self.display.update_async(Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT)).map_err(|_| ())?;
-                self.prev = Some(square);
+                self.layer.set_frame_rate(FPS);
+                self.layer.bg = BG;
+                // the first frame: nothing on the panel corresponds to what is drawn
+                self.layer.invalidate_all();
+                self.frame(light_rp2350::now_us());
                 info!(
-                        "display up: {}x{}, font {}px cell {}x{} ({} glyphs, {} bytes)",
+                        "display up: {}x{}, double-buffered at {} fps, font {}px cell {}x{} ({} glyphs, {} bytes)",
                         DISPLAY_WIDTH,
                         DISPLAY_HEIGHT,
+                        FPS,
                         self.font.pixel_size(),
                         self.font.cell_width(),
                         self.font.cell_height(),
@@ -212,40 +234,21 @@ impl Module for DisplayMod {
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
-                match self.display.poll() {
-                        Ok(true) => return Poll::Busy,
-                        Ok(false) => {}
+                match self.layer.poll(&mut self.display) {
+                        Ok(_) => {}
                         Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
                         Err(UpdateError::Busy) => unreachable!(),
+                }
+                if let Some(started) = self.push_started_us {
+                        if !self.layer.busy(&self.display) {
+                                self.push_us_max = self.push_us_max.max(light_rp2350::now_us() - started);
+                                self.push_started_us = None;
+                        }
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         self.handle(ev);
                 }
-                let now = light_rp2350::now_us();
-                if now < self.next_frame_us {
-                        return Poll::Idle;
-                }
-                self.next_frame_us = now + FRAME_INTERVAL_US;
-                if now >= self.next_caption_us {
-                        self.next_caption_us = now + 1_000_000;
-                        self.draw_caption(now);
-                }
-                let old = self.prev.unwrap_or_else(|| self.square());
-                self.step();
-                let new = self.square();
-                let Some(frame) = self.display.frame_mut() else { return Poll::Busy };
-                let mut c = Self::canvas(frame);
-                c.fill_region(&old, BG);
-                c.fill_region(&new, FG);
-                let mut region = old.union(&new);
-                if let Some(c) = self.caption_dirty.take() {
-                        region = region.union(&c);
-                }
-                if self.display.update_async(region).is_ok() {
-                        self.prev = Some(new);
-                        self.frames += 1;
-                }
-                Poll::Busy
+                if self.frame(light_rp2350::now_us()) || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
@@ -438,9 +441,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, peri {} Hz; spi1 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.touch_bus.actual_hz);
 
-        // SAFETY: the one and only reference to FRAME, taken before anything can alias it
-        let frame: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
-        let display = Display::new(St7789::new(p.display_bus), frame, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2350::now_us);
+        // SAFETY: the one and only references to the frame buffers, taken before anything can
+        // alias them
+        let front: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_FRONT) };
+        let back: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BACK) };
+        let mut display = Display::new(St7789::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2350::now_us);
+        display.set_back_buffer(back);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
@@ -450,17 +456,18 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut display_mod = DisplayMod {
                 display,
+                layer: FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565),
                 font,
                 events: EVENTS.subscribe().expect("subscriber slot"),
                 x: 40,
                 y: 60,
                 dx: 3,
                 dy: 2,
-                prev: None,
-                next_frame_us: 0,
-                next_caption_us: 0,
-                frames: 0,
-                caption_dirty: None,
+                caption: StackString::new(),
+                caption_second: u64::MAX,
+                draw_us_max: 0,
+                push_us_max: 0,
+                push_started_us: None,
         };
         let mut touch_mod = TouchMod { touch, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
