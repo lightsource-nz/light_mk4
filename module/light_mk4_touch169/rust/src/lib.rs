@@ -263,7 +263,7 @@ impl DisplayMod {
                                 self.caption_dirty = false;
                         }
                 }
-                self.layer.frame_end();
+                self.layer.frame_end(&mut self.display);
                 let done = light_rp2350::now_us();
                 self.draw_us_max = self.draw_us_max.max(done - now_us);
                 self.push_started_us = Some(done);
@@ -328,6 +328,9 @@ struct TouchMod {
         touch: Cst816t<&'static RefCell<I2c1>, Input, Output>,
         tracker: Tracker,
         events: Subscription,
+        /// Move samples seen during the touch in progress, reported on its release: tells a
+        /// tap from a drag the controller chopped into pieces.
+        moves: u32,
 }
 
 impl Module for TouchMod {
@@ -361,13 +364,16 @@ impl Module for TouchMod {
                 let now_ms = (light_rp2350::now_us() / 1000) as u32;
                 let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
                 match ev {
-                        cst816t::Event::Down { x, y } => info!("touch down at {x},{y}"),
-                        cst816t::Event::Up => info!("touch up"),
+                        cst816t::Event::Down { x, y } => {
+                                self.moves = 0;
+                                info!("touch down at {x},{y}");
+                        }
+                        cst816t::Event::Up => info!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
                         cst816t::Event::Reset => match self.touch.probe() {
                                 Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
                                 Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
                         },
-                        cst816t::Event::Move { .. } => {}
+                        cst816t::Event::Move { .. } => self.moves += 1,
                 }
                 if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
                         warn!("event bus full; dropped {e:?}");
@@ -587,7 +593,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 push_us_max: 0,
                 push_started_us: None,
         };
-        let mut touch_mod = TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut touch_mod = TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
         let mut rt: Runtime<5> = Runtime::new();

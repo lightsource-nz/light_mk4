@@ -189,7 +189,7 @@ impl OledMod {
                                 self.caption_dirty = false;
                         }
                 }
-                self.layer.frame_end();
+                self.layer.frame_end(&mut self.display);
                 true
         }
 }

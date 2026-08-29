@@ -218,12 +218,6 @@ impl FrameLayer {
                         }
                         return None;
                 }
-                if display.is_double_buffered() {
-                        // the buffer about to be drawn into is the one the update before last
-                        // read; the one being swapped OUT is what the last update has just
-                        // finished reading
-                        display.swap().ok()?;
-                }
                 // set forward from now rather than accumulated, so a stall does not leave a
                 // backlog of deadlines to burn through
                 self.next_frame_us = now_us + self.frame_interval_us;
@@ -252,14 +246,22 @@ impl FrameLayer {
                 let _ = self.regions.push(LogicalRegion::new(0, 0, i32::from(w) - 1, i32::from(h) - 1));
         }
 
-        /// Close the frame: queue this frame's regions plus last frame's -- merged where they
-        /// overlap, separate where they do not -- as physical updates, then carry only what
-        /// the caller invalidated this frame.
-        pub fn frame_end(&mut self) {
+        /// Close the frame: under double buffering, swap so the buffer just drawn is the one
+        /// updates read; then queue this frame's regions plus last frame's -- merged where
+        /// they overlap, separate where they do not -- as physical updates, and carry only
+        /// what the caller invalidated this frame.
+        ///
+        /// The swap is HERE, not at the next `frame_begin`: swapping late meant every push read
+        /// the previous frame, and a moving square left its old positions on the panel as a
+        /// trail while the buffer was correct all along.
+        pub fn frame_end<D: DisplayDriver>(&mut self, display: &mut Display<'_, D>) {
                 if !self.frame_open {
                         return;
                 }
                 self.frame_open = false;
+                // cannot fail: frame_begin required nothing in flight, and nothing starts an
+                // update between begin and end
+                let _ = display.swap();
                 let (w, h) = self.logical_size();
                 let mut push: Vec<LogicalRegion, MAX_REGIONS> = Vec::new();
                 let mut fits = true;
@@ -352,7 +354,7 @@ mod tests {
                         let c = layer.frame_begin(display, now()).expect("frame");
                         drop(c);
                         layer.invalidate(LogicalRegion::new(x, 0, x + 1, 1));
-                        layer.frame_end();
+                        layer.frame_end(display);
                         flush(layer, display)
                 };
                 assert_eq!(frame(&mut layer, &mut display, 0), [Region::new(0, 0, 1, 1)]);
@@ -377,7 +379,7 @@ mod tests {
                 layer.invalidate(LogicalRegion::new(6, 0, 8, 2));
                 //   the bridge touches both: one region results, not three
                 layer.invalidate(LogicalRegion::new(2, 1, 6, 1));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 assert_eq!(flush(&mut layer, &mut display), [Region::new(0, 0, 8, 2)]);
         }
 
@@ -390,7 +392,7 @@ mod tests {
                 layer.invalidate(LogicalRegion::new(16, 3, 14, 1));
                 layer.invalidate(LogicalRegion::new(-5, -5, 1, 1));
                 layer.invalidate(LogicalRegion::new(30, 30, 40, 40));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 let mut pushed = flush(&mut layer, &mut display);
                 pushed.sort_by_key(|r| r.x0);
                 assert_eq!(pushed, [Region::new(0, 0, 1, 1), Region::new(14, 1, 15, 3)]);
@@ -407,7 +409,7 @@ mod tests {
                         layer.invalidate(LogicalRegion::new(x, 0, x, 0));
                 }
                 layer.invalidate(LogicalRegion::new(0, 4, 0, 4));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 assert_eq!(flush(&mut layer, &mut display), [Region::full(16, 8)]);
         }
 
@@ -418,7 +420,7 @@ mod tests {
                 let c = layer.frame_begin(&mut display, now()).unwrap();
                 drop(c);
                 layer.invalidate(LogicalRegion::new(0, 0, 3, 1));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 let _ = flush(&mut layer, &mut display);
                 // logical 8x16 now; the carried region from the old space must not survive
                 layer.set_orientation(Rotation::R90, Flip::None);
@@ -426,7 +428,7 @@ mod tests {
                 let c = layer.frame_begin(&mut display, now()).unwrap();
                 drop(c);
                 layer.invalidate(LogicalRegion::new(0, 0, 1, 3));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 //   logical top-left under R90 is the physical top-right: x 12..15, y 0..1
                 assert_eq!(flush(&mut layer, &mut display), [Region::new(12, 0, 15, 1)]);
         }
@@ -439,7 +441,7 @@ mod tests {
                 NOW.store(0, Ordering::Relaxed);
                 assert!(layer.frame_begin(&mut display, 0).is_some());
                 layer.invalidate(LogicalRegion::new(0, 0, 0, 0));
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 //   pending, not yet started: a new frame is refused for being busy, and once a
                 // whole interval has gone by that way it counts as a skipped frame -- once
                 assert!(layer.busy(&display));
@@ -452,12 +454,12 @@ mod tests {
                 //   ...and for the deadline: 10 fps is a frame every 100 ms from the last
                 assert!(layer.frame_begin(&mut display, 50_000).is_none());
                 assert!(layer.frame_begin(&mut display, 200_000).is_some());
-                layer.frame_end();
+                layer.frame_end(&mut display);
                 assert_eq!(layer.frames(), 2);
         }
 
         #[test]
-        fn double_buffering_draws_into_the_back_and_pushes_the_front() {
+        fn double_buffering_pushes_the_frame_just_drawn_not_the_one_before() {
                 let mut front = [0u8; 16];
                 let mut back = [0u8; 16];
                 let (mut layer, mut display) = rig(&mut front);
@@ -466,14 +468,18 @@ mod tests {
                 c.set(0, 0, 1);
                 drop(c);
                 layer.invalidate(LogicalRegion::new(0, 0, 0, 0));
-                layer.frame_end();
-                //   the pixel is in the back buffer; nothing has been swapped yet, so the
-                // front (what is pushed) is still blank -- the swap happens at the NEXT begin
-                assert_eq!(display.front().unwrap()[0], 0);
+                layer.frame_end(&mut display);
+                //   closing the frame is what makes the drawn buffer the front: the pushes
+                // queued by frame_end read THIS frame. Swapping at the next begin instead sent
+                // every push the previous frame's pixels, and a moving square left a trail.
+                assert_eq!(display.front().unwrap()[0], 1, "the frame just drawn is what the panel gets");
                 let _ = flush(&mut layer, &mut display);
+                //   the next frame draws into the other buffer, cleared: the pixel is gone
+                // from the canvas until it is drawn again, which is the full-repaint contract
                 let c = layer.frame_begin(&mut display, now()).unwrap();
+                assert_eq!(c.get(0, 0), 0);
                 drop(c);
-                layer.frame_end();
-                assert_eq!(display.front().unwrap()[0], 1, "swapped in, and pushed from here");
+                layer.frame_end(&mut display);
+                assert_eq!(display.front().unwrap()[0], 0);
         }
 }
