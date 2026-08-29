@@ -70,3 +70,17 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   wedge -- suggestive, not decisive). Next step is a logic analyser on SCL/SDA/INT during a
   wedge, not more inference. Not a spike blocker: the Rust I2C/SPI/DMA paths reproduce mk3's
   behaviour, including its bug.
+- 2026-08-29 — **milestone 4 hardware-verified: console and the core-1 worker.** TinyUSB lives on
+  core 1 in the C shell (mk3's arrangement for this board: `tusb_init`/`tud_task` there, core 0
+  never touches stdio), and core 1 calls a Rust service that drains the log queue and feeds CDC
+  bytes into a `Mailbox<u8>`; core 0's console module turns them into lines and commands, and
+  commands into events in typed mailboxes (`light_core::mailbox`) the display, touch and board
+  modules consume -- the string front-end of the event bus, replacing the ad-hoc static. Every
+  command round-trips; `quit` runs the orderly shutdown (display cleared, backlight off, "runtime
+  stopped cleanly" logged by core 1 after core 0's loop has ended). Panics on either core are
+  handed to core 1 to print, then the board drops into BOOTSEL so it stays flashable. FFI is
+  now four functions (`light_app_main`, `light_app_core1_service` in; `light_shell_log`,
+  `light_shell_read_byte`, `light_shell_panic` out -- five, counting the SDK panic hook). The
+  spinlock critical section is now genuinely contended across cores and holds. 32 host tests.
+  Lost an hour to a host-side artefact: .NET `SerialPort.Write(string)` turned every LF but the
+  last into a space; byte writes do not. The device path was right all along.
