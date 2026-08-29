@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+        "crates/light-core",
+        "crates/light-rp2350",
+        "module/light_mk4_touch169/rust",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+
+#   the firmware is linked by pico-sdk's CMake, which owns panic handling -- Rust panics are
+# handed to the C shell (see apps/touch169/rust), so unwinding tables are dead weight
+[profile.dev]
+panic = "abort"
+#   -O0 Rust is far larger and slower than pico-sdk's -Og C; opt-level 1 keeps debug builds
+# debuggable without making the firmware unrepresentative
+opt-level = 1
+debug = true
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+debug = true
+lto = "fat"
+codegen-units = 1

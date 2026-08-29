@@ -1,0 +1,12 @@
+[package]
+name = "light-rp2350"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "RP2350 board access for the light framework via rp235x-pac (mk4 spike)"
+
+[dependencies]
+light-core = { path = "../light-core" }
+#   no `rt` feature: the vector table, reset handler and linker script belong to pico-sdk's
+# runtime in the C shell. This crate only wants the register definitions
+rp235x-pac = { version = "0.2", default-features = false }

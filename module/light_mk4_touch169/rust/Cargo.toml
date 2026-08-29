@@ -1,0 +1,15 @@
+[package]
+name = "light_app_touch169"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "the Rust half of the touch169 spike firmware, linked into a pico-sdk executable"
+
+[lib]
+#   a staticlib is what Corrosion hands to CMake for the C shell to link. No rlib: nothing
+# else in the workspace depends on this crate
+crate-type = ["staticlib"]
+
+[dependencies]
+light-core = { path = "../../../crates/light-core" }
+light-rp2350 = { path = "../../../crates/light-rp2350" }

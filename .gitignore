@@ -1,0 +1,9 @@
+# board-specific trees alongside the default one -- same convention as the framework
+build*/
+stage/
+target/
+CMakeUserPresets.json
+.vscode/*.log
+.vscode/.cortex-debug.*
+# machine-specific tool and dependency paths -- see the framework's user.config.example.ps1
+user.config.ps1
