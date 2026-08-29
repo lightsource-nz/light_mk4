@@ -20,6 +20,7 @@ mod critical;
 pub mod boards;
 pub mod gpio;
 pub mod i2c;
+pub mod pwm;
 pub mod spi;
 
 use light_core::{Clock, Idle};

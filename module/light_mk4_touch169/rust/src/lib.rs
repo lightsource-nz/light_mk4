@@ -81,7 +81,8 @@ enum AppEvent {
 #[derive(Clone, Copy, Debug)]
 enum Command {
         Stats,
-        Backlight(bool),
+        /// A backlight level, 0..=BACKLIGHT_LEVEL_MAX.
+        Backlight(u16),
         /// The UI events as commands: `ui focus next|prev`, `ui activate`, `ui press X Y`,
         /// `ui back`. Most of their value is on a bring-up rig: a console drives a board whose
         /// only physical input is a touch panel, and a host script replays an interaction.
@@ -144,6 +145,9 @@ const FPS: u32 = 30;
 const BG: u16 = 0x0000;
 const FG: u16 = 0xFFFF;
 
+/// A tenth: the panel stays readable, the way an idle device dims rather than goes dark.
+const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
+
 const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
 const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
 
@@ -157,8 +161,8 @@ static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 demo").rounded(CORNER_RAD
 static LBL_DETAIL: Desc<AppEvent> = Desc::label("swipe right to go back");
 //   the whole press IS the command: no handler, the button emits the same event the console's
 // `backlight off` does
-static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(false)));
-static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(true)));
+static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_DIM)));
+static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_LEVEL_MAX)));
 static BTN_BACK: Desc<AppEvent> = Desc::button("< Back").back();
 static DETAIL_WINDOW: Desc<AppEvent> = Desc::window("More").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
 
@@ -491,7 +495,7 @@ impl Module for ImuMod {
 
 /// Owns the backlight.
 struct BoardMod {
-        backlight: Output,
+        backlight: light_rp2350::pwm::PwmOutput,
         events: Subscription,
 }
 
@@ -500,22 +504,22 @@ impl Module for BoardMod {
                 "board"
         }
         fn load(&mut self) -> Result<(), ()> {
-                self.backlight.set(true);
+                self.backlight.set_duty(BACKLIGHT_LEVEL_MAX);
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Backlight(on)) = ev {
+                        if let AppEvent::Command(Command::Backlight(level)) = ev {
                                 busy = true;
-                                self.backlight.set(on);
-                                info!("backlight {}", if on { "on" } else { "off" });
+                                self.backlight.set_duty(level);
+                                info!("backlight {level}");
                         }
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
-                self.backlight.set(false);
+                self.backlight.set_duty(0);
         }
 }
 
@@ -533,18 +537,17 @@ impl ConsoleMod {
                 let mut args = words;
                 let event = match cmd {
                         "help" => {
-                                info!("commands: help | stats | backlight on|off | ui focus next|prev | ui activate | ui press X Y | ui back | loglevel error|warn|info|debug|trace | quit");
+                                info!("commands: help | stats | backlight N | ui focus next|prev | ui activate | ui press X Y | ui back | loglevel error|warn|info|debug|trace | quit");
                                 None
                         }
                         "stats" => {
                                 info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
                                 Some(Command::Stats)
                         }
-                        "backlight" => match args.next() {
-                                Some("on") => Some(Command::Backlight(true)),
-                                Some("off") => Some(Command::Backlight(false)),
+                        "backlight" => match args.next().and_then(|s| s.parse::<u16>().ok()) {
+                                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Some(Command::Backlight(level)),
                                 _ => {
-                                        warn!("usage: backlight on|off");
+                                        warn!("usage: backlight 0..{}", BACKLIGHT_LEVEL_MAX);
                                         None
                                 }
                         },

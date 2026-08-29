@@ -51,9 +51,14 @@ pub mod touch169 {
         /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
         pub const DISPLAY_DMA_CH: usize = 15;
 
+        /// Backlight levels run `0..=BACKLIGHT_LEVEL_MAX`, mk3's scale.
+        pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
+        pub const BACKLIGHT_CARRIER_HZ: u32 = 30_000;
+
         pub struct Peripherals {
                 pub display_bus: Spi1Display,
-                pub backlight: Output,
+                /// PWM-driven; starts dark.
+                pub backlight: crate::pwm::PwmOutput,
                 pub touch_bus: I2c1,
                 pub touch_int: Input,
                 pub touch_reset: Output,
@@ -80,7 +85,7 @@ pub mod touch169 {
                                         DISPLAY_SPI_HZ,
                                         DISPLAY_DMA_CH,
                                 ),
-                                backlight: Output::new(PIN_DISPLAY_BL, false),
+                                backlight: crate::pwm::PwmOutput::new(PIN_DISPLAY_BL, clocks.sys_hz, BACKLIGHT_CARRIER_HZ, BACKLIGHT_LEVEL_MAX),
                                 touch_bus: I2c1::new(clocks.sys_hz, PIN_TOUCH_SCL, PIN_TOUCH_SDA, TOUCH_I2C_HZ),
                                 touch_int: Input::new_pull_up(PIN_TOUCH_INT),
                                 touch_reset: Output::new(PIN_TOUCH_RST, true),
