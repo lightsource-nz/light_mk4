@@ -58,6 +58,12 @@ impl OutputPin for Output {
         }
 }
 
+impl Output {
+        pub fn pin(&self) -> usize {
+                self.pin
+        }
+}
+
 /// An input with the internal pull-up.
 pub struct Input {
         pin: usize,

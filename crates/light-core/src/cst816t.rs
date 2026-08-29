@@ -9,7 +9,7 @@
 //! of the first cut of this port, and the panel went deaf after four taps on the first run: the
 //! failure mk3 documented, reproduced on the first try. The war stories are the spec.
 
-use crate::bus::{Clock, I2cBus, InputPin, OutputPin};
+use crate::hal::{Clock, I2cBus, InputPin, OutputPin};
 
 pub const I2C_ADDR: u8 = 0x15;
 pub const REG_GESTURE: u8 = 0x01;
@@ -122,7 +122,7 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
         /// Read the chip ID. `Ok(Some(id))` when it answered, `Ok(None)` when the ID is not the
         /// expected one (log and continue: the map comes from open-source drivers, not a primary
         /// datasheet), `Err` when the bus did not answer at all.
-        pub fn probe(&mut self) -> Result<Option<u8>, crate::bus::I2cError> {
+        pub fn probe(&mut self) -> Result<Option<u8>, crate::hal::I2cError> {
                 let mut id = [0u8];
                 self.bus.read_register(I2C_ADDR, REG_CHIP_ID, &mut id)?;
                 Ok(if id[0] == CHIP_ID { Some(id[0]) } else { None })
@@ -215,9 +215,9 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
                 if let Err(e) = self.bus.read_register(I2C_ADDR, REG_GESTURE, &mut data) {
                         self.failures = self.failures.wrapping_add(1);
                         match e {
-                                crate::bus::I2cError::Nack => self.nacks += 1,
-                                crate::bus::I2cError::Timeout => self.timeouts += 1,
-                                crate::bus::I2cError::Bus => self.bus_errors += 1,
+                                crate::hal::I2cError::Nack => self.nacks += 1,
+                                crate::hal::I2cError::Timeout => self.timeouts += 1,
+                                crate::hal::I2cError::Bus => self.bus_errors += 1,
                         }
                         if self.unanswered < QUIET_AFTER_FAILS {
                                 self.unanswered += 1;
@@ -261,7 +261,7 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
 #[cfg(test)]
 mod tests {
         use super::*;
-        use crate::bus::I2cError;
+        use crate::hal::I2cError;
         use core::cell::{Cell, RefCell};
         use std::rc::Rc;
         use std::vec::Vec;

@@ -11,7 +11,7 @@
 //! What Rust adds: while an update is in flight the frame buffer cannot be mutated, because
 //! [`Display::frame_mut`] returns `None`. mk3 documented that rule; here it is the borrow.
 
-use crate::bus::Clock;
+use crate::hal::Clock;
 
 /// An inclusive rectangle in physical (panel) coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

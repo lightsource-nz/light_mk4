@@ -122,4 +122,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   for `include_bytes!(env!("LIGHT_FONT_LGF"))`, ordered ahead of cargo via `cargo-prebuild_`.
   Verified from a clean tree: render at step 9, link at 110. `light_core::draw` gained
   `Rgb565::{fill,text}` (host-tested), and the touch169 demo captions the panel in the 16 px
-  face crush rendered for it. Visual check pending the board being on the bench.
+  face crush rendered for it. **Hardware-verified**: the caption reads correctly on the panel;
+  the blob is 3,620 bytes for 94 glyphs where mk3 compiled ~20 KB of generated C.
+- 2026-08-29 — **plan step 2, hardening the core from the spike.** `light_core::hal` is the port
+  interface, written down from the primitives the spike actually used (Clock, Idle, OutputPin,
+  InputPin, SpiDisplayBus, I2cBus, plus the `critical-section` impl) and nothing else.
+  `light_core::events::EventBus` replaces the per-consumer static mailboxes: one app-defined
+  event type, any producer, every subscriber sees every event in order, refuse-and-count when
+  the slowest subscriber has not caught up (5 tests, including a 4-thread conservation check).
+  The console publishes commands, the touch driver publishes touches, modules subscribe.
+  `light_rp2350::boards::{touch169, pico2}::take()` hands each board's peripherals over once as
+  an owned set -- the `steal()`-with-a-comment is gone -- and the clocks come from the shell that
+  configured them (`light_shell_info`) instead of being assumed. `Blinker` takes a pin and a
+  clock rather than a board. Hardware-verified on the touch169: commands fan out over the bus to
+  three subscribers; `Breathe` is the RP2350 idle hook. Not done from the step-2 list:
+  deferred (`defmt`-style) log formatting -- same queue contract, later.

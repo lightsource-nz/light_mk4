@@ -1,7 +1,7 @@
 //! ST7789 controller driver over a 4-wire SPI display bus. Ported from mk3's
 //! `light_display_st7789`, including the row offset that board found by measurement.
 
-use crate::bus::{Clock, SpiDisplayBus};
+use crate::hal::{Clock, SpiDisplayBus};
 use crate::display::{DisplayDriver, Frame, Region};
 
 pub const CMD_SWRESET: u8 = 0x01;

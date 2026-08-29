@@ -8,9 +8,6 @@ use rp235x_pac as pac;
 
 use crate::gpio::{self, Output};
 
-/// clk_peri as pico-sdk's runtime configures it on RP2350: undivided clk_sys, 150 MHz.
-const CLK_PERI_HZ: u32 = 150_000_000;
-
 pub struct Spi1Display {
         cs: Output,
         dc: Output,
@@ -19,6 +16,8 @@ pub struct Spi1Display {
         /// pico-sdk's `dma_claim_unused_channel` (counting up from 0) will not reach in a shell
         /// that uses none -- a convention, not a claim the SDK can see.
         dma_ch: usize,
+        /// clk_peri, from the shell that configured it: the divider search needs the real input.
+        clk_peri_hz: u32,
         pub actual_hz: u32,
 }
 
@@ -27,7 +26,8 @@ impl Spi1Display {
         ///
         /// Takes SPI1 and DMA channel `dma_ch`, which nothing else -- Rust or the C shell --
         /// may use while this lives. Construct once.
-        pub unsafe fn new(sck: usize, mosi: usize, cs: usize, dc: usize, reset: Option<usize>, hz: u32, dma_ch: usize) -> Self {
+        #[allow(clippy::too_many_arguments)]
+        pub unsafe fn new(clk_peri_hz: u32, sck: usize, mosi: usize, cs: usize, dc: usize, reset: Option<usize>, hz: u32, dma_ch: usize) -> Self {
                 gpio::set_function(sck, gpio::FUNC_SPI);
                 gpio::set_function(mosi, gpio::FUNC_SPI);
                 let cs = Output::new(cs, true);
@@ -39,7 +39,7 @@ impl Spi1Display {
                 resets.reset().modify(|_, w| w.spi1().clear_bit());
                 while resets.reset_done().read().spi1().bit_is_clear() {}
 
-                let mut bus = Self { cs, dc, reset, dma_ch, actual_hz: 0 };
+                let mut bus = Self { cs, dc, reset, dma_ch, clk_peri_hz, actual_hz: 0 };
                 bus.set_baudrate(hz);
                 let spi = unsafe { &*pac::SPI1::ptr() };
                 // 8-bit, Motorola frame format, mode 0, MSB first (the only order the PL022 has)
@@ -55,16 +55,17 @@ impl Spi1Display {
         /// achieved rate is generally not the requested one; `actual_hz` says what it is.
         pub fn set_baudrate(&mut self, hz: u32) -> u32 {
                 let spi = unsafe { &*pac::SPI1::ptr() };
+                let freq_in = self.clk_peri_hz;
                 let mut prescale = 2u32;
                 while prescale <= 254 {
-                        if (CLK_PERI_HZ as u64) < prescale as u64 * 256 * hz as u64 {
+                        if (freq_in as u64) < prescale as u64 * 256 * hz as u64 {
                                 break;
                         }
                         prescale += 2;
                 }
                 let mut postdiv = 256u32;
                 while postdiv > 1 {
-                        if CLK_PERI_HZ / (prescale * (postdiv - 1)) > hz {
+                        if freq_in / (prescale * (postdiv - 1)) > hz {
                                 break;
                         }
                         postdiv -= 1;
@@ -76,7 +77,7 @@ impl Spi1Display {
                 if was_enabled {
                         spi.sspcr1().modify(|_, w| w.sse().set_bit());
                 }
-                self.actual_hz = CLK_PERI_HZ / (prescale * postdiv);
+                self.actual_hz = freq_in / (prescale * postdiv);
                 self.actual_hz
         }
 

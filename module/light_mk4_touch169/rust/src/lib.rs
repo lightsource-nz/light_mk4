@@ -1,29 +1,28 @@
-//! The Rust side of the touch169 spike firmware.
+//! The Rust side of the touch169 firmware.
 //!
-//! The C shell (`../src/main.c`) brings the pico-sdk runtime up, puts TinyUSB on core 1, and
-//! calls `light_app_main` on core 0, which never returns. Core 1 calls `light_app_core1_service`
-//! from its USB loop. Everything the shell provides to Rust is declared in the one `extern`
-//! block below, so the size of the FFI surface -- one of the things the spike measures -- can be
-//! read off this file.
+//! The C shell (`module/light_mk4_shell`) brings the pico-sdk runtime up, puts TinyUSB on
+//! core 1, and calls `light_app_main` on core 0 with the clocks it configured; it never returns.
+//! Core 1 calls `light_app_core1_service` from its USB loop. Everything the shell provides to
+//! Rust is declared in the one `extern` block below.
 //!
-//! Milestone 4: a console. Core 1 reads bytes from the CDC port and drains the log queue; core 0
-//! turns the bytes into lines, the lines into commands, and the commands into events in typed
-//! mailboxes that the display, touch and board modules consume. The mailboxes replace the
-//! ad-hoc static the touch module used to reach the display through.
+//! The application is a set of modules over one event bus: the console parses lines into
+//! events, the touch driver publishes touches, and every module subscribes and matches on what
+//! it cares about. The board's peripherals are taken once as an owned set and handed to the
+//! drivers that need them.
 
 #![no_std]
 
 use core::fmt::Write;
-use light_core::cst816t::{Cst816t, Event};
+use light_core::cst816t::{self, Cst816t};
 use light_core::draw::Rgb565;
 use light_core::st7789::St7789;
-use light_core::{info, log, warn, Board, Display, LineReader, Mailbox, Module, Poll, Region, Runtime, UpdateError};
+use light_core::{info, log, warn, Display, EventBus, LineReader, Mailbox, Module, Poll, Region, Runtime, Subscription, UpdateError};
 use light_font::Font;
+use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
 use light_rp2350::i2c::I2c1;
 use light_rp2350::spi::Spi1Display;
-use light_rp2350::touch169::*;
-use light_rp2350::{Backlight, SysClock};
+use light_rp2350::{Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
         /// Hands a Rust panic to the shell, which prints it from the core that owns USB and
@@ -33,6 +32,13 @@ unsafe extern "C" {
         fn light_shell_log(msg: *const u8, len: usize);
         /// One byte of console input, or -1. Core 1 only.
         fn light_shell_read_byte() -> i32;
+}
+
+/// What the shell hands over: the clocks its runtime configured.
+#[repr(C)]
+pub struct ShellInfo {
+        clk_sys_hz: u32,
+        clk_peri_hz: u32,
 }
 
 const BYTES_PER_PIXEL: usize = 2;
@@ -46,35 +52,33 @@ static mut FRAME: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
 /// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
-// --- the mailboxes: how modules, and core 1, reach each other ---------------------------------
+// --- the event bus --------------------------------------------------------------------------
 
+/// Everything that happens in this application, as one type. The console is one producer of
+/// `Command`s; a test, a boot script or a UI would be others, without going through text.
 #[derive(Clone, Copy, Debug)]
-enum DisplayEvent {
-        MoveTo { x: u16, y: u16 },
-        Speed { dx: i32, dy: i32 },
-        ReportStats,
+enum AppEvent {
+        Touch(cst816t::Event),
+        Command(Command),
 }
 
 #[derive(Clone, Copy, Debug)]
-enum TouchEvent {
-        ReportStats,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum BoardEvent {
+enum Command {
+        Stats,
         Backlight(bool),
+        Square { x: u16, y: u16 },
+        Speed { dx: i32, dy: i32 },
 }
 
-static DISPLAY_EVENTS: Mailbox<DisplayEvent, 8> = Mailbox::new();
-static TOUCH_EVENTS: Mailbox<TouchEvent, 4> = Mailbox::new();
-static BOARD_EVENTS: Mailbox<BoardEvent, 4> = Mailbox::new();
+/// 16 events deep, 4 subscribers: display, touch, board, and one spare.
+static EVENTS: EventBus<AppEvent, 16, 4> = EventBus::new();
 /// Raw console bytes, core 1 → core 0. Sized for a burst of pasted text.
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
 fn log_sink(record: &log::Record) {
-        let mut line = StackBuf::<160> { buf: [0; 160], len: 0 };
+        let mut line = StackString::<160>::new();
         let _ = write!(line, "{record}");
         unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
 }
@@ -103,20 +107,16 @@ const FG: u16 = 0xF800; // red, RGB565
 const TEXT: u16 = 0xFFFF;
 const SQUARE: u16 = 24;
 const FRAME_INTERVAL_US: u64 = 33_333;
-/// Where the caption sits; the square keeps below it.
 const CAPTION_X: u16 = 8;
 const CAPTION_Y: u16 = 8;
 
-fn fill_rect(buf: &mut [u8], width: u16, r: &Region, color: u16) {
-        Rgb565 { buf, width, height: DISPLAY_HEIGHT }.fill(r, color);
-}
-
 /// Owns the panel. Paints a bouncing square with region updates, honouring the rule that a
-/// region must cover what was drawn before as well as what is drawn now -- and a caption in
-/// the build-time font, redrawn once a second.
+/// region must cover what was drawn before as well as what is drawn now, and a caption in the
+/// build-time font, redrawn once a second. A tap moves the square.
 struct DisplayMod {
         display: Display<'static, St7789<Spi1Display>>,
         font: Font<'static>,
+        events: Subscription,
         x: i32,
         y: i32,
         dx: i32,
@@ -125,7 +125,6 @@ struct DisplayMod {
         next_frame_us: u64,
         next_caption_us: u64,
         frames: u32,
-        /// A caption waiting to be pushed with the next region update.
         caption_dirty: Option<Region>,
 }
 
@@ -134,19 +133,20 @@ impl DisplayMod {
                 Region::new(self.x as u16, self.y as u16, self.x as u16 + SQUARE - 1, self.y as u16 + SQUARE - 1)
         }
 
-        fn handle(&mut self, ev: DisplayEvent) {
+        fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        DisplayEvent::MoveTo { x, y } => {
+                        AppEvent::Touch(cst816t::Event::Down { x, y }) | AppEvent::Command(Command::Square { x, y }) => {
                                 self.x = (i32::from(x) - i32::from(SQUARE) / 2).clamp(0, i32::from(DISPLAY_WIDTH - SQUARE));
                                 self.y = (i32::from(y) - i32::from(SQUARE) / 2).clamp(0, i32::from(DISPLAY_HEIGHT - SQUARE));
                         }
-                        DisplayEvent::Speed { dx, dy } => {
+                        AppEvent::Command(Command::Speed { dx, dy }) => {
                                 self.dx = dx;
                                 self.dy = dy;
                         }
-                        DisplayEvent::ReportStats => {
-                                info!("display: {} frames, {} chunk timeouts, {} events dropped", self.frames, self.display.timeouts, DISPLAY_EVENTS.dropped());
+                        AppEvent::Command(Command::Stats) => {
+                                info!("display: {} frames, {} chunk timeouts", self.frames, self.display.timeouts);
                         }
+                        _ => {}
                 }
         }
 
@@ -164,44 +164,15 @@ impl DisplayMod {
                 }
         }
 
-        /// Draws the caption into the frame and records its box for the next push.
         fn draw_caption(&mut self, now_us: u64) {
                 let Some(frame) = self.display.frame_mut() else { return };
                 let mut fb = Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT };
-                let mut text = heapless_string::<32>();
+                let mut text = StackString::<32>::new();
                 let _ = write!(text, "mk4 {}s {}f", now_us / 1_000_000, self.frames);
                 let font = self.font;
                 if let Some(r) = fb.text(&font, CAPTION_X, CAPTION_Y, text.as_str(), TEXT, BG) {
-                        self.caption_dirty = Some(match self.caption_dirty {
-                                Some(d) => d.union(&r),
-                                None => r,
-                        });
+                        self.caption_dirty = Some(self.caption_dirty.map_or(r, |d| d.union(&r)));
                 }
-        }
-}
-
-/// A fixed-capacity string for formatting a line without an allocator.
-fn heapless_string<const N: usize>() -> StackString<N> {
-        StackString { buf: [0; N], len: 0 }
-}
-
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        fn as_str(&self) -> &str {
-                core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
         }
 }
 
@@ -213,19 +184,17 @@ impl Module for DisplayMod {
                 let mut clock = SysClock;
                 self.display.init(&mut clock);
                 self.display.driver().set_offset(0, DISPLAY_ROW_OFFSET);
-                // after the offset, so the band the offset moves the window over is blanked too
                 self.display.driver().clear(BG);
                 let square = self.square();
                 let frame = self.display.frame_mut().ok_or(())?;
-                fill_rect(frame, DISPLAY_WIDTH, &Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT), BG);
-                fill_rect(frame, DISPLAY_WIDTH, &square, FG);
+                Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT }.fill(&Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT), BG);
+                Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT }.fill(&square, FG);
                 self.draw_caption(light_rp2350::now_us());
                 self.caption_dirty = None;
-                // the first push is the whole frame: one full-width chunk, the yield-per-poll path
                 self.display.update_async(Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT)).map_err(|_| ())?;
                 self.prev = Some(square);
                 info!(
-                        "display up: {}x{}, font {}px cell {}x{} ({} glyphs, {} bytes), first frame in flight",
+                        "display up: {}x{}, font {}px cell {}x{} ({} glyphs, {} bytes)",
                         DISPLAY_WIDTH,
                         DISPLAY_HEIGHT,
                         self.font.pixel_size(),
@@ -243,7 +212,7 @@ impl Module for DisplayMod {
                         Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
                         Err(UpdateError::Busy) => unreachable!(),
                 }
-                while let Some(ev) = DISPLAY_EVENTS.pop() {
+                while let Some(ev) = EVENTS.poll(&self.events) {
                         self.handle(ev);
                 }
                 let now = light_rp2350::now_us();
@@ -259,11 +228,9 @@ impl Module for DisplayMod {
                 self.step();
                 let new = self.square();
                 let Some(frame) = self.display.frame_mut() else { return Poll::Busy };
-                fill_rect(frame, DISPLAY_WIDTH, &old, BG);
-                fill_rect(frame, DISPLAY_WIDTH, &new, FG);
-                // union of where it was and where it is: a narrow region, so row-chunked with
-                // the spin budget -- the other path through the chunk protocol. a fresh caption
-                // joins the region the second it is drawn
+                let mut fb = Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT };
+                fb.fill(&old, BG);
+                fb.fill(&new, FG);
                 let mut region = old.union(&new);
                 if let Some(c) = self.caption_dirty.take() {
                         region = region.union(&c);
@@ -281,9 +248,10 @@ impl Module for DisplayMod {
         }
 }
 
-/// Owns the touch controller; a tap moves the square, through the display's mailbox.
+/// Owns the touch controller and publishes what it reports.
 struct TouchMod {
         touch: Cst816t<I2c1, Input, Output>,
+        events: Subscription,
 }
 
 impl Module for TouchMod {
@@ -292,8 +260,7 @@ impl Module for TouchMod {
         }
         fn load(&mut self) -> Result<(), ()> {
                 //   reset immediately before the probe: the controller auto-sleeps within about
-                // a second of being left alone, and anything that runs between the pulse and
-                // the first read -- the display's init did, at first -- can use that second up
+                // a second of being left alone
                 self.touch.reset_blocking(&mut SysClock);
                 match self.touch.probe() {
                         Ok(Some(id)) => info!("cst816t chip id confirmed: 0x{id:02x}"),
@@ -303,47 +270,40 @@ impl Module for TouchMod {
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
-                while let Some(ev) = TOUCH_EVENTS.pop() {
-                        match ev {
-                                TouchEvent::ReportStats => info!(
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        if let AppEvent::Command(Command::Stats) = ev {
+                                info!(
                                         "touch: {} failed reads ({} nack, {} timeout, {} bus), {} resets",
                                         self.touch.failures,
                                         self.touch.nacks,
                                         self.touch.timeouts,
                                         self.touch.bus_errors,
                                         self.touch.recoveries
-                                ),
+                                );
                         }
                 }
-                let now = light_rp2350::now_us();
-                match self.touch.poll((now / 1000) as u32) {
-                        Some(Event::Down { x, y }) => {
-                                info!("touch down at {x},{y}");
-                                let _ = DISPLAY_EVENTS.push(DisplayEvent::MoveTo { x, y });
-                                Poll::Busy
-                        }
-                        Some(Event::Up) => {
-                                info!("touch up");
-                                Poll::Busy
-                        }
-                        Some(Event::Move { .. }) => Poll::Busy,
-                        Some(Event::Reset) => {
-                                //   re-probe now, while it is freshly awake: the cheapest check
-                                // that the reset actually brought it back
-                                match self.touch.probe() {
-                                        Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
-                                        Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
-                                }
-                                Poll::Busy
-                        }
-                        None => Poll::Idle,
+                let now_ms = (light_rp2350::now_us() / 1000) as u32;
+                let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
+                match ev {
+                        cst816t::Event::Down { x, y } => info!("touch down at {x},{y}"),
+                        cst816t::Event::Up => info!("touch up"),
+                        cst816t::Event::Reset => match self.touch.probe() {
+                                Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
+                                Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
+                        },
+                        cst816t::Event::Move { .. } => {}
                 }
+                if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
+                        warn!("event bus full; dropped {e:?}");
+                }
+                Poll::Busy
         }
 }
 
 /// Owns the backlight.
 struct BoardMod {
-        backlight: Backlight,
+        backlight: Output,
+        events: Subscription,
 }
 
 impl Module for BoardMod {
@@ -351,30 +311,27 @@ impl Module for BoardMod {
                 "board"
         }
         fn load(&mut self) -> Result<(), ()> {
-                self.backlight.set_backlight(true);
+                self.backlight.set(true);
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
-                while let Some(ev) = BOARD_EVENTS.pop() {
-                        busy = true;
-                        match ev {
-                                BoardEvent::Backlight(on) => {
-                                        self.backlight.set_backlight(on);
-                                        info!("backlight {}", if on { "on" } else { "off" });
-                                }
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        if let AppEvent::Command(Command::Backlight(on)) = ev {
+                                busy = true;
+                                self.backlight.set(on);
+                                info!("backlight {}", if on { "on" } else { "off" });
                         }
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
-                self.backlight.set_backlight(false);
+                self.backlight.set(false);
         }
 }
 
-/// The console: bytes from core 1 into lines, lines into commands, commands into events. This
-/// is the string front-end of what will become the typed event bus; UI, boot and tests would
-/// inject the same events without going through text.
+/// The console: bytes from core 1 into lines, lines into commands, commands onto the bus. The
+/// string front-end of the event bus; `help`, `loglevel` and `quit` are its own.
 struct ConsoleMod {
         reader: LineReader<96>,
 }
@@ -385,35 +342,31 @@ impl ConsoleMod {
                 let mut words = line.split_whitespace();
                 let Some(cmd) = words.next() else { return Poll::Idle };
                 let mut args = words;
-                match cmd {
+                let mut num = |what: &str| -> Option<i32> { args.next().and_then(|s| s.parse().ok()).or_else(|| { warn!("usage: {what}"); None }) };
+                let event = match cmd {
                         "help" => {
                                 info!("commands: help | stats | backlight on|off | square X Y | speed DX DY | loglevel error|warn|info|debug|trace | quit");
+                                None
                         }
                         "stats" => {
-                                let _ = DISPLAY_EVENTS.push(DisplayEvent::ReportStats);
-                                let _ = TOUCH_EVENTS.push(TouchEvent::ReportStats);
-                                info!("console: {} bytes dropped, {} lines dropped", CONSOLE_BYTES.dropped(), self.reader.dropped_lines);
+                                info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
+                                Some(Command::Stats)
                         }
                         "backlight" => match args.next() {
-                                Some("on") => {
-                                        let _ = BOARD_EVENTS.push(BoardEvent::Backlight(true));
+                                Some("on") => Some(Command::Backlight(true)),
+                                Some("off") => Some(Command::Backlight(false)),
+                                _ => {
+                                        warn!("usage: backlight on|off");
+                                        None
                                 }
-                                Some("off") => {
-                                        let _ = BOARD_EVENTS.push(BoardEvent::Backlight(false));
-                                }
-                                _ => warn!("usage: backlight on|off"),
                         },
-                        "square" => match (args.next().and_then(|s| s.parse().ok()), args.next().and_then(|s| s.parse().ok())) {
-                                (Some(x), Some(y)) => {
-                                        let _ = DISPLAY_EVENTS.push(DisplayEvent::MoveTo { x, y });
-                                }
-                                _ => warn!("usage: square X Y"),
+                        "square" => match (num("square X Y"), num("square X Y")) {
+                                (Some(x), Some(y)) => Some(Command::Square { x: x.clamp(0, i32::from(DISPLAY_WIDTH)) as u16, y: y.clamp(0, i32::from(DISPLAY_HEIGHT)) as u16 }),
+                                _ => None,
                         },
-                        "speed" => match (args.next().and_then(|s| s.parse().ok()), args.next().and_then(|s| s.parse().ok())) {
-                                (Some(dx), Some(dy)) => {
-                                        let _ = DISPLAY_EVENTS.push(DisplayEvent::Speed { dx, dy });
-                                }
-                                _ => warn!("usage: speed DX DY"),
+                        "speed" => match (num("speed DX DY"), num("speed DX DY")) {
+                                (Some(dx), Some(dy)) => Some(Command::Speed { dx, dy }),
+                                _ => None,
                         },
                         "loglevel" => {
                                 let level = match args.next() {
@@ -431,12 +384,21 @@ impl ConsoleMod {
                                         }
                                         None => warn!("usage: loglevel error|warn|info|debug|trace"),
                                 }
+                                None
                         }
                         "quit" => {
                                 info!("shutting down");
                                 return Poll::Shutdown;
                         }
-                        other => warn!("unknown command '{other}' -- try help"),
+                        other => {
+                                warn!("unknown command '{other}' -- try help");
+                                None
+                        }
+                };
+                if let Some(c) = event {
+                        if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
+                                warn!("event bus full; dropped {e:?}");
+                        }
                 }
                 Poll::Busy
         }
@@ -464,42 +426,26 @@ impl Module for ConsoleMod {
 
 /// Entry point called by the C shell on core 0 once the runtime is up.
 #[unsafe(no_mangle)]
-pub extern "C" fn light_app_main() -> ! {
+pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         log::set_clock(light_rp2350::now_us);
+        let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
+        let p = take(&clocks).expect("the board's peripherals are taken once");
+        info!("clocks: sys {} Hz, peri {} Hz; spi1 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.touch_bus.actual_hz);
 
-        // SAFETY: each peripheral is constructed exactly once, here, and the shell touches none
-        // of them after handing over
-        let backlight = unsafe { Backlight::new() };
-        let spi = unsafe {
-                Spi1Display::new(
-                        PIN_DISPLAY_SCK,
-                        PIN_DISPLAY_MOSI,
-                        PIN_DISPLAY_CS,
-                        PIN_DISPLAY_DC,
-                        Some(PIN_DISPLAY_RESET),
-                        DISPLAY_SPI_HZ,
-                        DISPLAY_DMA_CH,
-                )
-        };
-        info!("spi1 at {} Hz", spi.actual_hz);
         // SAFETY: the one and only reference to FRAME, taken before anything can alias it
         let frame: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
-        let display = Display::new(St7789::new(spi), frame, DISPLAY_WIDTH, DISPLAY_HEIGHT, BYTES_PER_PIXEL as u16, light_rp2350::now_us);
-
-        let i2c = unsafe { I2c1::new(PIN_TOUCH_SCL, PIN_TOUCH_SDA, TOUCH_I2C_HZ) };
-        info!("i2c1 at {} Hz", i2c.actual_hz);
-        let int = Input::new_pull_up(PIN_TOUCH_INT);
-        let reset = Output::new(PIN_TOUCH_RST, true);
-        let touch = Cst816t::new(i2c, int, reset, (light_rp2350::now_us() / 1000) as u32);
-
-        let mut board_mod = BoardMod { backlight };
+        let display = Display::new(St7789::new(p.display_bus), frame, DISPLAY_WIDTH, DISPLAY_HEIGHT, BYTES_PER_PIXEL as u16, light_rp2350::now_us);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
         };
+        let touch = Cst816t::new(p.touch_bus, p.touch_int, p.touch_reset, (light_rp2350::now_us() / 1000) as u32);
+
+        let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut display_mod = DisplayMod {
                 display,
                 font,
+                events: EVENTS.subscribe().expect("subscriber slot"),
                 x: 40,
                 y: 60,
                 dx: 3,
@@ -510,7 +456,7 @@ pub extern "C" fn light_app_main() -> ! {
                 frames: 0,
                 caption_dirty: None,
         };
-        let mut touch_mod = TouchMod { touch };
+        let mut touch_mod = TouchMod { touch, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
         let mut rt: Runtime<4> = Runtime::new();
@@ -520,9 +466,8 @@ pub extern "C" fn light_app_main() -> ! {
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");
-        let result = rt.run(|| {});
-        //   core 1 keeps draining the log, so the last words get out; core 0 has nothing left
-        // to do and no stdio of its own
+        let mut idle = Breathe;
+        let result = rt.run(|| light_core::Idle::idle(&mut idle));
         match result {
                 Ok(()) => info!("runtime stopped cleanly; core 0 idle"),
                 Err(e) => warn!("runtime stopped with {e:?}; core 0 idle"),
@@ -532,21 +477,28 @@ pub extern "C" fn light_app_main() -> ! {
         }
 }
 
-/// A `core::fmt::Write` over a fixed stack buffer, so text can be formatted with no allocator
-/// and handed across the FFI as a pointer and length.
-struct StackBuf<const N: usize> {
+/// A fixed-capacity string for formatting a line without an allocator.
+struct StackString<const N: usize> {
         buf: [u8; N],
         len: usize,
 }
 
-impl<const N: usize> Write for StackBuf<N> {
+impl<const N: usize> StackString<N> {
+        const fn new() -> Self {
+                Self { buf: [0; N], len: 0 }
+        }
+        fn as_str(&self) -> &str {
+                core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        }
+}
+
+impl<const N: usize> Write for StackString<N> {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let room = N - self.len;
-                let take = s.len().min(room);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
                 // truncating is the right failure for a line; report success so the formatter
                 // keeps going rather than abandoning the message at the first overflow
+                let take = s.len().min(N - self.len);
+                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+                self.len += take;
                 Ok(())
         }
 }
@@ -554,7 +506,7 @@ impl<const N: usize> Write for StackBuf<N> {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackBuf::<160> { buf: [0; 160], len: 0 };
+        let mut msg = StackString::<160>::new();
         let _ = write!(msg, "{info}");
         unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
 }

@@ -1,8 +1,9 @@
-//! The transport traits drivers are written against.
+//! The port interface: what portable code asks of a board, and nothing more.
 //!
-//! This is mk3's `light_ioport` contract, reduced to what the drivers actually call and typed so
-//! the rules that were comments there are signatures here. Drivers never see a chip register;
-//! that boundary is why the same driver ran on RP2 and STM32 in mk3, and it is kept.
+//! Designed from the list of primitives the spike actually used rather than from what a HAL
+//! happens to offer. mk3's port surface grew to 4,500 lines across ten port modules; this is
+//! the whole of it, and a port crate implements each trait once. The one primitive not here is
+//! the critical section, which is the `critical-section` crate's `Impl`, supplied by the port.
 
 /// Time, for the drivers that need to wait: init sequences and per-chunk deadlines.
 pub trait Clock {
@@ -17,6 +18,23 @@ pub trait Clock {
                         core::hint::spin_loop();
                 }
         }
+}
+
+/// What the runtime does between passes in which no module was busy.
+pub trait Idle {
+        /// Give the core a moment: a `wfe`, a `nop`, a host `yield`. Must return promptly --
+        /// a poll-driven driver with a deadline is waiting.
+        fn idle(&mut self);
+}
+
+/// A digital output.
+pub trait OutputPin {
+        fn set(&mut self, high: bool);
+}
+
+/// A digital input, for interrupt/data-ready lines that are polled as levels.
+pub trait InputPin {
+        fn is_low(&self) -> bool;
 }
 
 /// A 4-wire SPI display bus: SCK, MOSI, chip select and data/command, plus an optional reset
@@ -68,14 +86,4 @@ pub trait I2cBus {
         /// `[reg, value]` as one transaction: S, addr+W, reg, value, P -- no repeated START.
         /// Some parts silently store nothing when the pair is split (mk3's HUSB238 finding).
         fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError>;
-}
-
-/// A digital input, for interrupt/data-ready lines that are polled as levels.
-pub trait InputPin {
-        fn is_low(&self) -> bool;
-}
-
-/// A digital output, for reset lines a driver drives itself.
-pub trait OutputPin {
-        fn set(&mut self, high: bool);
 }

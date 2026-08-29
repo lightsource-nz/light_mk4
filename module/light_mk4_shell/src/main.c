@@ -16,13 +16,20 @@
 #include <stddef.h>
 #include <stdio.h>
 
+#include <hardware/clocks.h>
 #include <pico/bootrom.h>
 #include <pico/multicore.h>
 #include <pico/stdlib.h>
 #include <tusb.h>
 
-// the Rust side (module/light_mk4_touch169/rust)
-extern void light_app_main(void) __attribute__((noreturn));
+// what the shell knows and Rust must not assume: the clocks the SDK runtime configured
+struct light_shell_info {
+        uint32_t clk_sys_hz;
+        uint32_t clk_peri_hz;
+};
+
+// the Rust side (module/<board>/rust)
+extern void light_app_main(const struct light_shell_info *info) __attribute__((noreturn));
 extern void light_app_core1_service(void);
 
 static volatile bool core1_ready = false;
@@ -112,5 +119,9 @@ int main(void)
         while (!core1_ready)
                 tight_loop_contents();
         stdio_init_all();
-        light_app_main();
+        struct light_shell_info info = {
+                .clk_sys_hz = clock_get_hz(clk_sys),
+                .clk_peri_hz = clock_get_hz(clk_peri),
+        };
+        light_app_main(&info);
 }

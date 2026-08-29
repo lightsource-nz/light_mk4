@@ -1,13 +1,14 @@
-//! RP2350 access for the light framework, mk4 spike.
+//! RP2350 port of the light framework.
 //!
 //! Peripherals are driven through `rp235x-pac` register definitions rather than through pico-sdk
-//! calls, on purpose: pico-sdk's peripheral API is mostly `static inline` in headers, which no
-//! binding generator can export, so every SDK call from Rust would need a hand-written C shim.
-//! The spike measures how far the pac gets on its own; pico-sdk stays in charge of the RUNTIME
+//! calls: pico-sdk's peripheral API is mostly `static inline` in headers, which no binding
+//! generator can export, so every SDK call from Rust would need a hand-written C shim. The spike
+//! found the pac reaches everything the framework needs. pico-sdk stays in charge of the RUNTIME
 //! (crt0, boot2, clocks, timer start, multicore, USB) in the C shell that links this.
 //!
-//! Ownership of peripherals is by convention, not by the pac's `take()`: the C shell owns the
-//! runtime blocks and this crate owns what it constructs, and each constructor says so.
+//! Ownership: a board's peripherals are taken ONCE, as an owned set, from `boards::<board>::take`.
+//! A second call answers `None`. The shell owns nothing the set contains; the set owns nothing
+//! the shell uses. That replaces the spike's `steal()`-with-a-doc-comment.
 
 #![no_std]
 
@@ -16,12 +17,21 @@
 #[cfg(target_os = "none")]
 mod critical;
 
+pub mod boards;
 pub mod gpio;
 pub mod i2c;
 pub mod spi;
 
-use light_core::{Board, Clock};
+use light_core::{Clock, Idle};
 use rp235x_pac as pac;
+
+/// The clock frequencies the runtime configured, passed in by the shell that knows them rather
+/// than assumed here. pico-sdk's defaults for RP2350 are 150 MHz for both.
+#[derive(Clone, Copy, Debug)]
+pub struct Clocks {
+        pub sys_hz: u32,
+        pub peri_hz: u32,
+}
 
 /// Microseconds since boot from the 64-bit TIMER0, which pico-sdk's runtime has already started.
 ///
@@ -39,7 +49,8 @@ pub fn now_us() -> u64 {
         }
 }
 
-/// The system timer as a [`Clock`], for init sequences.
+/// The system timer as a [`Clock`].
+#[derive(Clone, Copy, Default)]
 pub struct SysClock;
 
 impl Clock for SysClock {
@@ -48,57 +59,14 @@ impl Clock for SysClock {
         }
 }
 
-/// The Waveshare RP2350-Touch-LCD-1.69: pins from the board schematic, as recorded in mk3's
-/// `light_ui_hw_ws_touch169.h`.
-pub mod touch169 {
-        pub const PIN_DISPLAY_DC: usize = 8;
-        pub const PIN_DISPLAY_CS: usize = 9;
-        pub const PIN_DISPLAY_SCK: usize = 10;
-        pub const PIN_DISPLAY_MOSI: usize = 11;
-        pub const PIN_DISPLAY_RESET: usize = 13;
-        pub const PIN_DISPLAY_BL: usize = 25;
-        pub const DISPLAY_WIDTH: u16 = 240;
-        pub const DISPLAY_HEIGHT: u16 = 280;
-        /// The visible glass is GDDRAM rows 20..299 -- measured (mk3 board wiring).
-        pub const DISPLAY_ROW_OFFSET: u16 = 20;
-        /// 40 MHz confirmed clean on hardware; 10 MHz would cap a full frame at 9.3 fps.
-        ///
-        /// Tried at 10 MHz on 2026-08-29 to test whether the touch controller's wedges (I2C on
-        /// pins 6/7 timing out under continuous rendering) track the SPI clock on 10/11: 17
-        /// clean taps then a wedge, against wedges every 4-8 taps at 40 MHz. Suggestive, not
-        /// decisive -- one run each. Left at 40 MHz, the clock mk3 verified the panel at.
-        pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
+/// What the runtime does between idle passes on this chip: nothing that could miss a deadline.
+/// The poll-driven drivers keep their own cadences and no interrupt is guaranteed to wake a
+/// `wfe`, so this is a breath, not a sleep. A real low-power idle needs a tick to wake on.
+#[derive(Clone, Copy, Default)]
+pub struct Breathe;
 
-        pub const PIN_TOUCH_SDA: usize = 6;
-        pub const PIN_TOUCH_SCL: usize = 7;
-        pub const PIN_TOUCH_INT: usize = 21;
-        pub const PIN_TOUCH_RST: usize = 22;
-        pub const TOUCH_I2C_HZ: u32 = 300_000;
-
-        /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
-        pub const DISPLAY_DMA_CH: usize = 15;
-}
-
-/// The backlight line, the first thing the spike drove.
-pub struct Backlight {
-        pin: gpio::Output,
-}
-
-impl Backlight {
-        /// # Safety
-        ///
-        /// Takes the backlight pin; construct once.
-        pub unsafe fn new() -> Self {
-                Self { pin: gpio::Output::new(touch169::PIN_DISPLAY_BL, false) }
-        }
-}
-
-impl Board for Backlight {
-        fn set_backlight(&mut self, on: bool) {
-                self.pin.set(on);
-        }
-
-        fn now_us(&self) -> u64 {
-                now_us()
+impl Idle for Breathe {
+        fn idle(&mut self) {
+                cortex_m::asm::nop();
         }
 }

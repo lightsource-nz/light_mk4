@@ -8,8 +8,6 @@ use rp235x_pac as pac;
 
 use crate::gpio;
 
-/// clk_sys as pico-sdk's runtime configures it on RP2350.
-const CLK_SYS_HZ: u32 = 150_000_000;
 /// TX FIFO depth on this block.
 const TX_FIFO_DEPTH: u32 = 16;
 /// Per-transfer deadline: a base plus a per-byte allowance, the figures mk3 settled on.
@@ -26,6 +24,8 @@ const ABRT_TXDATA_NOACK: u32 = 1 << 3;
 
 pub struct I2c1 {
         restart_on_next: bool,
+        /// clk_sys, from the shell that configured it: the I2C block is clocked from it.
+        clk_sys_hz: u32,
         pub actual_hz: u32,
 }
 
@@ -33,7 +33,7 @@ impl I2c1 {
         /// # Safety
         ///
         /// Takes I2C1, which nothing else may use while this lives. Construct once.
-        pub unsafe fn new(scl: usize, sda: usize, hz: u32) -> Self {
+        pub unsafe fn new(clk_sys_hz: u32, scl: usize, sda: usize, hz: u32) -> Self {
                 gpio::set_function(scl, gpio::FUNC_I2C);
                 gpio::set_function(sda, gpio::FUNC_I2C);
                 // internal pull-ups, for breakouts that carry none; harmless where the board has
@@ -57,25 +57,26 @@ impl I2c1 {
                 i2c.ic_rx_tl().write(|w| unsafe { w.bits(0) });
                 i2c.ic_dma_cr().write(|w| unsafe { w.bits(3) });
 
-                let mut bus = Self { restart_on_next: false, actual_hz: 0 };
+                let mut bus = Self { restart_on_next: false, clk_sys_hz, actual_hz: 0 };
                 bus.set_baudrate(hz);
                 bus
         }
 
         pub fn set_baudrate(&mut self, hz: u32) -> u32 {
                 let i2c = unsafe { &*pac::I2C1::ptr() };
-                let period = (CLK_SYS_HZ + hz / 2) / hz;
+                let freq_in = self.clk_sys_hz;
+                let period = (freq_in + hz / 2) / hz;
                 let lcnt = period * 3 / 5;
                 let hcnt = period - lcnt;
                 // 300 ns SDA hold below 1 MHz, 120 ns above
-                let hold = if hz < 1_000_000 { CLK_SYS_HZ * 3 / 10_000_000 + 1 } else { CLK_SYS_HZ * 3 / 25_000_000 + 1 };
+                let hold = if hz < 1_000_000 { freq_in * 3 / 10_000_000 + 1 } else { freq_in * 3 / 25_000_000 + 1 };
                 i2c.ic_enable().write(|w| unsafe { w.bits(0) });
                 i2c.ic_fs_scl_hcnt().write(|w| unsafe { w.bits(hcnt) });
                 i2c.ic_fs_scl_lcnt().write(|w| unsafe { w.bits(lcnt) });
                 i2c.ic_fs_spklen().write(|w| unsafe { w.bits(if lcnt < 16 { 1 } else { lcnt / 16 }) });
                 i2c.ic_sda_hold().write(|w| unsafe { w.bits(hold) });
                 i2c.ic_enable().write(|w| unsafe { w.bits(1) });
-                self.actual_hz = CLK_SYS_HZ / period;
+                self.actual_hz = freq_in / period;
                 self.actual_hz
         }
 
