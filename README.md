@@ -175,3 +175,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   (`I2cBus` is implemented for it). The touch169 demo rotates its canvas with the board's
   orientation and sends the square the way you swipe; the po13's keys hold the LED and
   reverse the square. po13 flashed; the touch169 dropped off USB mid-session, its flash pending.
+- 2026-08-29 — **two bugs the bench found, both in the frame path.** The po13's caption froze:
+  the demo consumed its "caption changed" flag before asking for a frame, and when the layer
+  refused the pass the change was never invalidated -- a region is dirty until a frame has
+  actually invalidated it, however many passes that takes. Then the touch169's square left a
+  red trail: under double buffering the swap sat at the next `frame_begin`, after `frame_end`
+  had queued the regions, so every push read the previous frame. The swap now closes the frame
+  and the test asserts that shape. Step 4 hardware-verified on the touch169 after that:
+  orientation Portrait → LandscapeR → Portrait with the canvas resizing, a hardware swipe
+  steering the square, the QMI8658 reading gravity and 31 C on first contact. The controller
+  still wedges and is reset every few seconds under tapping -- mk3 parity, the logic-analyser
+  job. The touch demo now reports how many Move samples a touch produced on release.
