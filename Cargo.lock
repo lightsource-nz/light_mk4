@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "heapless",
+ "light-font",
 ]
 
 [[package]]
@@ -311,6 +312,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "light-core",
+ "light-font",
  "light-rp2350",
 ]
 

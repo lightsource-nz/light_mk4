@@ -15,8 +15,10 @@
 
 use core::fmt::Write;
 use light_core::cst816t::{Cst816t, Event};
+use light_core::draw::Rgb565;
 use light_core::st7789::St7789;
 use light_core::{info, log, warn, Board, Display, LineReader, Mailbox, Module, Poll, Region, Runtime, UpdateError};
+use light_font::Font;
 use light_rp2350::gpio::{Input, Output};
 use light_rp2350::i2c::I2c1;
 use light_rp2350::spi::Spi1Display;
@@ -39,6 +41,10 @@ const FRAME_BYTES: usize = DISPLAY_WIDTH as usize * DISPLAY_HEIGHT as usize * BY
 /// The frame buffer: 134 KB, so it lives in .bss rather than on the 2 KB main stack. Handed
 /// out exactly once, in `light_app_main`.
 static mut FRAME: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
+
+/// The demo's font, rendered by crush at build time and handed over as a path by
+/// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
+static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
 // --- the mailboxes: how modules, and core 1, reach each other ---------------------------------
 
@@ -94,33 +100,33 @@ pub extern "C" fn light_app_core1_service() {
 
 const BG: u16 = 0x0000;
 const FG: u16 = 0xF800; // red, RGB565
+const TEXT: u16 = 0xFFFF;
 const SQUARE: u16 = 24;
 const FRAME_INTERVAL_US: u64 = 33_333;
+/// Where the caption sits; the square keeps below it.
+const CAPTION_X: u16 = 8;
+const CAPTION_Y: u16 = 8;
 
 fn fill_rect(buf: &mut [u8], width: u16, r: &Region, color: u16) {
-        let hi = (color >> 8) as u8;
-        let lo = color as u8;
-        for y in r.y0..=r.y1 {
-                let start = (y as usize * width as usize + r.x0 as usize) * BYTES_PER_PIXEL;
-                let end = start + r.width() as usize * BYTES_PER_PIXEL;
-                for px in buf[start..end].chunks_exact_mut(2) {
-                        px[0] = hi;
-                        px[1] = lo;
-                }
-        }
+        Rgb565 { buf, width, height: DISPLAY_HEIGHT }.fill(r, color);
 }
 
 /// Owns the panel. Paints a bouncing square with region updates, honouring the rule that a
-/// region must cover what was drawn before as well as what is drawn now.
+/// region must cover what was drawn before as well as what is drawn now -- and a caption in
+/// the build-time font, redrawn once a second.
 struct DisplayMod {
         display: Display<'static, St7789<Spi1Display>>,
+        font: Font<'static>,
         x: i32,
         y: i32,
         dx: i32,
         dy: i32,
         prev: Option<Region>,
         next_frame_us: u64,
+        next_caption_us: u64,
         frames: u32,
+        /// A caption waiting to be pushed with the next region update.
+        caption_dirty: Option<Region>,
 }
 
 impl DisplayMod {
@@ -145,16 +151,57 @@ impl DisplayMod {
         }
 
         fn step(&mut self) {
+                let top = i32::from(CAPTION_Y) + i32::from(self.font.cell_height()) + 4;
                 self.x += self.dx;
                 self.y += self.dy;
                 if self.x <= 0 || self.x >= i32::from(DISPLAY_WIDTH - SQUARE) {
                         self.dx = -self.dx;
                         self.x = self.x.clamp(0, i32::from(DISPLAY_WIDTH - SQUARE));
                 }
-                if self.y <= 0 || self.y >= i32::from(DISPLAY_HEIGHT - SQUARE) {
+                if self.y <= top || self.y >= i32::from(DISPLAY_HEIGHT - SQUARE) {
                         self.dy = -self.dy;
-                        self.y = self.y.clamp(0, i32::from(DISPLAY_HEIGHT - SQUARE));
+                        self.y = self.y.clamp(top, i32::from(DISPLAY_HEIGHT - SQUARE));
                 }
+        }
+
+        /// Draws the caption into the frame and records its box for the next push.
+        fn draw_caption(&mut self, now_us: u64) {
+                let Some(frame) = self.display.frame_mut() else { return };
+                let mut fb = Rgb565 { buf: frame, width: DISPLAY_WIDTH, height: DISPLAY_HEIGHT };
+                let mut text = heapless_string::<32>();
+                let _ = write!(text, "mk4 {}s {}f", now_us / 1_000_000, self.frames);
+                let font = self.font;
+                if let Some(r) = fb.text(&font, CAPTION_X, CAPTION_Y, text.as_str(), TEXT, BG) {
+                        self.caption_dirty = Some(match self.caption_dirty {
+                                Some(d) => d.union(&r),
+                                None => r,
+                        });
+                }
+        }
+}
+
+/// A fixed-capacity string for formatting a line without an allocator.
+fn heapless_string<const N: usize>() -> StackString<N> {
+        StackString { buf: [0; N], len: 0 }
+}
+
+struct StackString<const N: usize> {
+        buf: [u8; N],
+        len: usize,
+}
+
+impl<const N: usize> StackString<N> {
+        fn as_str(&self) -> &str {
+                core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        }
+}
+
+impl<const N: usize> Write for StackString<N> {
+        fn write_str(&mut self, s: &str) -> core::fmt::Result {
+                let take = s.len().min(N - self.len);
+                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
+                self.len += take;
+                Ok(())
         }
 }
 
@@ -172,10 +219,21 @@ impl Module for DisplayMod {
                 let frame = self.display.frame_mut().ok_or(())?;
                 fill_rect(frame, DISPLAY_WIDTH, &Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT), BG);
                 fill_rect(frame, DISPLAY_WIDTH, &square, FG);
+                self.draw_caption(light_rp2350::now_us());
+                self.caption_dirty = None;
                 // the first push is the whole frame: one full-width chunk, the yield-per-poll path
                 self.display.update_async(Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT)).map_err(|_| ())?;
                 self.prev = Some(square);
-                info!("display up: {}x{}, first frame in flight", DISPLAY_WIDTH, DISPLAY_HEIGHT);
+                info!(
+                        "display up: {}x{}, font {}px cell {}x{} ({} glyphs, {} bytes), first frame in flight",
+                        DISPLAY_WIDTH,
+                        DISPLAY_HEIGHT,
+                        self.font.pixel_size(),
+                        self.font.cell_width(),
+                        self.font.cell_height(),
+                        self.font.glyph_count(),
+                        FONT_BLOB.len()
+                );
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
@@ -193,6 +251,10 @@ impl Module for DisplayMod {
                         return Poll::Idle;
                 }
                 self.next_frame_us = now + FRAME_INTERVAL_US;
+                if now >= self.next_caption_us {
+                        self.next_caption_us = now + 1_000_000;
+                        self.draw_caption(now);
+                }
                 let old = self.prev.unwrap_or_else(|| self.square());
                 self.step();
                 let new = self.square();
@@ -200,8 +262,12 @@ impl Module for DisplayMod {
                 fill_rect(frame, DISPLAY_WIDTH, &old, BG);
                 fill_rect(frame, DISPLAY_WIDTH, &new, FG);
                 // union of where it was and where it is: a narrow region, so row-chunked with
-                // the spin budget -- the other path through the chunk protocol
-                let region = old.union(&new);
+                // the spin budget -- the other path through the chunk protocol. a fresh caption
+                // joins the region the second it is drawn
+                let mut region = old.union(&new);
+                if let Some(c) = self.caption_dirty.take() {
+                        region = region.union(&c);
+                }
                 if self.display.update_async(region).is_ok() {
                         self.prev = Some(new);
                         self.frames += 1;
@@ -427,7 +493,23 @@ pub extern "C" fn light_app_main() -> ! {
         let touch = Cst816t::new(i2c, int, reset, (light_rp2350::now_us() / 1000) as u32);
 
         let mut board_mod = BoardMod { backlight };
-        let mut display_mod = DisplayMod { display, x: 40, y: 60, dx: 3, dy: 2, prev: None, next_frame_us: 0, frames: 0 };
+        let font = match Font::parse(FONT_BLOB) {
+                Ok(f) => f,
+                Err(e) => panic!("the embedded font does not parse: {e:?}"),
+        };
+        let mut display_mod = DisplayMod {
+                display,
+                font,
+                x: 40,
+                y: 60,
+                dx: 3,
+                dy: 2,
+                prev: None,
+                next_frame_us: 0,
+                next_caption_us: 0,
+                frames: 0,
+                caption_dirty: None,
+        };
         let mut touch_mod = TouchMod { touch };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 

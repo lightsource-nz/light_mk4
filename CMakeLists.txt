@@ -54,6 +54,15 @@ if(LIGHT_SYSTEM STREQUAL PICO_SDK)
                 CRATES light_app_touch169 light_app_pico2
                 NO_STD
         )
+        #   crush is a host tool the firmware build runs, so it is built for the host inside the
+        # cross build -- Corrosion's hostbuild is what mk3 did with an ExternalProject for the C
+        # crush, without the second CMake tree
+        corrosion_import_crate(
+                MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
+                CRATES crush
+        )
+        corrosion_set_hostbuild(crush)
+        include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightFont.cmake)
 
         add_subdirectory(module/light_mk4_shell)
         #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2 -- the

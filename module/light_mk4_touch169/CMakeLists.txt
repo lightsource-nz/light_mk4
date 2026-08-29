@@ -12,4 +12,14 @@ target_link_libraries(light_mk4_touch169 PRIVATE
         light_app_touch169
 )
 
+#   the demo's font: the same face, size and panel geometry mk3's light_ui demo renders for this
+# board (240x280 over 27.9x32.6 mm, 14 pt, 16 px). The Rust app embeds the blob through
+# LIGHT_FONT_LGF -- see light_mk4_add_font for how the two builds are kept in step
+light_mk4_add_font(light_mk4_touch169_font
+        FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
+        DISPLAY ws_touch169 WIDTH 240 HEIGHT 280 DIMENSION 27.9x32.6
+        POINT_SIZE 14 PIXEL_SIZE 16
+        CRATE light_app_touch169 ENV LIGHT_FONT_LGF
+)
+
 light_mk4_shell_configure(light_mk4_touch169)

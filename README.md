@@ -115,3 +115,11 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not make: every glyph, and the whole generated `.c`, is **byte-identical to the C crush's**
   for the same font/display/size. The 93-case C suite's behaviours reduce to those 18 because
   the Rust tests assert directly instead of through CMake fixtures.
+- 2026-08-29 — **the font in the firmware build.** `cmake/LightFont.cmake`'s
+  `light_mk4_add_font()` is mk4's `crush_add_font_target()`: crush is built for the host inside
+  the cross build (Corrosion's `hostbuild`, where mk3 needed an ExternalProject), renders the
+  blob as a build step, and hands its path to the Rust crate through `corrosion_set_env_vars`
+  for `include_bytes!(env!("LIGHT_FONT_LGF"))`, ordered ahead of cargo via `cargo-prebuild_`.
+  Verified from a clean tree: render at step 9, link at 110. `light_core::draw` gained
+  `Rgb565::{fill,text}` (host-tested), and the touch169 demo captions the panel in the 16 px
+  face crush rendered for it. Visual check pending the board being on the bench.

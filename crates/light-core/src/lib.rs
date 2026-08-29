@@ -12,6 +12,7 @@ pub mod bus;
 pub mod console;
 pub mod cst816t;
 pub mod display;
+pub mod draw;
 pub mod log;
 pub mod mailbox;
 pub mod module;
