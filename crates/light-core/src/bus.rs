@@ -74,3 +74,8 @@ pub trait I2cBus {
 pub trait InputPin {
         fn is_low(&self) -> bool;
 }
+
+/// A digital output, for reset lines a driver drives itself.
+pub trait OutputPin {
+        fn set(&mut self, high: bool);
+}

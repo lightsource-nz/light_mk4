@@ -86,6 +86,26 @@ impl I2c1 {
                 i2c.ic_enable().write(|w| unsafe { w.bits(1) });
         }
 
+        /// Abort whatever the block is doing and clear its FIFOs, for a transfer that timed out
+        /// mid-flight: left alone, the next transfer starts behind a half-finished one and fails
+        /// for a different reason -- the Timeout-then-Bus sequence seen on the touch169 when the
+        /// controller stopped answering under a finger.
+        fn abort_transfer() {
+                let i2c = unsafe { &*pac::I2C1::ptr() };
+                i2c.ic_enable().modify(|_, w| w.abort().set_bit());
+                let deadline = crate::now_us() + TIMEOUT_BASE_US;
+                while i2c.ic_enable().read().abort().bit_is_set() {
+                        if crate::now_us() > deadline {
+                                break;
+                        }
+                }
+                let _ = i2c.ic_clr_tx_abrt().read();
+                let _ = i2c.ic_clr_stop_det().read();
+        }
+
+        /// Re-armed per byte, as pico-sdk's per-iteration timeout is: the deadline bounds how
+        /// long ONE byte may take, not the whole transfer, so a controller stretching the clock
+        /// on wake gets the full allowance for every byte
         fn deadline(len: usize) -> u64 {
                 crate::now_us() + TIMEOUT_BASE_US + len as u64 * TIMEOUT_PER_BYTE_US
         }
@@ -93,9 +113,9 @@ impl I2c1 {
         fn write(&mut self, addr: u8, src: &[u8], nostop: bool) -> Result<(), I2cError> {
                 let i2c = unsafe { &*pac::I2C1::ptr() };
                 Self::set_target(addr);
-                let deadline = Self::deadline(src.len());
                 let mut result = Ok(());
                 for (i, &b) in src.iter().enumerate() {
+                        let deadline = Self::deadline(1);
                         let first = i == 0;
                         let last = i == src.len() - 1;
                         let cmd = u32::from(b)
@@ -132,6 +152,9 @@ impl I2c1 {
                                 break;
                         }
                 }
+                if result == Err(I2cError::Timeout) {
+                        Self::abort_transfer();
+                }
                 //   a held START that FAILED must not leave the flag set: the next transfer on
                 // this peripheral may be another device's, and it would open with a spurious
                 // RESTART on an idle bus -- one device's nap taking down its bus-mate
@@ -142,10 +165,10 @@ impl I2c1 {
         fn read(&mut self, addr: u8, dst: &mut [u8], nostop: bool) -> Result<(), I2cError> {
                 let i2c = unsafe { &*pac::I2C1::ptr() };
                 Self::set_target(addr);
-                let deadline = Self::deadline(dst.len());
                 let mut result = Ok(());
                 let len = dst.len();
                 for (i, out) in dst.iter_mut().enumerate() {
+                        let deadline = Self::deadline(1);
                         let first = i == 0;
                         let last = i == len - 1;
                         while TX_FIFO_DEPTH - i2c.ic_txflr().read().bits() == 0 {
@@ -176,6 +199,9 @@ impl I2c1 {
                                 break;
                         }
                         *out = i2c.ic_data_cmd().read().bits() as u8;
+                }
+                if result == Err(I2cError::Timeout) {
+                        Self::abort_transfer();
                 }
                 self.restart_on_next = nostop && result.is_ok();
                 result

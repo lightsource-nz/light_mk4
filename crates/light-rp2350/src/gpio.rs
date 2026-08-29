@@ -1,6 +1,6 @@
 //! GPIO through the pac: function select, pads, SIO input/output.
 
-use light_core::InputPin;
+use light_core::{InputPin, OutputPin};
 use rp235x_pac as pac;
 
 /// RP2350 GPIO function selects (datasheet table 9.4.1). Only the ones in use.
@@ -49,6 +49,12 @@ impl Output {
                 } else {
                         sio.gpio_out_clr().write(|w| unsafe { w.bits(mask) });
                 }
+        }
+}
+
+impl OutputPin for Output {
+        fn set(&mut self, high: bool) {
+                Output::set(self, high)
         }
 }
 

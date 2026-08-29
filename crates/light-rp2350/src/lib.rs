@@ -62,6 +62,11 @@ pub mod touch169 {
         /// The visible glass is GDDRAM rows 20..299 -- measured (mk3 board wiring).
         pub const DISPLAY_ROW_OFFSET: u16 = 20;
         /// 40 MHz confirmed clean on hardware; 10 MHz would cap a full frame at 9.3 fps.
+        ///
+        /// Tried at 10 MHz on 2026-08-29 to test whether the touch controller's wedges (I2C on
+        /// pins 6/7 timing out under continuous rendering) track the SPI clock on 10/11: 17
+        /// clean taps then a wedge, against wedges every 4-8 taps at 40 MHz. Suggestive, not
+        /// decisive -- one run each. Left at 40 MHz, the clock mk3 verified the panel at.
         pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
 
         pub const PIN_TOUCH_SDA: usize = 6;
@@ -96,19 +101,4 @@ impl Board for Backlight {
         fn now_us(&self) -> u64 {
                 now_us()
         }
-}
-
-/// Pulse the touch controller's reset line: high, low, high, 100 ms each, the way mk3's
-/// `light_ioport_signal_reset` does. Blocking; init only.
-///
-/// # Safety
-///
-/// Takes the reset pin; call once, before the touch driver starts polling.
-pub unsafe fn touch_reset_pulse(clock: &mut dyn Clock) {
-        let mut rst = gpio::Output::new(touch169::PIN_TOUCH_RST, true);
-        clock.delay_ms(100);
-        rst.set(false);
-        clock.delay_ms(100);
-        rst.set(true);
-        clock.delay_ms(100);
 }

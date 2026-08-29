@@ -61,3 +61,12 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   coordinates and move it. 25 host tests. The one wrinkle found: the touch controller
   auto-sleeps within a second of its reset, so the probe must follow the pulse immediately.
   Still zero C shims; FFI surface unchanged at three functions.
+- 2026-08-29 — **touch wedge = mk3 parity, still open.** Under steady tapping the CST816T
+  stops answering (I2C timeouts, then bus errors, INT still pulsing) every 4-8 taps; the
+  non-blocking reset recovery ported from mk3 brings it back in ~2 s, which is the start/stop
+  the user sees. mk3 has the identical open stall ("following heavy rendering"); this firmware
+  renders continuously, so it shows the wedge more often. Tried: a 4 ms floor between INT-driven
+  reads (no change), per-byte I2C deadlines (no change), SPI at 10 MHz (17 clean taps then a
+  wedge -- suggestive, not decisive). Next step is a logic analyser on SCL/SDA/INT during a
+  wedge, not more inference. Not a spike blocker: the Rust I2C/SPI/DMA paths reproduce mk3's
+  behaviour, including its bug.

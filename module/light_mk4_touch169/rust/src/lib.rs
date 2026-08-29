@@ -14,10 +14,10 @@
 use core::cell::Cell;
 use core::fmt::Write;
 use critical_section::Mutex;
-use light_core::cst816t::{self, Cst816t, Event};
+use light_core::cst816t::{Cst816t, Event};
 use light_core::st7789::St7789;
 use light_core::{info, log, warn, Board, Display, Module, Poll, Region, Runtime, UpdateError};
-use light_rp2350::gpio::Input;
+use light_rp2350::gpio::{Input, Output};
 use light_rp2350::i2c::I2c1;
 use light_rp2350::spi::Spi1Display;
 use light_rp2350::touch169::*;
@@ -155,7 +155,7 @@ impl Module for DisplayMod {
 
 /// Owns the touch controller; reports taps to the display module through the mailbox.
 struct TouchMod {
-        touch: Cst816t<I2c1, Input>,
+        touch: Cst816t<I2c1, Input, Output>,
         last_report_us: u64,
         /// Polls that saw INT asserted -- diagnostic: does the line move at all under a finger?
         int_low_polls: u32,
@@ -173,8 +173,7 @@ impl Module for TouchMod {
                 //   reset immediately before the probe: the controller auto-sleeps within about
                 // a second of being left alone, and anything that runs between the pulse and
                 // the first read -- the display's init did, at first -- can use that second up
-                // SAFETY: the reset pin is touched here and nowhere else
-                unsafe { light_rp2350::touch_reset_pulse(&mut SysClock) };
+                self.touch.reset_blocking(&mut SysClock);
                 match self.touch.probe() {
                         Ok(Some(id)) => info!("cst816t chip id confirmed: 0x{id:02x}"),
                         Ok(None) => warn!("cst816t answered with an unexpected chip id"),
@@ -199,6 +198,15 @@ impl Module for TouchMod {
                                 Poll::Busy
                         }
                         Some(Event::Move { .. }) => Poll::Busy,
+                        Some(Event::Reset) => {
+                                //   re-probe now, while it is freshly awake: the cheapest check
+                                // that the reset actually brought it back
+                                match self.touch.probe() {
+                                        Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
+                                        Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
+                                }
+                                Poll::Busy
+                        }
                         None => {
                                 if now - self.last_report_us >= 10_000_000 {
                                         self.last_report_us = now;
@@ -206,8 +214,12 @@ impl Module for TouchMod {
                                         // is an aborted transfer, and mk3 measured what a cadence of
                                         // those does to a bus the IMU shares
                                         info!(
-                                                "touch: {} failed reads, INT low on {}/{} polls",
+                                                "touch: {} failed reads ({} nack, {} timeout, {} bus), {} resets, INT low on {}/{} polls",
                                                 self.touch.failures,
+                                                self.touch.nacks,
+                                                self.touch.timeouts,
+                                                self.touch.bus_errors,
+                                                self.touch.recoveries,
                                                 self.int_low_polls,
                                                 self.polls
                                         );
@@ -275,8 +287,8 @@ pub extern "C" fn light_app_main() -> ! {
         let i2c = unsafe { I2c1::new(PIN_TOUCH_SCL, PIN_TOUCH_SDA, TOUCH_I2C_HZ) };
         info!("i2c1 at {} Hz", i2c.actual_hz);
         let int = Input::new_pull_up(PIN_TOUCH_INT);
-        let touch = Cst816t::new(i2c, int, (light_rp2350::now_us() / 1000) as u32);
-        let _ = cst816t::I2C_ADDR;
+        let reset = Output::new(PIN_TOUCH_RST, true);
+        let touch = Cst816t::new(i2c, int, reset, (light_rp2350::now_us() / 1000) as u32);
 
         let mut drain = LogDrain;
         let mut display_mod = DisplayMod {

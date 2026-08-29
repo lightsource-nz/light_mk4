@@ -16,7 +16,7 @@ pub mod module;
 pub mod st7789;
 
 pub use blink::Blinker;
-pub use bus::{Clock, I2cBus, I2cError, InputPin, SpiDisplayBus};
+pub use bus::{Clock, I2cBus, I2cError, InputPin, OutputPin, SpiDisplayBus};
 pub use display::{Display, DisplayDriver, Region, UpdateError};
 pub use module::{Error, Module, Poll, Runtime};
 
