@@ -145,6 +145,8 @@ pub struct Display<'b, D: DisplayDriver> {
         buf: &'b mut [u8],
         /// Under double buffering, what drawing goes into; swapped with `buf` per frame.
         back: Option<&'b mut [u8]>,
+        /// Swapping suspended and the back buffer holding a captured image -- see `freeze`.
+        frozen: bool,
         width: u16,
         height: u16,
         format: PixelFormat,
@@ -158,7 +160,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// `buf` must hold `format.buffer_len(width, height)` bytes.
         pub fn new(driver: D, buf: &'b mut [u8], width: u16, height: u16, format: PixelFormat, now: fn() -> u64) -> Self {
                 assert!(buf.len() >= format.buffer_len(width, height));
-                Self { driver, buf, back: None, width, height, format, update: None, now, timeouts: 0 }
+                Self { driver, buf, back: None, frozen: false, width, height, format, update: None, now, timeouts: 0 }
         }
 
         /// Give the display a second buffer. Drawing then goes into the back buffer while an
@@ -172,15 +174,54 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                 self.back.is_some()
         }
 
-        /// Exchange front and back. Refused while an update is reading the front buffer.
+        /// Exchange front and back. Refused while an update is reading the front buffer. A no-op
+        /// while frozen.
         pub fn swap(&mut self) -> Result<(), UpdateError> {
                 if self.update.is_some() {
                         return Err(UpdateError::Busy);
+                }
+                if self.frozen {
+                        return Ok(());
                 }
                 if let Some(back) = self.back.as_mut() {
                         core::mem::swap(&mut self.buf, back);
                 }
                 Ok(())
+        }
+
+        /// Copy what is on the panel into the back buffer and stop swapping: drawing then goes
+        /// into the FRONT buffer, frame after frame, while the back holds the captured image
+        /// for a blit to sample. This is how an animation keeps the pre-rotation image, or the
+        /// outgoing page, for its duration -- mk3's `set_double_buffer(false)` after a memcpy.
+        /// Refused (`false`) while an update is reading the front, or without a back buffer.
+        pub fn freeze(&mut self) -> bool {
+                if self.update.is_some() {
+                        return false;
+                }
+                let Some(back) = self.back.as_mut() else { return false };
+                let n = self.format.buffer_len(self.width, self.height);
+                back[..n].copy_from_slice(&self.buf[..n]);
+                self.frozen = true;
+                true
+        }
+
+        /// Swapping resumes; the next `swap` exchanges the buffers again.
+        pub fn thaw(&mut self) {
+                self.frozen = false;
+        }
+
+        pub fn is_frozen(&self) -> bool {
+                self.frozen
+        }
+
+        /// While frozen: the front buffer to draw into and the captured image behind it, or
+        /// `None` while an update is reading the front.
+        pub fn frame_and_capture(&mut self) -> Option<(&mut [u8], &[u8])> {
+                if !self.frozen || self.update.is_some() {
+                        return None;
+                }
+                let back = self.back.as_deref()?;
+                Some((self.buf, back))
         }
 
         pub fn format(&self) -> PixelFormat {
@@ -212,9 +253,9 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// Poll or wait first.
         pub fn frame_mut(&mut self) -> Option<&mut [u8]> {
                 match self.back.as_mut() {
-                        Some(back) => Some(back),
-                        None if self.update.is_some() => None,
-                        None => Some(self.buf),
+                        Some(back) if !self.frozen => Some(back),
+                        _ if self.update.is_some() => None,
+                        _ => Some(self.buf),
                 }
         }
 

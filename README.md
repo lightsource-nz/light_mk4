@@ -217,3 +217,16 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   The main page now paints in 5.8 ms and the eight-row list in 8 ms, the frame in 6.7 / 9.5 ms
   -- a fifth of a 30 fps period. `Ui::commit` splits out of `render` so an app can time or
   overdraw a frame it runs itself.
+- 2026-08-30 — **the animations: the last of `light_ui`.** The two blits deferred since step 3
+  (`Canvas::blit_rotated`, inverse-sampled with rounding for the reason mk3 found;
+  `blit_offset`, a copy per row; `scale_inscribed`) work in physical space and ignore the
+  transform, which is what lets them animate between two rotations. `Display::freeze` copies
+  the panel's image into the back buffer and suspends swapping -- mk3's memcpy plus
+  `set_double_buffer(false)` -- so drawing goes to the front while the back holds the capture;
+  `thaw` puts swapping back. On that, `Ui` turns the captured frame through the shortest
+  route over 280 ms and applies the real rotation on the final step, and slides the outgoing
+  page off the incoming one over 180 ms, in the direction the VIEWER calls horizontal whatever
+  the panel's orientation. Taps and swipes are refused mid-turn; a rotation asked for during a
+  transition waits for it. A mono or single-buffered panel snaps, correctly. Tested on the
+  host (a full turn at 50 ms a pass, taps refused, the settled tree at the new size) and on
+  the touch169: four page transitions in 24 frames, none skipped, 6.8 ms worst draw.

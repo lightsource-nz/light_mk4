@@ -635,6 +635,120 @@ impl<'a> Canvas<'a> {
                 }
         }
 
+        // --- blits ------------------------------------------------------------------------
+        //
+        // Both work in PHYSICAL buffer space and ignore the transform entirely: they move an
+        // image, they do not draw through the logical-to-physical mapping. That is what makes
+        // them usable for animating between two rotations, where the transform is precisely the
+        // thing in flux. `src` must be a buffer of exactly this canvas's geometry and format --
+        // typically the display's captured back buffer. 16 bpp only; a 1 bpp path can follow if
+        // a mono panel ever needs one (`false` says nothing was drawn).
+
+        /// 1.0 in the Q15 scale `blit_rotated` takes.
+        pub const SCALE_ONE: i32 = 32768;
+
+        /// The largest scale at which a rotation by `angle_deg` still fits entirely inside the
+        /// buffer -- `SCALE_ONE` at 0 and 180 degrees, smallest at 45. A w*h image rotated by
+        /// 45 degrees needs a box of w|sin| + h|cos| on a side, so at 1:1 the corners fall
+        /// outside a fixed buffer and are cut off part-way through a turn.
+        pub fn scale_inscribed(&self, angle_deg: i16) -> i32 {
+                let s = sin_deg_q15(i32::from(angle_deg)).abs();
+                let c = sin_deg_q15(i32::from(angle_deg) + 90).abs();
+                let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
+                let need_w = w * c + h * s;
+                let need_h = w * s + h * c;
+                if need_w <= 0 || need_h <= 0 {
+                        return Self::SCALE_ONE;
+                }
+                //   (dimension << 30) / need in 64 bits: shifting need down to whole pixels first
+                // would round the divisor, and rounding a divisor down inflates the result --
+                // an inscribed scale even slightly too large clips the corners it exists to keep
+                let fit_w = ((i64::from(w) << 30) / i64::from(need_w)) as i32;
+                let fit_h = ((i64::from(h) << 30) / i64::from(need_h)) as i32;
+                fit_w.min(fit_h).min(Self::SCALE_ONE)
+        }
+
+        /// Sample `src` into this buffer rotated by `angle_deg` about the centre and scaled by
+        /// `scale_q15`. INVERSE sampled: for every destination pixel the source is found and its
+        /// nearest pixel taken -- mapping source pixels forward would scatter them and leave
+        /// gaps that widen with the scale. Destination pixels whose source falls outside the
+        /// buffer are left as they are, so clear first if that matters.
+        pub fn blit_rotated(&mut self, src: &[u8], angle_deg: i16, scale_q15: i32) -> bool {
+                if self.format != PixelFormat::Rgb565 || scale_q15 <= 0 {
+                        return false;
+                }
+                let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
+                if src.len() < (w * h * 2) as usize {
+                        return false;
+                }
+                let (cx, cy) = (w / 2, h / 2);
+                // the inverse rotation folded with the inverse scale, so the inner loop is two
+                // multiply-accumulates per axis
+                let inv = ((i64::from(Self::SCALE_ONE) * i64::from(Self::SCALE_ONE)) / i64::from(scale_q15)) as i32;
+                let cos_i = ((i64::from(sin_deg_q15(i32::from(angle_deg) + 90)) * i64::from(inv)) >> 15) as i32;
+                let sin_i = ((i64::from(sin_deg_q15(i32::from(angle_deg))) * i64::from(inv)) >> 15) as i32;
+                for dy in 0..h {
+                        let ry = dy - cy;
+                        // the row's source origin, stepped along x rather than recomputed
+                        let mut sx = (-cx * cos_i + ry * sin_i) + (cx << 15);
+                        let mut sy = (cx * sin_i + ry * cos_i) + (cy << 15);
+                        let row = (dy * w * 2) as usize;
+                        for dx in 0..w {
+                                //   rounded, not truncated: Q15 cannot represent 1.0, so at 0
+                                // degrees the step is one ulp short of a pixel and the deficit
+                                // crosses a boundary at the centre, shifting half the image by
+                                // one. Rounding absorbs it
+                                let px = (sx + 16384) >> 15;
+                                let py = (sy + 16384) >> 15;
+                                if px >= 0 && py >= 0 && px < w && py < h {
+                                        let s = ((py * w + px) * 2) as usize;
+                                        let d = row + (dx * 2) as usize;
+                                        self.buf[d] = src[s];
+                                        self.buf[d + 1] = src[s + 1];
+                                }
+                                sx += cos_i;
+                                sy -= sin_i;
+                        }
+                }
+                true
+        }
+
+        /// Copy `src` into this buffer displaced by `(off_x, off_y)` in physical pixels. The
+        /// band the displacement uncovers is left as it is, so whatever was drawn first shows
+        /// through: draw the incoming image, then slide the outgoing one off it. A caller wanting
+        /// to slide in a direction the VIEWER would name maps it through the transform's `a` and
+        /// `c`, which give the physical direction logical +x points in.
+        pub fn blit_offset(&mut self, src: &[u8], off_x: i32, off_y: i32) -> bool {
+                if self.format != PixelFormat::Rgb565 {
+                        return false;
+                }
+                let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
+                if src.len() < (w * h * 2) as usize {
+                        return false;
+                }
+                if off_x <= -w || off_x >= w || off_y <= -h || off_y >= h {
+                        return false;
+                }
+                // a translation: each destination row draws from one contiguous run of one
+                // source row, a copy per row rather than a loop per pixel
+                for dy in 0..h {
+                        let sy = dy - off_y;
+                        if sy < 0 || sy >= h {
+                                continue;
+                        }
+                        let dx0 = off_x.max(0);
+                        let dx1 = if off_x < 0 { w + off_x } else { w };
+                        if dx1 <= dx0 {
+                                continue;
+                        }
+                        let n = ((dx1 - dx0) * 2) as usize;
+                        let s = ((sy * w + (dx0 - off_x)) * 2) as usize;
+                        let d = ((dy * w + dx0) * 2) as usize;
+                        self.buf[d..d + n].copy_from_slice(&src[s..s + n]);
+                }
+                true
+        }
+
         /// Draw `text` with its cell's top-left at `origin`, ink in `fg`. Only ink is painted;
         /// clear the box first (or use [`text_boxed`](Self::text_boxed)) if the background
         /// matters. Returns the logical region the cells cover, clipped, if any of it landed.

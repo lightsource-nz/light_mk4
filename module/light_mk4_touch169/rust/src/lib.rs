@@ -205,8 +205,6 @@ struct DisplayMod {
         /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
         /// push (frame_end until the panel is idle) seen, in microseconds.
         draw_us_max: u64,
-        clear_us_max: u64,
-        paint_us_max: u64,
         push_us_max: u64,
         push_started_us: Option<u64>,
 }
@@ -304,18 +302,14 @@ impl DisplayMod {
                         AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
                         AppEvent::Command(Command::Stats) => {
                                 info!(
-                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us (clear {}, paint {}), max push {} us",
+                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
                                         self.layer.frames(),
                                         self.layer.skipped,
                                         self.display.timeouts,
                                         self.draw_us_max,
-                                        self.clear_us_max,
-                                        self.paint_us_max,
                                         self.push_us_max
                                 );
                                 self.draw_us_max = 0;
-                                self.clear_us_max = 0;
-                                self.paint_us_max = 0;
                                 self.push_us_max = 0;
                         }
                         _ => {}
@@ -323,24 +317,19 @@ impl DisplayMod {
         }
 
         fn render(&mut self) {
-                if !self.ui.is_dirty() {
+                if !self.ui.is_dirty() && !self.ui.is_animating() {
                         return;
                 }
                 let now = light_rp2350::now_us();
-                //   the frame run by hand rather than through Ui::render, so each phase is
-                // timed: the clear (frame_begin), the paint, and the commit + push start
-                let Some(mut c) = self.layer.frame_begin(&mut self.display, now) else { return };
-                let cleared = light_rp2350::now_us();
-                self.ui.paint(&mut c, &self.font);
-                drop(c);
-                let painted = light_rp2350::now_us();
-                self.ui.commit(self.layer);
-                self.layer.frame_end(&mut self.display);
+                //   through Ui::render, which also runs the rotation and page animations; the
+                // phase split that found Font::pixel is done by running the frame by hand with
+                // frame_begin / paint / commit / frame_end when it is wanted again
+                let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
                 let done = light_rp2350::now_us();
-                self.clear_us_max = self.clear_us_max.max(cleared - now);
-                self.paint_us_max = self.paint_us_max.max(painted - cleared);
-                self.draw_us_max = self.draw_us_max.max(done - now);
-                self.push_started_us = Some(done);
+                if drew || self.ui.is_animating() {
+                        self.draw_us_max = self.draw_us_max.max(done - now);
+                        self.push_started_us = Some(done);
+                }
         }
 }
 
@@ -393,7 +382,7 @@ impl Module for DisplayMod {
                         self.handle(ev);
                 }
                 self.render();
-                if self.ui.is_dirty() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
+                if self.ui.is_dirty() || self.ui.is_animating() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
@@ -692,8 +681,6 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 toggled: [false; 3],
                 drag_reported: false,
                 draw_us_max: 0,
-                clear_us_max: 0,
-                paint_us_max: 0,
                 push_us_max: 0,
                 push_started_us: None,
         });

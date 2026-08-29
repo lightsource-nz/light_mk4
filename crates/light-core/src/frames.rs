@@ -158,6 +158,15 @@ impl FrameLayer {
                 crate::draw::Point::new(((m.d * px - m.b * py) * det).clamp(0, i32::from(w) - 1), ((m.a * py - m.c * px) * det).clamp(0, i32::from(h) - 1))
         }
 
+        pub fn rotation(&self) -> Rotation {
+                self.rotation
+        }
+
+        /// The panel's own dimensions, which the blits work in.
+        pub fn physical_size(&self) -> (u16, u16) {
+                (self.width, self.height)
+        }
+
         pub fn logical_size(&self) -> (u16, u16) {
                 match self.rotation {
                         Rotation::R90 | Rotation::R270 => (self.height, self.width),

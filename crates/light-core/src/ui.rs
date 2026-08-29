@@ -44,6 +44,16 @@ pub const DRAG_SLOP: i32 = 16;
 /// the work a single draw does.
 pub const TEXT_MAX: usize = 64;
 
+/// How long a rotation takes to animate: long enough to read as a turn rather than a glitch,
+/// short enough not to feel like waiting. Input is still collected during it; only the drawing
+/// is given over to the animation.
+pub const ROTATE_MS: u32 = 280;
+
+/// How long a page transition takes. Shorter than a rotation: a rotation re-orients the whole
+/// interface and wants to be followed, while a page change is a step through a structure the
+/// user already has in mind, and waiting for it is what makes an interface feel slow.
+pub const PAGE_MOVE_MS: u32 = 180;
+
 /// A handle to a widget in its `Ui`'s arena. Stale after the widget is destroyed: the arena
 /// answers `None` for it, and a handle from a torn-down page cannot reach another page's widget
 /// except by index reuse, which is why handlers conventionally navigate last and touch nothing
@@ -385,6 +395,32 @@ fn corner_drop(radius: u8, inset_x: i32) -> i32 {
         r - isqrt((ix * (2 * r - ix)) as u32) as i32
 }
 
+/// What one pass of an animation did.
+enum Step {
+        Drew,
+        Waiting,
+        Finished,
+}
+
+fn quadrant(r: Rotation) -> i32 {
+        match r {
+                Rotation::R0 => 0,
+                Rotation::R90 => 1,
+                Rotation::R180 => 2,
+                Rotation::R270 => 3,
+        }
+}
+
+/// The shortest signed turn between two quadrants, in degrees: -90, 0, 90 or 180. Going the
+/// long way round would animate three quarters of a turn to reach a neighbour.
+fn rotation_delta_degrees(from: Rotation, to: Rotation) -> i32 {
+        let mut q = (quadrant(to) + 4 - quadrant(from)) % 4;
+        if q == 3 {
+                q = -1;
+        }
+        q * 90
+}
+
 fn rect_empty(r: &Rect) -> bool {
         r.x1 < r.x0 || r.y1 < r.y0
 }
@@ -443,6 +479,40 @@ pub struct Ui<A: 'static, const N: usize> {
         /// Where back goes when it is not the current page's parent; set only by
         /// `navigate_returning`, cleared by every ordinary navigation.
         return_page: Option<&'static Page<A>>,
+        // --- the rotation animation, driven from `render` ---
+        //   while active, frames show the pre-rotation image turning rather than the widget
+        // tree; the real rotation is applied once, on the final step. The image is captured
+        // into the display's back buffer at the first step (`Display::freeze`), which is why the
+        // animation needs the display and `set_rotation` does not
+        rotating: bool,
+        rotate_started: bool,
+        rotate_target: Rotation,
+        /// Total turn in degrees, signed: the shortest route between the two quadrants.
+        rotate_degrees: i32,
+        rotate_start_us: u64,
+        pub rotate_ms: u32,
+        /// A rotation asked for while a transition was running, applied once it finishes. Both
+        /// animations want the back buffer and the frame, so they cannot overlap; deferring
+        /// rather than dropping either means the transition is seen through and the device
+        /// still ends up the right way up.
+        rotate_deferred: Option<Rotation>,
+        // --- the page transition, likewise ---
+        //   each frame draws the incoming page and then slides the image captured before the
+        // transfer off it, so the outgoing page appears to move away and reveal the new one.
+        // Only the outgoing image is stored: the incoming page is the live tree, redrawn each
+        // step, which is why this costs one buffer and not two
+        page_moving: bool,
+        page_move_started: bool,
+        /// Which way the outgoing image leaves: forward pushes it toward logical -x so the new
+        /// page arrives from the right; a return sends it the other way.
+        page_move_back: bool,
+        /// Physical unit direction, derived from the logical one at the first step.
+        page_move_dx: i32,
+        page_move_dy: i32,
+        /// How far it travels to leave: the buffer's extent along that axis.
+        page_move_span: i32,
+        page_move_start_us: u64,
+        pub page_move_ms: u32,
 }
 
 impl<A: Copy, const N: usize> Ui<A, N> {
@@ -471,7 +541,26 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         drag_slop: DRAG_SLOP,
                         page: None,
                         return_page: None,
+                        rotating: false,
+                        rotate_started: false,
+                        rotate_target: Rotation::R0,
+                        rotate_degrees: 0,
+                        rotate_start_us: 0,
+                        rotate_ms: ROTATE_MS,
+                        rotate_deferred: None,
+                        page_moving: false,
+                        page_move_started: false,
+                        page_move_back: false,
+                        page_move_dx: 0,
+                        page_move_dy: 0,
+                        page_move_span: 0,
+                        page_move_start_us: 0,
+                        page_move_ms: PAGE_MOVE_MS,
                 }
+        }
+
+        pub fn is_animating(&self) -> bool {
+                self.rotating || self.page_moving
         }
 
         /// The font's cell metrics, which layout and truncation need; fonts are fixed-pitch.
@@ -748,7 +837,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
 
         // --- navigation ---
 
-        fn show_page(&mut self, page: &'static Page<A>, return_page: Option<&'static Page<A>>) -> Result<(), Error> {
+        fn show_page(&mut self, page: &'static Page<A>, return_page: Option<&'static Page<A>>, back: bool) -> Result<(), Error> {
+                //   nothing to slide before the first page exists. A rotation in progress already
+                // owns the back buffer and the frame, so a transfer during one simply snaps -- a
+                // correct change beats two animations fighting over the same pixels. The image
+                // itself is captured at the first render step, which is before anything of the
+                // new tree has been drawn
+                if self.root.is_some() && !self.rotating {
+                        self.page_moving = true;
+                        self.page_move_started = false;
+                        self.page_move_back = back;
+                }
                 // the old tree goes before the new one is built: only one page's widgets exist
                 if let Some(root) = self.root {
                         self.destroy(root);
@@ -764,13 +863,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// to call from wherever an activation is handled -- the activating widget is gone
         /// afterwards, which is why activation returns before anything navigates.
         pub fn navigate(&mut self, page: &'static Page<A>) -> Result<(), Error> {
-                self.show_page(page, None)
+                self.show_page(page, None, false)
         }
 
         /// The same, but back from `page` goes to `return_page` -- for a cross-tree jump that
         /// should return to where it was reached from. The override lasts exactly one page.
         pub fn navigate_returning(&mut self, page: &'static Page<A>, return_page: &'static Page<A>) -> Result<(), Error> {
-                self.show_page(page, Some(return_page))
+                self.show_page(page, Some(return_page), false)
         }
 
         /// Go to the current page's return address if one was set, otherwise its parent. `false`,
@@ -779,7 +878,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         pub fn navigate_back(&mut self) -> bool {
                 let Some(page) = self.page else { return false };
                 let Some(target) = self.return_page.or(page.parent) else { return false };
-                self.show_page(target, None).is_ok()
+                self.show_page(target, None, true).is_ok()
         }
 
         // --- geometry ---
@@ -1155,19 +1254,144 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// orientation onto a rotation, because that depends on whether the panel is natively
         /// portrait or landscape, which is a board fact.
         pub fn set_rotation(&mut self, layer: &mut FrameLayer, rotation: Rotation) {
-                let before = layer.transform();
-                layer.set_orientation(rotation, Flip::None);
-                if layer.transform() == before {
+                //   compared against the target rather than the live rotation: mid-animation the
+                // live one is still the OLD value, so a repeated orientation report would
+                // otherwise restart the turn on every tick
+                if self.rotating {
+                        if self.rotate_target == rotation {
+                                return;
+                        }
+                } else if layer.rotation() == rotation {
                         return;
                 }
-                // regions measured against the old geometry describe nothing now; and the panel
-                // still shows the old arrangement in the old orientation, so nothing short of the
-                // whole canvas is a safe region to push
+                if self.page_moving {
+                        //   the target is recorded rather than the rotation restarted from
+                        // scratch, so a board turned twice mid-transition settles where it ended up
+                        self.rotate_deferred = Some(rotation);
+                        debug!("ui: rotation to {rotation:?} deferred until the page transition finishes");
+                        return;
+                }
+                let from = if self.rotating { self.rotate_target } else { layer.rotation() };
+                self.rotating = true;
+                self.rotate_started = false;
+                self.rotate_target = rotation;
+                self.rotate_degrees = rotation_delta_degrees(from, rotation);
+                self.dirty = true;
+                debug!("ui: rotating {} degrees to {rotation:?}", self.rotate_degrees);
+        }
+
+        /// Apply a rotation for real: re-orient the layer, drop the regions measured against the
+        /// old geometry, re-lay-out and repaint everything -- the panel still shows the old
+        /// arrangement in the old orientation, so nothing short of the whole canvas is safe.
+        fn commit_rotation(&mut self, layer: &mut FrameLayer, rotation: Rotation) {
+                layer.set_orientation(rotation, Flip::None);
                 layer.invalidate_all();
                 self.fit(layer);
                 self.invalidate_all();
                 let (w, h) = self.logical_size();
                 debug!("ui rotation now {rotation:?}, canvas {w}x{h}");
+        }
+
+        /// One step of the rotation animation: a frame of the turn drawn, nothing drawn because
+        /// the display was not ready, or the turn finished and the real rotation applied -- in
+        /// which case the caller draws the settled tree without waiting a pass.
+        fn rotation_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, now_us: u64) -> Step {
+                if !self.rotate_started {
+                        if !display.is_double_buffered() || display.format() != crate::draw::PixelFormat::Rgb565 {
+                                // nowhere to hold the image, or nothing to rotate it with: a
+                                // correct snap beats a broken animation
+                                let target = self.rotate_target;
+                                self.rotating = false;
+                                self.commit_rotation(layer, target);
+                                return Step::Finished;
+                        }
+                        if !display.freeze() {
+                                // the panel is still reading the front buffer; capture next pass
+                                return Step::Waiting;
+                        }
+                        self.rotate_started = true;
+                        self.rotate_start_us = now_us;
+                }
+                let elapsed = now_us.saturating_sub(self.rotate_start_us);
+                if elapsed >= u64::from(self.rotate_ms) * 1000 {
+                        // swapping back on before committing, so the repaint that follows runs
+                        // against a normal double-buffered display again
+                        display.thaw();
+                        self.rotating = false;
+                        let target = self.rotate_target;
+                        self.commit_rotation(layer, target);
+                        return Step::Finished;
+                }
+                let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
+                drop(c);
+                // linear in time: at roughly ten frames for the whole turn an eased curve is
+                // below what the eye picks out, and linear keeps the angle predictable on the
+                // bench. Shrunk to whatever still fits, or the corners are sliced off mid-turn
+                let angle = ((self.rotate_degrees as i64 * elapsed as i64) / (i64::from(self.rotate_ms) * 1000)) as i16;
+                if let Some((front, captured)) = display.frame_and_capture() {
+                        let mut c = layer.canvas(front);
+                        let scale = c.scale_inscribed(angle);
+                        c.blit_rotated(captured, angle, scale);
+                }
+                layer.invalidate_all();
+                layer.frame_end(display);
+                Step::Drew
+        }
+
+        /// One step of a page transition; the same contract as `rotation_step`.
+        fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> Step {
+                if !self.page_move_started {
+                        let can_animate = display.is_double_buffered() && display.format() == crate::draw::PixelFormat::Rgb565;
+                        if !can_animate {
+                                self.page_moving = false;
+                                self.invalidate_all();
+                                return Step::Finished;
+                        }
+                        if !display.freeze() {
+                                return Step::Waiting; // busy: capture next pass
+                        }
+                        //   the direction is chosen in LOGICAL terms and converted here, because
+                        // the blit works in physical space: the transform's a and c are the
+                        // physical components of logical +x, exactly one of them non-zero for a
+                        // pure rotation, so this picks the axis the viewer calls horizontal
+                        // whatever the board's orientation
+                        let m = layer.transform();
+                        let ux = m.a.signum();
+                        let uy = m.c.signum();
+                        let sign = if self.page_move_back { 1 } else { -1 };
+                        let (pw, ph) = layer.physical_size();
+                        self.page_move_dx = sign * ux;
+                        self.page_move_dy = sign * uy;
+                        self.page_move_span = if ux != 0 { i32::from(pw) } else { i32::from(ph) };
+                        self.page_move_started = true;
+                        self.page_move_start_us = now_us;
+                }
+                let elapsed = now_us.saturating_sub(self.page_move_start_us);
+                if elapsed >= u64::from(self.page_move_ms) * 1000 {
+                        display.thaw();
+                        self.page_moving = false;
+                        self.invalidate_all();
+                        //   a rotation that arrived mid-transition runs now. Taken BEFORE the
+                        // call: set_rotation checks page_moving, already false, so it proceeds
+                        if let Some(r) = self.rotate_deferred.take() {
+                                self.set_rotation(layer, r);
+                        }
+                        return Step::Finished;
+                }
+                let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
+                drop(c);
+                //   the incoming page first, as an ordinary repaint of the live tree, then the
+                // outgoing image over the top: the blit leaves the band it no longer covers
+                // untouched, so what shows through is the new page already drawn beneath
+                let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
+                if let Some((front, captured)) = display.frame_and_capture() {
+                        let mut c = layer.canvas(front);
+                        self.paint(&mut c, font);
+                        c.blit_offset(captured, self.page_move_dx * travel, self.page_move_dy * travel);
+                }
+                layer.invalidate_all();
+                layer.frame_end(display);
+                Step::Drew
         }
 
         // --- invalidation ---
@@ -1362,6 +1586,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// Hit-test a PANEL point and, if it lands on an actionable widget, focus AND activate it
         /// -- a touch is a complete interaction. Returns `(hit, emitted)`.
         pub fn press_at(&mut self, x: u16, y: u16) -> (bool, Option<A>) {
+                //   silently ignored while the interface is turning: the panel shows the
+                // pre-rotation image being animated while the tree is laid out for the OLD
+                // rotation and the transform is not yet the new one, so a tap would resolve
+                // against a layout matching neither what is on screen nor where it will settle
+                if self.rotating {
+                        return (false, None);
+                }
                 let (lx, ly) = self.untransform(i32::from(x), i32::from(y));
                 let Some(root) = self.root else { return (false, None) };
                 let Some(hit) = self.hit_test(root, self.canvas_rect(), lx, ly, None) else { return (false, None) };
@@ -1386,6 +1617,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// - A touch that travels with nothing scrollable under it commits to neither, and the
         ///   release is left for the gesture pipeline -- a swipe on a non-scrolling page navigates.
         pub fn touch(&mut self, x: u16, y: u16, touching: bool) -> Touch<A> {
+                // mid-rotation samples reset the tracker rather than being remembered: the
+                // layout the touch began against is being replaced
+                if self.rotating {
+                        self.touch_reset();
+                        return Touch::None;
+                }
                 if !touching {
                         if !self.touch_down {
                                 return Touch::None;
@@ -1460,6 +1697,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// Both endpoints go through the same untransform a tap does, so only one place knows how
         /// the frames relate. `None` for no dominant axis, including both ends clamping to one edge.
         pub fn swipe_direction(&self, start: (u16, u16), end: (u16, u16)) -> Option<SwipeDir> {
+                // discarded while turning, for the reason a tap is
+                if self.rotating {
+                        return None;
+                }
                 let (ax, ay) = self.untransform(i32::from(start.0), i32::from(start.1));
                 let (bx, by) = self.untransform(i32::from(end.0), i32::from(end.1));
                 let (dx, dy) = (bx - ax, by - ay);
@@ -1686,6 +1927,25 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// when a frame happens, and this is a no-op on the passes in between. On a refused frame
         /// the dirty flag and the regions survive, so the repaint happens on a later pass.
         pub fn render<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> bool {
+                //   the two animations are mutually exclusive by construction, from both ends:
+                // show_page declines while a rotation runs, and set_rotation defers while a
+                // transition runs. The transition goes first only because it is the one that
+                // hands a rotation on when it finishes; a step that finishes falls through to
+                // draw the settled tree below rather than waiting a pass
+                if self.page_moving {
+                        match self.page_step(layer, display, font, now_us) {
+                                Step::Drew => return true,
+                                Step::Waiting => return false,
+                                Step::Finished => {}
+                        }
+                }
+                if self.rotating {
+                        match self.rotation_step(layer, display, now_us) {
+                                Step::Drew => return true,
+                                Step::Waiting => return false,
+                                Step::Finished => {}
+                        }
+                }
                 if !self.dirty || self.root.is_none() {
                         return false;
                 }
@@ -1952,12 +2212,16 @@ mod tests {
                 let blob = font_blob();
                 let font = Font::parse(&blob).unwrap();
                 let mut buf = [0u8; 64 * 48 / 8];
-                let (mut layer, _d) = rig(&mut buf);
+                let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
                 ui.set_font(&font);
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 ui.set_rotation(&mut layer, Rotation::R90);
+                // a mono, single-buffered panel cannot animate: the rotation snaps at the next
+                // render, which is where it is applied
+                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(!ui.is_animating());
                 assert_eq!(ui.logical_size(), (48, 64));
                 let root = ui.root().unwrap();
                 assert_eq!(ui.get(root).unwrap().rect, Rect::new(0, 0, 47, 63));
@@ -2012,24 +2276,44 @@ mod tests {
                 ui.set_font(&font);
                 ui.fit(&layer);
                 ui.navigate(&T_PAGE_MAIN).unwrap();
-                for rot in [Rotation::R0, Rotation::R90, Rotation::R180, Rotation::R270, Rotation::R0] {
+                // time advances 50 ms per pass, so the animations run their course
+                let mut t: u64 = 0;
+                let settle = |ui: &mut Ui<Ev, 12>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| {
+                        let mut frames = 0;
+                        loop {
+                                if ui.render(layer, display, &font, *t) {
+                                        frames += 1;
+                                }
+                                let _ = flush(layer, display);
+                                *t += 50_000;
+                                if !ui.is_animating() && !ui.is_dirty() {
+                                        break;
+                                }
+                                assert!(frames < 100, "an animation that never ends");
+                        }
+                        frames
+                };
+                assert!(settle(&mut ui, &mut layer, &mut display, &mut t) >= 1);
+                for rot in [Rotation::R90, Rotation::R180, Rotation::R270, Rotation::R0] {
                         ui.set_rotation(&mut layer, rot);
-                        assert!(ui.render(&mut layer, &mut display, &font, 0));
-                        let _ = flush(&mut layer, &mut display);
+                        // a turn of 280 ms at 50 ms a pass: several animation frames, then the
+                        // settled tree at the new orientation
+                        assert!(settle(&mut ui, &mut layer, &mut display, &mut t) >= 5);
+                        assert_eq!(layer.rotation(), rot);
                         for _ in 0..6 {
                                 ui.focus_next();
-                                assert!(ui.render(&mut layer, &mut display, &font, 0));
-                                let _ = flush(&mut layer, &mut display);
+                                assert_eq!(settle(&mut ui, &mut layer, &mut display, &mut t), 1);
                         }
                 }
-                // into the list, drag it to the end, tap the back row
+                assert_eq!(ui.logical_size(), (240, 280));
+                // into the list -- a page transition -- then drag it to the end, tap the back row
                 let root = ui.root().unwrap();
                 let list_btn = ui.children(root).last().unwrap();
                 ui.set_focus(Some(list_btn));
                 assert_eq!(ui.activate(), None);
                 assert!(core::ptr::eq(ui.page().unwrap(), &T_PAGE_LIST));
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
-                let _ = flush(&mut layer, &mut display);
+                assert!(ui.is_animating());
+                assert!(settle(&mut ui, &mut layer, &mut display, &mut t) >= 3);
                 assert_eq!(ui.touch(120, 200, true), Touch::Pending);
                 let mut dragged = false;
                 for y in (20..200).rev().step_by(10) {
@@ -2039,20 +2323,62 @@ mod tests {
                                 Touch::Drag => dragged = true,
                                 other => panic!("unexpected {other:?}"),
                         }
-                        ui.render(&mut layer, &mut display, &font, 0);
-                        let _ = flush(&mut layer, &mut display);
+                        settle(&mut ui, &mut layer, &mut display, &mut t);
                 }
                 assert!(dragged);
                 assert_eq!(ui.touch(120, 20, false), Touch::DragEnd);
                 let root = ui.root().unwrap();
-                assert!(ui.scroll_by(root, 0, 1000) || true);
+                let _ = ui.scroll_by(root, 0, 1000);
                 let back = ui.children(root).last().unwrap();
                 let r = ui.get(back).unwrap().rect;
                 let (cx, cy) = (((r.x0 + r.x1) / 2) as u16, ((r.y0 + r.y1) / 2) as u16);
                 assert_eq!(ui.touch(cx, cy, true), Touch::Pending);
                 assert_eq!(ui.touch(cx, cy, false), Touch::Tap { hit: true, emitted: None });
                 assert!(core::ptr::eq(ui.page().unwrap(), &T_PAGE_MAIN));
+                // a tap during the return transition still lands: only rotation blocks input
+                assert!(ui.is_animating());
+                assert!(settle(&mut ui, &mut layer, &mut display, &mut t) >= 3);
+                assert!(!display.is_frozen());
+        }
+
+        #[test]
+        fn a_rotation_animates_from_a_captured_frame_and_ignores_taps_until_it_settles() {
+                let mut e = Encoder::new(12, 19, 15, 16);
+                for c in 0x20u8..0x7f {
+                        e.add(c, &[0xFF; 38]).unwrap();
+                }
+                let blob = e.encode();
+                let font = Font::parse(&blob).unwrap();
+                let mut front = std::vec![0u8; 240 * 280 * 2];
+                let mut back = std::vec![0u8; 240 * 280 * 2];
+                let mut display = Display::new(Mock { pushed: StdVec::new() }, &mut front, 240, 280, PixelFormat::Rgb565, now);
+                display.set_back_buffer(&mut back);
+                let mut layer = FrameLayer::new(240, 280, PixelFormat::Rgb565);
+                let mut ui: Ui<Ev, 12> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&T_PAGE_MAIN).unwrap();
                 assert!(ui.render(&mut layer, &mut display, &font, 0));
+                let _ = flush(&mut layer, &mut display);
+                ui.set_rotation(&mut layer, Rotation::R90);
+                // the first step captures the frame and freezes swapping; the layer is still
+                // at R0 and the tree still laid out for it
+                assert!(ui.render(&mut layer, &mut display, &font, 1_000), "an animation frame was drawn");
+                assert!(display.is_frozen());
+                assert_eq!(layer.rotation(), Rotation::R0);
+                assert_eq!(flush(&mut layer, &mut display), [Region::full(240, 280)], "an animation frame is a whole-panel push");
+                // taps are refused mid-turn
+                assert_eq!(ui.press_at(120, 100), (false, None));
+                assert_eq!(ui.touch(120, 100, true), Touch::None);
+                assert!(ui.render(&mut layer, &mut display, &font, 150_000));
+                let _ = flush(&mut layer, &mut display);
+                // past the duration: thawed, committed, the settled tree drawn in one call
+                assert!(ui.render(&mut layer, &mut display, &font, 300_000));
+                assert!(!display.is_frozen());
+                assert!(!ui.is_animating());
+                assert_eq!(layer.rotation(), Rotation::R90);
+                assert_eq!(ui.logical_size(), (280, 240));
+                assert_eq!(flush(&mut layer, &mut display), [Region::full(240, 280)]);
         }
 
         #[test]
