@@ -159,5 +159,8 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   update at a time from `poll`. `Display` gained a back buffer and `swap`. 7 tests, including
   the carry-forward rule and a rotation forgetting stale regions. Both apps draw through it;
   the touch169 is double-buffered at 30 fps (hardware-verified: 187 frames in 10 s, 11 skipped,
-  0 chunk timeouts -- below target, being measured). The OLED firmware runs on the po13 rig
-  (LED confirmed over SWD); the panel itself awaits a look.
+  0 chunk timeouts at boot; 151 frames in 5.03 s once running, i.e. 30 fps). **The po13 OLED is
+  hardware-verified** too: border, caption and bouncing square as designed, first try -- the
+  SH1107 column addressing, the 1 bpp packing, the 90-degree rotation and the region-to-column
+  mapping all correct together. Both bench boards now run the same demo through the same
+  stack: rasteriser, frame layer, chunk protocol, driver.
