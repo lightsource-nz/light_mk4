@@ -10,6 +10,10 @@
                 'conf-light_mk4-host-debug'     = 'build-host'
                 'conf-light_mk4-touch169-debug' = 'build-touch169'
                 'conf-light_mk4-pico2-debug'    = 'build-pico2'
+                # the release profile (opt-level s, fat LTO), as separate trees so the debug
+                # ones stay warm: build/flash with -Preset conf-light_mk4-<board>-release
+                'conf-light_mk4-touch169-release' = 'build-touch169-release'
+                'conf-light_mk4-pico2-release'    = 'build-pico2-release'
         }
 
         Targets = @{
@@ -34,12 +38,30 @@
                         PICO_PLATFORM     = 'rp2350-arm-s'
                         Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
                 }
+                'conf-light_mk4-touch169-release' = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_1.69'
+                        PICO_PLATFORM     = 'rp2350-arm-s'
+                        Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
+                        CMAKE_BUILD_TYPE  = 'Release'
+                }
+                'conf-light_mk4-pico2-release'    = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'pico2'
+                        PICO_PLATFORM     = 'rp2350-arm-s'
+                        Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
+                        CMAKE_BUILD_TYPE  = 'Release'
+                }
         }
 
         # which OpenOCD config and SVD belong to which board -- see screen-test's config for
         # why getting this pairing wrong misbehaves rather than erroring
         Debug = @{
                 'conf-light_mk4-pico2-debug' = @{
+                        Config = 'openocd-rp2350.cfg'
+                        Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                }
+                'conf-light_mk4-pico2-release' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                 }

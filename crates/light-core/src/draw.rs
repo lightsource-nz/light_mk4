@@ -330,9 +330,57 @@ impl<'a> Canvas<'a> {
                 }
                 x0 = x0.max(i32::from(self.clip.x0));
                 x1 = x1.min(i32::from(self.clip.x1));
-                for x in x0..=x1 {
-                        let (px, py) = self.transform.apply(x, y);
-                        self.set_phys(px as u16, py as u16, color);
+                self.run(x0, y, (x1 - x0 + 1) as usize, color);
+        }
+
+        /// A horizontal logical run of `len` pixels from `(x0, y)`, already clipped, written
+        /// without transforming each pixel: every transform here maps logical +x onto one
+        /// physical axis, so the run is a fixed stride through the buffer -- contiguous under
+        /// R0/R180, a column under R90/R270. This is what makes a full repaint affordable:
+        /// per-pixel transform and clip put a 240x280 frame at 22 ms, most of it in fills.
+        fn run(&mut self, x0: i32, y: i32, len: usize, color: u16) {
+                if len == 0 {
+                        return;
+                }
+                let (px, py) = self.transform.apply(x0, y);
+                // physical step per logical +x, in pixels
+                let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
+                let mut i = py as isize * self.phys_w as isize + px as isize;
+                match self.format {
+                        PixelFormat::Rgb565 => {
+                                let [hi, lo] = color.to_be_bytes();
+                                if step == 1 {
+                                        let start = i as usize * 2;
+                                        for p in self.buf[start..start + len * 2].chunks_exact_mut(2) {
+                                                p[0] = hi;
+                                                p[1] = lo;
+                                        }
+                                        return;
+                                }
+                                for _ in 0..len {
+                                        let b = i as usize * 2;
+                                        self.buf[b] = hi;
+                                        self.buf[b + 1] = lo;
+                                        i += step;
+                                }
+                        }
+                        PixelFormat::Mono1 => {
+                                // packed 8 to a byte along physical x; a stride other than ±1
+                                // walks rows, so the general path stays per pixel
+                                let stride = self.format.stride(self.phys_w);
+                                let (mut x, mut yy) = (px as isize, py as isize);
+                                let (dx, dy) = (self.transform.a as isize, self.transform.c as isize);
+                                for _ in 0..len {
+                                        let byte = &mut self.buf[yy as usize * stride + x as usize / 8];
+                                        if color != 0 {
+                                                *byte |= 1 << (x % 8);
+                                        } else {
+                                                *byte &= !(1 << (x % 8));
+                                        }
+                                        x += dx;
+                                        yy += dy;
+                                }
+                        }
                 }
         }
 
@@ -349,6 +397,11 @@ impl<'a> Canvas<'a> {
                         PixelFormat::Rgb565 => {
                                 let [hi, lo] = self.bg.to_be_bytes();
                                 let n = self.format.buffer_len(self.phys_w, self.phys_h);
+                                if hi == lo {
+                                        // black, white and the greys: one memset
+                                        self.buf[..n].fill(hi);
+                                        return;
+                                }
                                 for px in self.buf[..n].chunks_exact_mut(2) {
                                         px[0] = hi;
                                         px[1] = lo;
@@ -357,9 +410,49 @@ impl<'a> Canvas<'a> {
                 }
         }
 
-        /// Bresenham, clipped per pixel. Corners in any order.
+        /// A vertical run, clipped: the column counterpart of `span`, stepping the buffer by the
+        /// transform's logical-+y stride rather than transforming each pixel.
+        fn column(&mut self, x: i32, y0: i32, y1: i32, color: u16) {
+                if x < i32::from(self.clip.x0) || x > i32::from(self.clip.x1) {
+                        return;
+                }
+                let (y0, y1) = (y0.min(y1).max(i32::from(self.clip.y0)), y0.max(y1).min(i32::from(self.clip.y1)));
+                if y1 < y0 {
+                        return;
+                }
+                let (px, py) = self.transform.apply(x, y0);
+                let step = self.transform.b as isize + self.transform.d as isize * self.phys_w as isize;
+                let mut i = py as isize * self.phys_w as isize + px as isize;
+                match self.format {
+                        PixelFormat::Rgb565 => {
+                                let [hi, lo] = color.to_be_bytes();
+                                for _ in y0..=y1 {
+                                        let b = i as usize * 2;
+                                        self.buf[b] = hi;
+                                        self.buf[b + 1] = lo;
+                                        i += step;
+                                }
+                        }
+                        PixelFormat::Mono1 => {
+                                for y in y0..=y1 {
+                                        self.set(x, y, color);
+                                }
+                        }
+                }
+        }
+
+        /// Bresenham, clipped per pixel. Corners in any order. Axis-aligned lines take the run
+        /// paths, which is what every frame and separator is.
         pub fn line(&mut self, p0: Point, p1: Point) {
                 let color = self.fg;
+                if p0.y == p1.y {
+                        self.span(p0.x, p1.x, p0.y, color);
+                        return;
+                }
+                if p0.x == p1.x {
+                        self.column(p0.x, p0.y, p1.y, color);
+                        return;
+                }
                 let dx = (p1.x - p0.x).abs();
                 let sx = if p0.x < p1.x { 1 } else { -1 };
                 let dy = -(p1.y - p0.y).abs();
@@ -560,14 +653,61 @@ impl<'a> Canvas<'a> {
                 let fg = self.fg;
                 let mut pen = origin.x;
                 let mut touched: Option<Region> = None;
+                let clip = self.clip;
+                let pitch = usize::from(font.pitch());
                 for c in text.bytes() {
-                        for dy in 0..ch {
-                                for dx in 0..cw {
-                                        let on = font.pixel(c, dx as u8, dy as u8);
-                                        match (on, bg) {
-                                                (true, _) => self.set(pen + dx, origin.y + dy, fg),
-                                                (false, Some(b)) => self.set(pen + dx, origin.y + dy, b),
-                                                (false, None) => {}
+                        //   the glyph looked up ONCE per character. `Font::pixel` is a lookup per
+                        // pixel -- a popcount over the presence map each time -- and going through
+                        // it cost a 240x280 frame 20 ms in labels alone. The cell is clipped once,
+                        // then each row walked as runs of like pixels, so a glyph costs a few
+                        // run() calls per row rather than a transform per pixel
+                        let glyph = font.glyph(c);
+                        let x_lo = pen.max(i32::from(clip.x0));
+                        let x_hi = (pen + cw - 1).min(i32::from(clip.x1));
+                        let y_lo = origin.y.max(i32::from(clip.y0));
+                        let y_hi = (origin.y + ch - 1).min(i32::from(clip.y1));
+                        if x_lo <= x_hi && y_lo <= y_hi {
+                                for y in y_lo..=y_hi {
+                                        let row = glyph.map(|g| &g[(y - origin.y) as usize * pitch..]);
+                                        let bit = |gx: i32| -> bool {
+                                                match row {
+                                                        Some(r) => r[gx as usize / 8] >> (7 - gx % 8) & 1 != 0,
+                                                        None => false,
+                                                }
+                                        };
+                                        //   RGB565 ink-only text is the case every label is, and
+                                        // it gets the tight loop: the row's physical start and
+                                        // step computed once, two bytes written per ink pixel
+                                        if bg.is_none() && self.format == PixelFormat::Rgb565 {
+                                                if let Some(r) = row {
+                                                        let (px, py) = self.transform.apply(x_lo, y);
+                                                        let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
+                                                        let mut i = py as isize * self.phys_w as isize + px as isize;
+                                                        let [hi, lo] = fg.to_be_bytes();
+                                                        for gx in (x_lo - pen)..=(x_hi - pen) {
+                                                                if r[gx as usize / 8] >> (7 - gx % 8) & 1 != 0 {
+                                                                        let b = i as usize * 2;
+                                                                        self.buf[b] = hi;
+                                                                        self.buf[b + 1] = lo;
+                                                                }
+                                                                i += step;
+                                                        }
+                                                }
+                                                continue;
+                                        }
+                                        let mut x = x_lo;
+                                        while x <= x_hi {
+                                                let on = bit(x - pen);
+                                                let mut end = x;
+                                                while end + 1 <= x_hi && bit(end + 1 - pen) == on {
+                                                        end += 1;
+                                                }
+                                                match (on, bg) {
+                                                        (true, _) => self.run(x, y, (end - x + 1) as usize, fg),
+                                                        (false, Some(b)) => self.run(x, y, (end - x + 1) as usize, b),
+                                                        (false, None) => {}
+                                                }
+                                                x = end + 1;
                                         }
                                 }
                         }

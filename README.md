@@ -206,3 +206,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   configuration (it died holding the log lock; core 0 then spun at its first `log::set_clock`),
   so it is off. Also learned: reading SIO spinlock 31 from the debugger ACQUIRES it. A full
   repaint costs 36 ms at opt-level 1; the release profile is still to come.
+- 2026-08-30 — **the release profile, and where a frame's time actually went.** Release
+  presets (`conf-light_mk4-<board>-release`, separate trees; Corrosion takes the cargo profile
+  from CMAKE_BUILD_TYPE) took the 240x280 full repaint from 36 ms to 22 ms -- and opt-level 3
+  against `s` made no difference, which said the compiler was not the problem. Timing the
+  phases on the board did: the clear was 0.8 ms and the paint 20 ms, and the paint was
+  `Font::pixel`, a presence-map popcount per PIXEL of every label. Fixed by looking a glyph up
+  once per character; then horizontal and vertical runs stepping the buffer by the transform's
+  stride instead of transforming every pixel, for spans, glyph rows and axis-aligned lines.
+  The main page now paints in 5.8 ms and the eight-row list in 8 ms, the frame in 6.7 / 9.5 ms
+  -- a fifth of a 30 fps period. `Ui::commit` splits out of `render` so an app can time or
+  overdraw a frame it runs itself.

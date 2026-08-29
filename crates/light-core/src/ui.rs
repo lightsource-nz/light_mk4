@@ -1692,6 +1692,15 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let Some(mut c) = layer.frame_begin(display, now_us) else { return false };
                 self.paint(&mut c, font);
                 drop(c);
+                self.commit(layer);
+                layer.frame_end(display);
+                true
+        }
+
+        /// Hand the regions invalidated since the last repaint to the layer and mark the tree
+        /// clean. `render` does this; a caller running the frame itself (to time its phases, or
+        /// to draw over the tree) calls it between `paint` and `frame_end`.
+        pub fn commit(&mut self, layer: &mut FrameLayer) {
                 if self.pending_all {
                         layer.invalidate_all();
                 } else {
@@ -1702,8 +1711,6 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.pending.clear();
                 self.pending_all = false;
                 self.dirty = false;
-                layer.frame_end(display);
-                true
         }
 }
 

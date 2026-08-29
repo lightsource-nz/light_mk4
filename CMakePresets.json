@@ -36,9 +36,47 @@
                 "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
                 "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
             }
+        },
+        {
+            "name": "conf-light_mk4-touch169-release",
+            "description": "The touch169 firmware with cargo's release profile (opt-level s, fat LTO): Corrosion takes the profile from CMAKE_BUILD_TYPE. Separate tree, so the debug one stays warm.",
+            "inherits": [
+                "conf-light-waveshare-touch169",
+                "conf-light-release"
+            ],
+            "binaryDir": "${sourceDir}/build-touch169-release",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
+            "name": "conf-light_mk4-pico2-release",
+            "description": "The po13 rig with the release profile.",
+            "inherits": [
+                "conf-light-pico2",
+                "conf-light-release"
+            ],
+            "binaryDir": "${sourceDir}/build-pico2-release",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
         }
     ],
     "buildPresets": [
+        {
+            "name": "build-light_mk4_touch169-release",
+            "configurePreset": "conf-light_mk4-touch169-release",
+            "targets": ["light_mk4_touch169"]
+        },
+        {
+            "name": "build-light_mk4_pico2-release",
+            "configurePreset": "conf-light_mk4-pico2-release",
+            "targets": ["light_mk4_pico2"]
+        },
         {
             "name": "build-light_mk4-host",
             "configurePreset": "conf-light_mk4-host-debug"
