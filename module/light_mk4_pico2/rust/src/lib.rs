@@ -133,6 +133,10 @@ struct OledMod {
         dy: i32,
         caption: StackString<24>,
         caption_second: u64,
+        /// The caption changed and no frame has yet invalidated its box. Stays set across
+        /// passes where the panel was busy -- consuming it before a frame is open is how the
+        /// caption froze on the panel while the buffer kept updating.
+        caption_dirty: bool,
 }
 
 impl OledMod {
@@ -157,26 +161,32 @@ impl OledMod {
 
         fn frame(&mut self, now_us: u64) -> bool {
                 let second = now_us / 1_000_000;
-                let caption_changed = second != self.caption_second;
-                if caption_changed {
+                if second != self.caption_second {
                         self.caption_second = second;
                         self.caption = StackString::new();
                         let _ = write!(self.caption, "mk4 {}s {}f", second, self.layer.frames());
+                        self.caption_dirty = true;
                 }
                 let top = CAPTION.y + i32::from(self.font.cell_height()) + 2;
-                self.step(top);
-                let square = self.square();
                 let font = self.font;
                 let (w, h) = self.layer.logical_size();
+                //   nothing moves until a frame is actually open: a refused pass must leave the
+                // animation and the caption's dirtiness exactly as they were
                 let Some(mut c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
+                drop(c);
+                self.step(top);
+                let square = self.square();
+                let Some(frame) = self.display.frame_mut() else { return false };
+                c = self.layer.canvas(frame);
                 c.rect_rounded(Point::new(0, 0), Point::new(i32::from(w) - 1, i32::from(h) - 1), 6, light_core::draw::corner::ALL, false);
                 let caption_box = c.text(&font, CAPTION, self.caption.as_str());
                 c.fill_region(&Region::new(square.x0 as u16, square.y0 as u16, square.x1 as u16, square.y1 as u16), 1);
                 drop(c);
                 self.layer.invalidate(square);
-                if caption_changed {
+                if self.caption_dirty {
                         if let Some(r) = caption_box {
                                 self.layer.invalidate(r.into());
+                                self.caption_dirty = false;
                         }
                 }
                 self.layer.frame_end();
@@ -344,6 +354,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 dy: 1,
                 caption: StackString::new(),
                 caption_second: u64::MAX,
+                caption_dirty: true,
         };
         let mut keys_mod = KeysMod { keys: [Button::new(p.key0, true), Button::new(p.key1, true)], presses: 0 };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };

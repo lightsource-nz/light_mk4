@@ -131,6 +131,10 @@ struct DisplayMod {
         dy: i32,
         caption: StackString<32>,
         caption_second: u64,
+        /// The caption changed and no frame has yet invalidated its box. Stays set across
+        /// passes where the panel was busy; consuming it before a frame is open froze the
+        /// caption on the po13's panel while its buffer kept updating.
+        caption_dirty: bool,
         /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
         /// push (frame_end until the panel is idle) seen, in microseconds.
         draw_us_max: u64,
@@ -233,24 +237,30 @@ impl DisplayMod {
         /// One frame: full repaint, invalidate what is wrong on the panel.
         fn frame(&mut self, now_us: u64) -> bool {
                 let second = now_us / 1_000_000;
-                let caption_changed = second != self.caption_second;
-                if caption_changed {
+                if second != self.caption_second {
                         self.caption_second = second;
                         self.caption = StackString::new();
                         let _ = write!(self.caption, "mk4 {}s {}f", second, self.layer.frames());
+                        self.caption_dirty = true;
                 }
+                let font = self.font;
+                //   nothing moves until a frame is actually open: a refused pass must leave the
+                // animation and the caption's dirtiness exactly as they were
+                let Some(c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
+                drop(c);
                 self.step();
                 let square = self.square();
-                let font = self.font;
-                let Some(mut c) = self.layer.frame_begin(&mut self.display, now_us) else { return false };
+                let Some(frame) = self.display.frame_mut() else { return false };
+                let mut c = self.layer.canvas(frame);
                 c.fg = TEXT;
                 let caption_box = c.text(&font, CAPTION, self.caption.as_str());
                 c.fill_region(&Region::new(square.x0 as u16, square.y0 as u16, square.x1 as u16, square.y1 as u16), FG);
                 drop(c);
                 self.layer.invalidate(square);
-                if caption_changed {
+                if self.caption_dirty {
                         if let Some(r) = caption_box {
                                 self.layer.invalidate(r.into());
+                                self.caption_dirty = false;
                         }
                 }
                 self.layer.frame_end();
@@ -572,6 +582,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 dy: 2,
                 caption: StackString::new(),
                 caption_second: u64::MAX,
+                caption_dirty: true,
                 draw_us_max: 0,
                 push_us_max: 0,
                 push_started_us: None,
