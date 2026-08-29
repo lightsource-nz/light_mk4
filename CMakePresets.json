@@ -10,6 +10,20 @@
             "generator": "Ninja"
         },
         {
+            "name": "conf-light_mk4-pico2-debug",
+            "description": "The bare Pico 2 in the po13 rig's SWD dock: the same C shell with an LED-and-console Rust app, flashed and debugged over SWD. Exists to answer the debugger questions the touch169 cannot.",
+            "inherits": [
+                "conf-light-pico2",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-pico2",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
             "name": "conf-light_mk4-touch169-debug",
             "description": "The spike firmware on the Waveshare RP2350-Touch-LCD-1.69: pico-sdk C shell + Rust staticlib. Rust_CARGO_TARGET is the soft-float ABI to match pico-sdk's -mfloat-abi=softfp.",
             "inherits": [
@@ -28,6 +42,11 @@
         {
             "name": "build-light_mk4-host",
             "configurePreset": "conf-light_mk4-host-debug"
+        },
+        {
+            "name": "build-light_mk4_pico2-debug",
+            "configurePreset": "conf-light_mk4-pico2-debug",
+            "targets": ["light_mk4_pico2"]
         },
         {
             "name": "build-light_mk4_touch169-debug",

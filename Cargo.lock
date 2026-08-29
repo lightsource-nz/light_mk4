@@ -109,6 +109,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "light_app_pico2"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-rp2350",
+]
+
+[[package]]
 name = "light_app_touch169"
 version = "0.1.0"
 dependencies = [

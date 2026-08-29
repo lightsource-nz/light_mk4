@@ -84,3 +84,16 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   spinlock critical section is now genuinely contended across cores and holds. 32 host tests.
   Lost an hour to a host-side artefact: .NET `SerialPort.Write(string)` turned every LF but the
   last into a space; byte writes do not. The device path was right all along.
+- 2026-08-29 — **the SWD questions, on the po13 rig (a bare Pico 2 in the debugprobe dock).** A
+  second executable, `light_mk4_pico2`, shares the C shell with an LED-and-console Rust app.
+  **probe-rs 0.32 works against the debugprobe**: `probe-rs download --chip RP235x` + `reset`
+  flashed and started it, and `probe-rs read` samples memory (the LED's SIO bit toggling at 1 Hz)
+  without halting the core. The openocd+gdb path via `scripts/debug.ps1 -Batch` also works.
+  **The halt/resume artefact mk3 recorded reproduces exactly**: after `monitor halt`/`resume`
+  through OpenOCD, CPACR reads `0x0000c000` (CP0 and the FPU denied) instead of the healthy
+  `0x00f0c303` -- and the Rust firmware keeps blinking, because its GPIO goes through SIO
+  registers, not the GPIO coprocessor. The image's only coprocessor instructions are in
+  pico-sdk's `pico_double` wrappers, none of which run. A pac-driven Rust firmware is immune to
+  that fault by construction; a C one using `gpio_put()` would have hard-faulted on the next
+  write. Not yet seen: the Pico 2's own CDC console (no PID_0009 port enumerated -- check the
+  board's USB cable), so its console was exercised only on the touch169.

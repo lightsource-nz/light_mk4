@@ -48,16 +48,20 @@ if(LIGHT_SYSTEM STREQUAL PICO_SDK)
         )
         FetchContent_MakeAvailable(Corrosion)
 
+        #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169
+                CRATES light_app_touch169 light_app_pico2
                 NO_STD
         )
 
+        add_subdirectory(module/light_mk4_shell)
         #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2 -- the
         # layout every mk3 project shares, and worth matching rather than forking the script
         if(PICO_BOARD STREQUAL waveshare_rp2350_touch_lcd_1.69)
                 add_subdirectory(module/light_mk4_touch169)
+        elseif(PICO_BOARD STREQUAL pico2)
+                add_subdirectory(module/light_mk4_pico2)
         endif()
 endif()
 
@@ -73,7 +77,7 @@ if(LIGHT_PLATFORM STREQUAL HOST)
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

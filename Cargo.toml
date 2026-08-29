@@ -4,6 +4,7 @@ members = [
         "crates/light-core",
         "crates/light-rp2350",
         "module/light_mk4_touch169/rust",
+        "module/light_mk4_pico2/rust",
 ]
 
 [workspace.package]
