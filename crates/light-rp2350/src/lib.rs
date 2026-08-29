@@ -8,13 +8,34 @@
 
 #![no_std]
 
+//   target-only: the implementation reads PRIMASK and SIO registers, neither of which exists
+// where `cargo test` runs this crate's (empty) test harness
+#[cfg(target_os = "none")]
+mod critical;
+
 use light_core::Board;
 use rp235x_pac as pac;
 
 /// GPIO function select for the single-cycle IO block, the same value on RP2040 and RP2350.
 const FUNCSEL_SIO: u8 = 5;
 
-/// The Waveshare RP2350-Touch-LCD-1.69, as far as milestone 1 needs it.
+/// Microseconds since boot from the 64-bit TIMER0, which pico-sdk's runtime has already started.
+///
+/// Read as two halves, re-read until the high half is stable across the low read -- the same
+/// dance pico-sdk's `time_us_64()` does, without the latching TIMELR/TIMEHR pair, which is
+/// per-core state and would race the other core's use of it.
+pub fn now_us() -> u64 {
+        let timer = unsafe { &*pac::TIMER0::ptr() };
+        loop {
+                let hi = timer.timerawh().read().bits();
+                let lo = timer.timerawl().read().bits();
+                if timer.timerawh().read().bits() == hi {
+                        return ((hi as u64) << 32) | lo as u64;
+                }
+        }
+}
+
+/// The Waveshare RP2350-Touch-LCD-1.69, as far as the spike needs it so far.
 pub struct Touch169 {
         p: pac::Peripherals,
 }
@@ -63,15 +84,6 @@ impl Board for Touch169 {
         }
 
         fn now_us(&self) -> u64 {
-                //   the 64-bit timer is read as two halves; re-read until the high half is
-                // stable across the low read, the same dance pico-sdk's time_us_64() does
-                // without the latching TIMELR/TIMEHR pair, which would be per-core state
-                loop {
-                        let hi = self.p.TIMER0.timerawh().read().bits();
-                        let lo = self.p.TIMER0.timerawl().read().bits();
-                        if self.p.TIMER0.timerawh().read().bits() == hi {
-                                return ((hi as u64) << 32) | lo as u64;
-                        }
-                }
+                now_us()
         }
 }
