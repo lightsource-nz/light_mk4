@@ -8,6 +8,7 @@
 #![no_std]
 
 pub mod blink;
+pub mod button;
 pub mod console;
 pub mod cst816t;
 pub mod display;
@@ -15,11 +16,14 @@ pub mod draw;
 pub mod events;
 pub mod frames;
 pub mod hal;
+pub mod imu;
 pub mod log;
 pub mod mailbox;
 pub mod module;
+pub mod qmi8658;
 pub mod sh1107;
 pub mod st7789;
+pub mod touch;
 
 pub use blink::Blinker;
 pub use console::LineReader;

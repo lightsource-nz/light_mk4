@@ -15,3 +15,4 @@ light-core = { path = "../../../crates/light-core" }
 light-rp2350 = { path = "../../../crates/light-rp2350" }
 light-font = { path = "../../../crates/light-font" }
 critical-section = "1.2"
+static_cell = "2"

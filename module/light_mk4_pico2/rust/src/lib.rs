@@ -8,11 +8,12 @@
 #![no_std]
 
 use core::fmt::Write;
+use light_core::button::{Button, ButtonEvent};
 use light_core::sh1107::Sh1107;
 use light_core::{info, log, warn, Blinker, Display, EventBus, Flip, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Rotation, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::pico2::*;
-use light_rp2350::gpio::Output;
+use light_rp2350::gpio::{Input, Output};
 use light_rp2350::spi::Spi1Display;
 use light_rp2350::{now_us, Breathe, Clocks, SysClock};
 
@@ -34,10 +35,12 @@ enum AppEvent {
         LedOff,
         LedBlink,
         Square { x: i32, y: i32 },
+        /// One of the board's keys, debounced: `(key, pressed)`.
+        Key(u8, bool),
         Stats,
 }
 
-static EVENTS: EventBus<AppEvent, 8, 2> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
 /// 64x128 at 1 bpp: one kilobyte.
@@ -89,6 +92,13 @@ impl Module for LedMod {
                                         self.led.set(false);
                                 }
                                 AppEvent::LedBlink => self.blinking = true,
+                                // KEY0 holds the LED on while pressed, then blinking resumes
+                                AppEvent::Key(0, pressed) => {
+                                        self.blinking = !pressed;
+                                        if pressed {
+                                                self.led.set(true);
+                                        }
+                                }
                                 AppEvent::Stats => info!("led: {} toggles, blinking={}", self.toggles, self.blinking),
                                 _ => {}
                         }
@@ -203,6 +213,11 @@ impl Module for OledMod {
                                         self.x = (x - SQUARE / 2).clamp(1, i32::from(w) - SQUARE - 1);
                                         self.y = (y - SQUARE / 2).clamp(1, i32::from(h) - SQUARE - 1);
                                 }
+                                // KEY1 reverses the square
+                                AppEvent::Key(1, true) => {
+                                        self.dx = -self.dx;
+                                        self.dy = -self.dy;
+                                }
                                 AppEvent::Stats => info!("oled: {} frames, {} skipped, {} chunk timeouts", self.layer.frames(), self.layer.skipped, self.display.timeouts),
                                 _ => {}
                         }
@@ -212,6 +227,34 @@ impl Module for OledMod {
         fn unload(&mut self) {
                 let _ = self.display.wait();
                 self.display.driver().clear(false);
+        }
+}
+
+/// The board's two keys, debounced, onto the bus.
+struct KeysMod {
+        keys: [Button<Input>; 2],
+        presses: u32,
+}
+
+impl Module for KeysMod {
+        fn name(&self) -> &'static str {
+                "keys"
+        }
+        fn poll(&mut self) -> Poll {
+                let now_ms = (now_us() / 1000) as u32;
+                let mut busy = false;
+                for (i, key) in self.keys.iter_mut().enumerate() {
+                        if let Some(ev) = key.poll(now_ms) {
+                                busy = true;
+                                let pressed = ev == ButtonEvent::Press;
+                                if pressed {
+                                        self.presses += 1;
+                                }
+                                info!("key{i} {}", if pressed { "pressed" } else { "released" });
+                                let _ = EVENTS.publish(AppEvent::Key(i as u8, pressed));
+                        }
+                }
+                if busy { Poll::Busy } else { Poll::Idle }
         }
 }
 
@@ -302,11 +345,13 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 caption: StackString::new(),
                 caption_second: u64::MAX,
         };
+        let mut keys_mod = KeysMod { keys: [Button::new(p.key0, true), Button::new(p.key1, true)], presses: 0 };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
-        let mut rt: Runtime<3> = Runtime::new();
+        let mut rt: Runtime<4> = Runtime::new();
         rt.add(&mut led_mod).expect("capacity");
         rt.add(&mut oled_mod).expect("capacity");
+        rt.add(&mut keys_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("pico2 runtime started at {} Hz; type 'help' on the console", clocks.sys_hz);

@@ -139,6 +139,23 @@ impl FrameLayer {
                 self.carried.clear();
         }
 
+        /// The logical-to-physical transform in force, for callers mapping directions or
+        /// points between the panel's frame and the canvas's.
+        pub fn transform(&self) -> Transform {
+                Transform::for_canvas(self.rotation, self.flip, self.width, self.height)
+        }
+
+        /// A physical (panel) point into logical coordinates -- where a touch landed on the
+        /// canvas as drawn.
+        pub fn untransform_point(&self, phys_x: i32, phys_y: i32) -> crate::draw::Point {
+                let m = self.transform();
+                let det = m.a * m.d - m.b * m.c;
+                let px = phys_x - m.tx;
+                let py = phys_y - m.ty;
+                let (w, h) = self.logical_size();
+                crate::draw::Point::new(((m.d * px - m.b * py) * det).clamp(0, i32::from(w) - 1), ((m.a * py - m.c * px) * det).clamp(0, i32::from(h) - 1))
+        }
+
         pub fn logical_size(&self) -> (u16, u16) {
                 match self.rotation {
                         Rotation::R90 | Rotation::R270 => (self.height, self.width),

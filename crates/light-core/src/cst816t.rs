@@ -77,6 +77,35 @@ pub struct Cst816t<B: I2cBus, I: InputPin, R: OutputPin> {
         pub bus_errors: u32,
         /// Recovery resets fired, in total.
         pub recoveries: u32,
+        /// The controller's own gesture code, latched during the current touch: the engine
+        /// reports in whichever frame it recognises the gesture, not necessarily the release
+        /// frame. Cleared on each new down so a stale code cannot attach to the next touch.
+        last_gesture: u8,
+}
+
+const GESTURE_NONE: u8 = 0x00;
+const GESTURE_SWIPE_UP: u8 = 0x01;
+const GESTURE_SWIPE_DOWN: u8 = 0x02;
+const GESTURE_SWIPE_LEFT: u8 = 0x03;
+const GESTURE_SWIPE_RIGHT: u8 = 0x04;
+
+impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::HardwareGestures for Cst816t<B, I, R> {
+        fn read_gesture(&mut self) -> Option<crate::touch::Swipe> {
+                use crate::touch::Swipe;
+                let code = core::mem::replace(&mut self.last_gesture, GESTURE_NONE);
+                // the vertical codes are mapped to their OPPOSITE, which is what the hardware
+                // actually does: the code the reference drivers call "swipe up" is reported for
+                // a swipe toward increasing y. Confirmed on hardware by mk3, vertical only.
+                match code {
+                        GESTURE_SWIPE_UP => Some(Swipe::Down),
+                        GESTURE_SWIPE_DOWN => Some(Swipe::Up),
+                        GESTURE_SWIPE_LEFT => Some(Swipe::Left),
+                        GESTURE_SWIPE_RIGHT => Some(Swipe::Right),
+                        // nothing latched, or a click/long-press code the tracker has no
+                        // equivalent for: decline, and the tracker classifies from coordinates
+                        _ => None,
+                }
+        }
 }
 
 impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
@@ -102,6 +131,7 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
                         timeouts: 0,
                         bus_errors: 0,
                         recoveries: 0,
+                        last_gesture: GESTURE_NONE,
                 }
         }
 
@@ -242,12 +272,20 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
                 self.idle_polls = 0;
                 self.last_report_ms = now_ms;
 
+                let gesture = data[0];
                 let fingers = data[1];
                 let was_active = self.active;
                 self.active = fingers > 0;
                 if self.active {
                         self.x = (u16::from(data[2] & 0x0F) << 8) | u16::from(data[3]);
                         self.y = (u16::from(data[4] & 0x0F) << 8) | u16::from(data[5]);
+                }
+                if self.active && !was_active {
+                        // discard whatever the engine reported for the previous touch
+                        self.last_gesture = GESTURE_NONE;
+                }
+                if gesture != GESTURE_NONE {
+                        self.last_gesture = gesture;
                 }
                 match (was_active, self.active) {
                         (false, true) => Some(Event::Down { x: self.x, y: self.y }),

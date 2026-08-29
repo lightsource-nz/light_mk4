@@ -13,10 +13,14 @@
 
 #![no_std]
 
+use core::cell::RefCell;
 use core::fmt::Write;
 use light_core::cst816t::{self, Cst816t};
+use light_core::imu::{Imu, Orientation};
+use light_core::qmi8658::Qmi8658;
 use light_core::st7789::St7789;
-use light_core::{info, log, warn, Display, EventBus, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Runtime, Subscription, UpdateError};
+use light_core::touch::{Gesture, Swipe, Tracker};
+use light_core::{info, log, warn, Display, EventBus, Flip, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Region, Rotation, Runtime, Subscription, UpdateError};
 use light_font::Font;
 use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
@@ -59,6 +63,10 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
         Touch(cst816t::Event),
+        /// A swipe, in the panel's own coordinate space.
+        Gesture(Gesture),
+        /// The board's settled orientation changed.
+        Orientation(Orientation),
         Command(Command),
 }
 
@@ -70,8 +78,8 @@ enum Command {
         Speed { dx: i32, dy: i32 },
 }
 
-/// 16 events deep, 4 subscribers: display, touch, board, and one spare.
-static EVENTS: EventBus<AppEvent, 16, 4> = EventBus::new();
+/// 16 events deep, 5 subscribers: display, touch, imu, board, and one spare.
+static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
 /// Raw console bytes, core 1 → core 0. Sized for a burst of pasted text.
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
@@ -137,13 +145,52 @@ impl DisplayMod {
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        AppEvent::Touch(cst816t::Event::Down { x, y }) | AppEvent::Command(Command::Square { x, y }) => {
-                                self.x = (i32::from(x) - SQUARE / 2).clamp(0, i32::from(DISPLAY_WIDTH) - SQUARE);
-                                self.y = (i32::from(y) - SQUARE / 2).clamp(0, i32::from(DISPLAY_HEIGHT) - SQUARE);
+                        AppEvent::Touch(cst816t::Event::Down { x, y }) => {
+                                // the panel reports in its own frame; the square lives in the
+                                // canvas's, which the layer's orientation defines
+                                let p = self.layer.untransform_point(i32::from(x), i32::from(y));
+                                self.place(p.x, p.y);
                         }
+                        AppEvent::Command(Command::Square { x, y }) => self.place(i32::from(x), i32::from(y)),
                         AppEvent::Command(Command::Speed { dx, dy }) => {
                                 self.dx = dx;
                                 self.dy = dy;
+                        }
+                        AppEvent::Gesture(g) => {
+                                // a swipe sends the square that way, in the panel's frame
+                                let speed = self.dx.abs().max(self.dy.abs()).max(2);
+                                let (dx, dy) = match g.swipe {
+                                        Swipe::Left => (-speed, 0),
+                                        Swipe::Right => (speed, 0),
+                                        Swipe::Up => (0, -speed),
+                                        Swipe::Down => (0, speed),
+                                };
+                                let t = self.layer.transform();
+                                // rotate the panel-frame direction into the canvas frame: the
+                                // transform's inverse, applied to a vector (no translation)
+                                let det = t.a * t.d - t.b * t.c;
+                                self.dx = (t.d * dx - t.b * dy) * det;
+                                self.dy = (t.a * dy - t.c * dx) * det;
+                                info!("swipe {:?} ({}): square now moving ({}, {})", g.swipe, if g.from_hardware { "hw" } else { "sw" }, self.dx, self.dy);
+                        }
+                        AppEvent::Orientation(o) => {
+                                let rotation = match o {
+                                        Orientation::Portrait => Some(Rotation::R0),
+                                        Orientation::PortraitFlip => Some(Rotation::R180),
+                                        // derived by mk3 and confirmed on this board: L is 270, R is 90
+                                        Orientation::LandscapeL => Some(Rotation::R270),
+                                        Orientation::LandscapeR => Some(Rotation::R90),
+                                        // flat has no upright; keep whatever we had
+                                        _ => None,
+                                };
+                                if let Some(r) = rotation {
+                                        self.layer.set_orientation(r, Flip::None);
+                                        self.layer.invalidate_all();
+                                        let (w, h) = self.layer.logical_size();
+                                        self.x = self.x.clamp(0, i32::from(w) - SQUARE);
+                                        self.y = self.y.clamp(0, i32::from(h) - SQUARE);
+                                        info!("orientation {o:?}: canvas now {}x{}", w, h);
+                                }
                         }
                         AppEvent::Command(Command::Stats) => {
                                 info!(
@@ -161,17 +208,25 @@ impl DisplayMod {
                 }
         }
 
+        fn place(&mut self, x: i32, y: i32) {
+                let (w, h) = self.layer.logical_size();
+                self.x = (x - SQUARE / 2).clamp(0, i32::from(w) - SQUARE);
+                self.y = (y - SQUARE / 2).clamp(0, i32::from(h) - SQUARE);
+        }
+
         fn step(&mut self) {
+                let (w, h) = self.layer.logical_size();
+                let (w, h) = (i32::from(w), i32::from(h));
                 let top = CAPTION.y + i32::from(self.font.cell_height()) + 4;
                 self.x += self.dx;
                 self.y += self.dy;
-                if self.x <= 0 || self.x >= i32::from(DISPLAY_WIDTH) - SQUARE {
+                if self.x <= 0 || self.x >= w - SQUARE {
                         self.dx = -self.dx;
-                        self.x = self.x.clamp(0, i32::from(DISPLAY_WIDTH) - SQUARE);
+                        self.x = self.x.clamp(0, w - SQUARE);
                 }
-                if self.y <= top || self.y >= i32::from(DISPLAY_HEIGHT) - SQUARE {
+                if self.y <= top || self.y >= h - SQUARE {
                         self.dy = -self.dy;
-                        self.y = self.y.clamp(top, i32::from(DISPLAY_HEIGHT) - SQUARE);
+                        self.y = self.y.clamp(top, h - SQUARE);
                 }
         }
 
@@ -257,9 +312,11 @@ impl Module for DisplayMod {
         }
 }
 
-/// Owns the touch controller and publishes what it reports.
+/// Owns the touch controller and publishes what it reports: samples, and the swipes the
+/// tracker makes of them.
 struct TouchMod {
-        touch: Cst816t<I2c1, Input, Output>,
+        touch: Cst816t<&'static RefCell<I2c1>, Input, Output>,
+        tracker: Tracker,
         events: Subscription,
 }
 
@@ -304,6 +361,50 @@ impl Module for TouchMod {
                 }
                 if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
                         warn!("event bus full; dropped {e:?}");
+                }
+                if let Some(g) = self.tracker.feed(ev, Some(&mut self.touch)) {
+                        let _ = EVENTS.publish(AppEvent::Gesture(g));
+                }
+                Poll::Busy
+        }
+}
+
+/// Owns the IMU: publishes orientation changes, answers `stats` with the current vector.
+struct ImuMod {
+        imu: Imu<Qmi8658<&'static RefCell<I2c1>>>,
+        events: Subscription,
+}
+
+impl Module for ImuMod {
+        fn name(&self) -> &'static str {
+                "imu"
+        }
+        fn load(&mut self) -> Result<(), ()> {
+                match self.imu.driver().probe() {
+                        Ok(Some(id)) => info!("qmi8658 chip id confirmed: 0x{id:02x}"),
+                        Ok(None) => warn!("qmi8658 answered with an unexpected chip id"),
+                        Err(e) => warn!("qmi8658 did not answer the chip id read: {e:?}"),
+                }
+                if let Err(e) = self.imu.driver().configure() {
+                        warn!("qmi8658 configuration failed: {e:?}");
+                }
+                self.imu.set_axis_map(IMU_AXIS_MAP);
+                Ok(())
+        }
+        fn poll(&mut self) -> Poll {
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        if let AppEvent::Command(Command::Stats) = ev {
+                                let a = self.imu.accel_mg;
+                                info!("imu: accel {} {} {} mg, {:?}, {} failed reads, {}.{} C", a[0], a[1], a[2], self.imu.orientation, self.imu.failures, self.imu.temperature_mc / 1000, (self.imu.temperature_mc % 1000).abs() / 100);
+                        }
+                }
+                let now_ms = (light_rp2350::now_us() / 1000) as u32;
+                if !self.imu.poll(now_ms) {
+                        return Poll::Idle;
+                }
+                if let Some(o) = self.imu.take_orientation() {
+                        info!("orientation: {o:?}");
+                        let _ = EVENTS.publish(AppEvent::Orientation(o));
                 }
                 Poll::Busy
         }
@@ -451,9 +552,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
         };
-        let touch = Cst816t::new(p.touch_bus, p.touch_int, p.touch_reset, (light_rp2350::now_us() / 1000) as u32);
+        //   one I2C bus, two drivers: shared through a RefCell that lives as long as the
+        // application, which on a firmware that never returns is a static's lifetime
+        static I2C: static_cell::StaticCell<RefCell<I2c1>> = static_cell::StaticCell::new();
+        let i2c: &'static RefCell<I2c1> = I2C.init(RefCell::new(p.touch_bus));
+        let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2350::now_us() / 1000) as u32);
+        let imu = Imu::new(Qmi8658::new(i2c));
 
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut display_mod = DisplayMod {
                 display,
                 layer: FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565),
@@ -469,13 +576,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 push_us_max: 0,
                 push_started_us: None,
         };
-        let mut touch_mod = TouchMod { touch, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut touch_mod = TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
-        let mut rt: Runtime<4> = Runtime::new();
+        let mut rt: Runtime<5> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");
         rt.add(&mut display_mod).expect("capacity");
         rt.add(&mut touch_mod).expect("capacity");
+        rt.add(&mut imu_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");

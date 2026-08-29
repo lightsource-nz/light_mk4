@@ -87,3 +87,17 @@ pub trait I2cBus {
         /// Some parts silently store nothing when the pair is split (mk3's HUSB238 finding).
         fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError>;
 }
+
+/// Two drivers on one bus -- the touch169's touch controller and IMU share I2C1 -- each take a
+/// `&RefCell<bus>`. Both are polled from the same core, so the RefCell's exclusivity is enough,
+/// and a driver holding the borrow across a call it does not make is impossible by
+/// construction. Every transaction is one borrow.
+impl<B: I2cBus> I2cBus for &core::cell::RefCell<B> {
+        fn read_register(&mut self, addr: u8, reg: u8, out: &mut [u8]) -> Result<(), I2cError> {
+                self.borrow_mut().read_register(addr, reg, out)
+        }
+
+        fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError> {
+                self.borrow_mut().write_register_byte(addr, reg, value)
+        }
+}

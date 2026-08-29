@@ -40,6 +40,13 @@ pub mod touch169 {
         pub const PIN_TOUCH_INT: usize = 21;
         pub const PIN_TOUCH_RST: usize = 22;
         pub const TOUCH_I2C_HZ: u32 = 300_000;
+        /// The QMI8658C shares I2C1 with the touch controller, at its own address. INT1/INT2
+        /// (23/24) are wired but unused: the data-ready bit arrives inside the sample frame.
+        pub const PIN_IMU_INT1: usize = 23;
+        /// How the IMU is mounted, CONFIRMED on hardware by mk3 with the +1g-points-up
+        /// convention: chip +Y points right, chip +X points up the screen, chip +Z points into
+        /// it. A real rotation -- the transposition and the inversion corroborate each other.
+        pub const IMU_AXIS_MAP: light_core::imu::AxisMap = light_core::imu::AxisMap { source: [light_core::imu::Y, light_core::imu::X, light_core::imu::Z], sign: [1, 1, -1] };
 
         /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
         pub const DISPLAY_DMA_CH: usize = 15;
@@ -88,6 +95,10 @@ pub mod pico2 {
         use super::*;
 
         pub const PIN_LED: usize = 25;
+        /// The Pico-OLED-1.3's two keys, active low. KEY1 shares its pin with the secondary
+        /// display's chip select in mk3's two-display rig; here there is one display.
+        pub const PIN_KEY0: usize = 15;
+        pub const PIN_KEY1: usize = 17;
 
         pub const PIN_OLED_DC: usize = 8;
         pub const PIN_OLED_CS: usize = 9;
@@ -106,6 +117,8 @@ pub mod pico2 {
 
         pub struct Peripherals {
                 pub led: Output,
+                pub key0: Input,
+                pub key1: Input,
                 pub oled_bus: Spi1Display,
         }
 
@@ -119,6 +132,8 @@ pub mod pico2 {
                 unsafe {
                         Some(Peripherals {
                                 led: Output::new(PIN_LED, false),
+                                key0: Input::new_pull_up(PIN_KEY0),
+                                key1: Input::new_pull_up(PIN_KEY1),
                                 oled_bus: Spi1Display::new(
                                         clocks.peri_hz,
                                         PIN_OLED_SCK,

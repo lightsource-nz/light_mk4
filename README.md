@@ -164,3 +164,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   SH1107 column addressing, the 1 bpp packing, the 90-degree rotation and the region-to-column
   mapping all correct together. Both bench boards now run the same demo through the same
   stack: rasteriser, frame layer, chunk protocol, driver.
+- 2026-08-29 — **plan step 4: input.** `light_core::touch::Tracker` (swipes from down/move/up
+  samples, hardware classification with first refusal, `suppress` for a consumed drag),
+  `light_core::button::Button` (debounce that restarts on every raw change), `light_core::imu`
+  (axis map into the device frame, orientation from gravity with a margin and a hold time,
+  polling throttled to the sensor's rate) and `light_core::qmi8658` (one contiguous
+  status+temperature+six-axis frame per read) -- all ports of mk3's modules with their
+  hardware findings intact, 9 new tests. The CST816T driver latches the controller's gesture
+  code with mk3's vertical inversion. Two drivers now share I2C1 through `&RefCell<I2c1>`
+  (`I2cBus` is implemented for it). The touch169 demo rotates its canvas with the board's
+  orientation and sends the square the way you swipe; the po13's keys hold the LED and
+  reverse the square. po13 flashed; the touch169 dropped off USB mid-session, its flash pending.
