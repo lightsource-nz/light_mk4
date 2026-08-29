@@ -22,9 +22,11 @@ impl PwmOutput {
         /// Route `pin` to its PWM slice, counting to `top` at about `carrier_hz`. The divider is
         /// integer and clamped, so the carrier is approximate; `top` is exact. Starts at duty 0.
         pub fn new(pin: usize, sys_hz: u32, carrier_hz: u32, top: u16) -> Self {
-                // GPIO n drives slice (n / 2) % 8 (12 slices on RP2350; pins above 31 wrap
-                // through them), channel B when n is odd -- datasheet 12.5.2
-                let slice = (pin / 2) % 12;
+                //   GPIO 0..31 map onto slices 0..7 exactly as on the RP2040 -- (n / 2) & 7 --
+                // and only GPIO 32..47 reach the four extra slices; channel B when n is odd
+                // (pico-sdk's PWM_GPIO_SLICE_NUM). Not (n / 2) % 12: that put GPIO 25 on slice
+                // 0, which ran happily while the pad it was not wired to stayed low
+                let slice = if pin < 32 { (pin / 2) & 7 } else { 8 + ((pin / 2) & 3) };
                 let channel_b = pin % 2 == 1;
                 let resets = unsafe { &*pac::RESETS::ptr() };
                 //   the SDK's runtime unresets the block already; making sure costs nothing and
@@ -47,6 +49,14 @@ impl PwmOutput {
 
         pub fn top(&self) -> u16 {
                 self.top
+        }
+
+        /// The slice's CSR, DIV, TOP, CTR and CC registers and the pin's IO status, for bring-up.
+        pub fn registers(&self, pin: usize) -> [u32; 7] {
+                let pwm = unsafe { &*pac::PWM::ptr() };
+                let io = unsafe { &*pac::IO_BANK0::ptr() };
+                let ch = pwm.ch(self.slice);
+                [ch.csr().read().bits(), ch.div().read().bits(), ch.top().read().bits(), ch.ctr().read().bits(), ch.cc().read().bits(), io.gpio(pin).gpio_ctrl().read().bits(), io.gpio(pin).gpio_status().read().bits()]
         }
 
         /// Duty in `0..=top`; `top` is fully on (the compare is inclusive of the wrap).

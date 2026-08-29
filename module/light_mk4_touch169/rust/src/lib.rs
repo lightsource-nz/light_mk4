@@ -514,6 +514,9 @@ impl Module for BoardMod {
                                 busy = true;
                                 self.backlight.set_duty(level);
                                 info!("backlight {level}");
+                                // the slice and pad state, which is what found the slice mapping wrong
+                                let r = self.backlight.registers(PIN_DISPLAY_BL);
+                                debug!("backlight pwm: csr {:#x} div {:#x} top {} ctr {} cc {:#x} ctrl {:#x} status {:#x}", r[0], r[1], r[2], r[3], r[4], r[5], r[6]);
                         }
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
