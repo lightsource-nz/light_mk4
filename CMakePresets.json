@@ -100,6 +100,22 @@
             }
         },
         {
+            "name": "conf-light_mk4-blackpill-debug",
+            "description": "WeAct Blackpill (STM32F411CEU6) on bare CMSIS: the CMSIS shell's second chip, with the LED-key-console demo. Same Rust target as the H7 -- hard float on both.",
+            "inherits": [
+                "conf-light-base",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-blackpill",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "LIGHT_SYSTEM": "CMSIS",
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "blackpill",
+                "Rust_CARGO_TARGET": "thumbv7em-none-eabihf"
+            }
+        },
+        {
             "name": "conf-light_mk4-crossfire-debug",
             "description": "crossfire on the po13 rig: the Pico 2's native USB port hosting USB-MIDI instruments, the OLED as the status display, the console on the UART through the debug probe. Flashed and debugged over SWD.",
             "inherits": [
@@ -148,6 +164,11 @@
             "name": "build-light_mk4_h7-debug",
             "configurePreset": "conf-light_mk4-mini-stm32h7-debug",
             "targets": ["light_mk4_h7"]
+        },
+        {
+            "name": "build-light_mk4_f411-debug",
+            "configurePreset": "conf-light_mk4-blackpill-debug",
+            "targets": ["light_mk4_f411"]
         },
         {
             "name": "build-light_mk4_crossfire-debug",

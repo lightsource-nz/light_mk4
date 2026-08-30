@@ -53,7 +53,7 @@ if(LIGHT_PLATFORM STREQUAL TARGET)
         #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169 light_app_pico2 light_app_crossfire light_app_h7
+                CRATES light_app_touch169 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -87,11 +87,13 @@ if(LIGHT_PLATFORM STREQUAL TARGET)
         elseif(LIGHT_SYSTEM STREQUAL CMSIS)
                 #   bare CMSIS: no SDK under the shell at all. The board selects the chip's
                 # shell and its application; only the H743 so far
+                add_subdirectory(module/light_mk4_shell_cmsis)
                 if(LIGHT_BOARD STREQUAL mini_stm32h7)
-                        add_subdirectory(module/light_mk4_shell_cmsis)
                         add_subdirectory(module/light_mk4_h7)
+                elseif(LIGHT_BOARD STREQUAL blackpill)
+                        add_subdirectory(module/light_mk4_f411)
                 else()
-                        message(FATAL_ERROR "no mk4 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 is the one so far)")
+                        message(FATAL_ERROR "no mk4 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 and blackpill so far)")
                 endif()
         endif()
 endif()
@@ -108,7 +110,7 @@ if(LIGHT_PLATFORM STREQUAL HOST)
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

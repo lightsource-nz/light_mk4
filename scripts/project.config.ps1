@@ -21,10 +21,12 @@
                 'conf-light_mk4-touch169-riscv-debug' = 'build-touch169-riscv'
                 # the MiniSTM32H7 on bare CMSIS, flashed over its ST-Link
                 'conf-light_mk4-mini-stm32h7-debug'   = 'build-mini-stm32h7'
+                'conf-light_mk4-blackpill-debug'      = 'build-blackpill'
         }
 
         Targets = @{
-                'light_mk4_h7' = @{ Preset = 'conf-light_mk4-mini-stm32h7-debug'; Flash = 'swd' }
+                'light_mk4_h7'   = @{ Preset = 'conf-light_mk4-mini-stm32h7-debug'; Flash = 'swd' }
+                'light_mk4_f411' = @{ Preset = 'conf-light_mk4-blackpill-debug'; Flash = 'swd' }
                 # the po13 rig again, flashed over SWD like the pico2 demo
                 'light_mk4_crossfire' = @{ Preset = 'conf-light_mk4-crossfire-debug'; Flash = 'swd' }
                 # uf2 because the 1.69 exposes no SWD pads
@@ -87,6 +89,12 @@
                         LIGHT_BOARD       = 'mini_stm32h7'
                         Rust_CARGO_TARGET = 'thumbv7em-none-eabihf'
                 }
+                'conf-light_mk4-blackpill-debug'      = @{
+                        LIGHT_SYSTEM      = 'CMSIS'
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'blackpill'
+                        Rust_CARGO_TARGET = 'thumbv7em-none-eabihf'
+                }
         }
 
         # which OpenOCD config and SVD belong to which board -- see screen-test's config for
@@ -111,6 +119,9 @@
                 # over the ST-Link; no SVD vendored for this part
                 'conf-light_mk4-mini-stm32h7-debug' = @{
                         Config = 'openocd-stm32h7.cfg'
+                }
+                'conf-light_mk4-blackpill-debug' = @{
+                        Config = 'openocd-stm32f4.cfg'
                 }
         }
 

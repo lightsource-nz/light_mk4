@@ -314,5 +314,17 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   it; the pin sampled over SWD settled it. Two debugger notes for this board: connect under
   reset (`reset_config srst_only srst_nogate connect_assert_srst`) when a plain attach fails
   to examine the debug AP, and the SWO capture still needs the TPIU configured after the
-  firmware has switched to 400 MHz. Not ported: the F411 (no board on the bench) and the
-  SPI-link peer transport, which the engine models and the H7 is now ready to carry.
+  firmware has switched to 400 MHz. Not ported: the SPI-link peer transport, which the engine
+  models and the H7 is now ready to carry.
+- 2026-08-30 — **STM32F411.** The CMSIS shell's second chip: `light_mk4_shell_cmsis_configure`
+  takes a CHIP argument that settles the device files, the startup file, the M4's fpv4-sp
+  flags and the linker script, and `#if defined(STM32H743xx)` fences the three things the
+  chips do differently -- caches and the clock tree (the F411 runs on HSI at reset defaults,
+  as mk3's F4 ports did), the USART generation (ISR/TDR/RDR against SR/DR), and where the GPIO
+  clocks live (AHB4 against AHB1). `light-stm32f4` is `light-stm32h7`'s shape at the F4's
+  addresses, GPIO and TIM2 only, since the Blackpill carries a LED, a key and a console and
+  nothing else; `light_mk4_f411` is mk3's demo for it on the mk4 runtime. Built, flashed over
+  the ST-Link, and verified over SWD: TIM2 at 1 MHz, PC13 toggling at the blink rate, PA0 high
+  under its pull-up, PA9 idling high with the USART running. The ST-Link's VCP (COM10) is
+  not wired to PA9/PA10 on this board either, so the console has been exercised only through
+  the pin states; a USB-serial on PA9/PA10 would finish that.

@@ -1,8 +1,9 @@
 #ifndef LIGHT_MK4_SHELL_CMSIS_H
 #define LIGHT_MK4_SHELL_CMSIS_H
 
-// the clock tree: 400 MHz off the crystal, falling back to HSI if it does not start. Returns
-// nothing; light_shell_clock_status() says afterwards what happened, once there is a console
+// the H743's clock tree: 400 MHz off the crystal, falling back to HSI if it does not start.
+// light_shell_clock_status() says afterwards what happened, once there is a console. The F411
+// has no clock file and runs on its reset defaults; its status string says so
 void light_shell_clock_init(void);
 const char *light_shell_clock_status(void);
 

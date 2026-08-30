@@ -13,4 +13,4 @@ light_mk4_add_font(light_mk4_h7_font
         CRATE light_app_h7 ENV LIGHT_FONT_LGF
 )
 
-light_mk4_shell_cmsis_configure(light_mk4_h7)
+light_mk4_shell_cmsis_configure(light_mk4_h7 CHIP stm32h743)
