@@ -100,8 +100,12 @@ endif()
 
 #   the host tree exists so scripts/test.ps1 -- and CI's project-test workflow -- run the Rust
 # tests through the same door as every other project: one ctest that is `cargo test` over the
-# portable crates. The staticlib crate is excluded: it has no tests and its panic handler is
-# target-only anyway
+# portable crates. The staticlib crates are excluded: they have no tests and their panic
+# handlers are target-only anyway. So are the STM32 port crates, for a subtler reason: cargo
+# unifies features across everything in one invocation, and cortex-m's single-core critical
+# section selects critical-section's restore-state-u32 while light-rp2350 selects
+# restore-state-bool -- fine in a firmware build, which sees one port crate, a compile error in
+# a workspace-wide test run that sees both
 if(LIGHT_PLATFORM STREQUAL HOST)
         include(CTest)
         find_program(LIGHT_CARGO cargo
@@ -110,7 +114,7 @@ if(LIGHT_PLATFORM STREQUAL HOST)
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-stm32h7 --exclude light-stm32f4
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()
