@@ -30,6 +30,8 @@ the ones above it in this list and never on a port:
     crates/light-input      touch tracking and gestures, CST816T, the IMU model, QMI8658
     crates/light-ui         the widget toolkit
     crates/light-midi       the USB-MIDI forwarder engine and its transport trait
+    crates/light-power      power supply management: operating points, contracts, the request
+                            ceiling that keeps a live rail survivable; the HUSB238 PD sink
     crates/light-rp2        RP2 chip port: the RP2040 or the RP2350 (feature rp2040 | rp2350),
                             one source over the chip's pac; both RP2350 ISAs; TinyUSB host
                             (usb-host). The chip only -- no board knows it exists
@@ -422,6 +424,21 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **`light-power`: mk3's power layer joins the framework.** The model
+  (`Power<S: PowerSource>`) carries every judgement mk3 made once: the SAFE-BY-DEFAULT
+  request ceiling that starts at the USB-C 5V rail (raising it is a claim about the board's
+  wiring, logged as a warning because the evidence of a wrong claim is a dead board), the
+  request-as-state machine (a selection is a message to a negotiation, not a call that
+  succeeds -- Pending until a poll sees the contract, Refused at 1.5 s, measured), stable
+  profile indices with availability as a property, and find/select that can never disagree.
+  The HUSB238 driver keeps the bench findings as structure: writes only through the strictly
+  framed `write_register_byte` (the repeated-START path was measured storing nothing while
+  acknowledging everything), SEL-then-GO ordering, the default-rail-is-not-a-contract
+  distinction (PD_STATUS0 0x13 with SEL 0x00, observed), absent PDOs zeroed rather than
+  decoded, silence as a resting state. Twelve host tests against a scripted source and a
+  register-file fake, including the 45W arithmetic corroboration of the current table.
+  Host-tested only: hardware verification waits for a rig powered through the part, and the
+  ceiling warning from mk3's memory stands -- re-check it if the PD output is ever rewired.
 - 2026-08-31 — **the touch169 verifies the refactors too.** BOOTSEL flash through the
   1200-baud reset, then the full CLI session over its CDC: the table-assembled help, stats
   answered by four modules (display frame timings, the touch controller's NACK counters, the

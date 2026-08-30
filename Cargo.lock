@@ -322,6 +322,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-power"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "light-core",
+]
+
+[[package]]
 name = "light-rp2"
 version = "0.1.0"
 dependencies = [

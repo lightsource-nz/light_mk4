@@ -8,6 +8,7 @@ members = [
         "crates/light-input",
         "crates/light-ui",
         "crates/light-midi",
+        "crates/light-power",
         "crates/light-rp2",
         "crates/light-stm32h7",
         "crates/light-stm32f4",

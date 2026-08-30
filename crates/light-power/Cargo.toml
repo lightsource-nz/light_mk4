@@ -1,0 +1,12 @@
+[package]
+name = "light-power"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "power supply management: selectable operating points, negotiated contracts, and the request ceiling that keeps a live rail survivable; the HUSB238 USB PD sink"
+
+[dependencies]
+light-core = { path = "../light-core" }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }

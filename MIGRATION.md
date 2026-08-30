@@ -74,8 +74,8 @@ a guess, and mk4 does not inherit guesses.
 |---|---|---|---|
 | screentest_ws_touch169, _po13, _mini_stm32h7 (+hw) | the three mk4 apps | ported | |
 | screentest_common | — | retired | mk3-CLI scaffolding |
-| light_power, light_power_husb238 | — | pending | hw-verified under mk3; decided to move into the framework. An I2C driver over `light-core::hal::I2cBus`, one afternoon, when a rig is powered through it again |
-| screentest_husb238 | — | pending | with light_power |
+| light_power, light_power_husb238 | `light-power` (+ `husb238`) | ported (host-tested only) | in the framework proper, as decided; every mk3 bench finding is a test. Hardware verification waits for a rig powered through the part again |
+| screentest_husb238 | — | retired | its job was corroborating the register map against light_power's view; the map's findings live in the driver's comments and tests now |
 | screentest_calib169 | — | pending | touch calibration; wants the wedge resolved first |
 | screentest_sh1106_i2c, _spi4 | — | pending | with the SH1106 |
 | screentest_ws15rgb | — | pending | with the SSD1351 |
