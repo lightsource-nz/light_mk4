@@ -52,6 +52,38 @@
             }
         },
         {
+            "name": "conf-light_mk4-pico2-riscv-debug",
+            "description": "The po13 rig built for the RP2350's Hazard3 RISC-V cores: LIGHT_ARCH picks the ISA and pico-sdk's own RISC-V toolchain file, Rust_CARGO_TARGET is the matching soft-float rv32imac target. PICO_TOOLCHAIN_PATH comes from light-env.ps1 (the RISC-V toolchain is kept off PATH; see screen-test's riscv preset for the whole story).",
+            "inherits": [
+                "conf-light-pico2",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-pico2-riscv",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "LIGHT_ARCH": "riscv32",
+                "PICO_TOOLCHAIN_PATH": "$env{PICO_TOOLCHAIN_PATH}",
+                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
+            "name": "conf-light_mk4-touch169-riscv-debug",
+            "description": "The touch169 built for the Hazard3 cores; see the pico2 riscv preset.",
+            "inherits": [
+                "conf-light-waveshare-touch169",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-touch169-riscv",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "LIGHT_ARCH": "riscv32",
+                "PICO_TOOLCHAIN_PATH": "$env{PICO_TOOLCHAIN_PATH}",
+                "Rust_CARGO_TARGET": "riscv32imac-unknown-none-elf",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
             "name": "conf-light_mk4-crossfire-debug",
             "description": "crossfire on the po13 rig: the Pico 2's native USB port hosting USB-MIDI instruments, the OLED as the status display, the console on the UART through the debug probe. Flashed and debugged over SWD.",
             "inherits": [
@@ -84,6 +116,16 @@
         {
             "name": "build-light_mk4_touch169-release",
             "configurePreset": "conf-light_mk4-touch169-release",
+            "targets": ["light_mk4_touch169"]
+        },
+        {
+            "name": "build-light_mk4_pico2-riscv-debug",
+            "configurePreset": "conf-light_mk4-pico2-riscv-debug",
+            "targets": ["light_mk4_pico2"]
+        },
+        {
+            "name": "build-light_mk4_touch169-riscv-debug",
+            "configurePreset": "conf-light_mk4-touch169-riscv-debug",
             "targets": ["light_mk4_touch169"]
         },
         {

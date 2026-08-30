@@ -70,6 +70,6 @@ pub struct Breathe;
 
 impl Idle for Breathe {
         fn idle(&mut self) {
-                cortex_m::asm::nop();
+                core::hint::spin_loop();
         }
 }

@@ -15,8 +15,11 @@ light-core = { path = "../light-core" }
 #   no `rt` feature: the vector table, reset handler and linker script belong to pico-sdk's
 # runtime in the C shell. This crate only wants the register definitions
 rp235x-pac = { version = "0.2", default-features = false }
-#   PRIMASK for the critical section; no `critical-section-single-core` feature, because that
-# implementation is wrong on a dual-core part -- see src/critical.rs
-cortex-m = "0.7"
 #   the restore state is "was this the outermost section", one bool
 critical-section = { version = "1.2", features = ["restore-state-bool"] }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+#   PRIMASK for the critical section; no `critical-section-single-core` feature, because that
+# implementation is wrong on a dual-core part -- see src/critical.rs. The Hazard3 build does
+# the same with mstatus.MIE through inline asm and does not pull this crate in at all
+cortex-m = "0.7"

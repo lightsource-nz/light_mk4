@@ -16,6 +16,9 @@
                 'conf-light_mk4-pico2-release'    = 'build-pico2-release'
                 # crossfire: the Pico 2 with its USB port in the host role, own tree
                 'conf-light_mk4-crossfire-debug'  = 'build-crossfire'
+                # the same boards on the RP2350's Hazard3 cores: build/flash with -Preset
+                'conf-light_mk4-pico2-riscv-debug'    = 'build-pico2-riscv'
+                'conf-light_mk4-touch169-riscv-debug' = 'build-touch169-riscv'
         }
 
         Targets = @{
@@ -63,6 +66,18 @@
                         Rust_CARGO_TARGET   = 'thumbv8m.main-none-eabi'
                         LIGHT_MK4_PICO2_APP = 'crossfire'
                 }
+                'conf-light_mk4-pico2-riscv-debug'    = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'pico2'
+                        PICO_PLATFORM     = 'rp2350-riscv'
+                        Rust_CARGO_TARGET = 'riscv32imac-unknown-none-elf'
+                }
+                'conf-light_mk4-touch169-riscv-debug' = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_1.69'
+                        PICO_PLATFORM     = 'rp2350-riscv'
+                        Rust_CARGO_TARGET = 'riscv32imac-unknown-none-elf'
+                }
         }
 
         # which OpenOCD config and SVD belong to which board -- see screen-test's config for
@@ -77,6 +92,10 @@
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                 }
                 'conf-light_mk4-crossfire-debug' = @{
+                        Config = 'openocd-rp2350.cfg'
+                        Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                }
+                'conf-light_mk4-pico2-riscv-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
                 }
