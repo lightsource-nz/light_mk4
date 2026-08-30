@@ -6,8 +6,15 @@
 //! reports how many were lost. A full log costs a lost line, never a stalled main loop.
 //!
 //! Records are formatted at the producer into a fixed buffer, so a record has a known size and
-//! the queue has a known footprint (`DEPTH * size_of::<Record>()`, no heap). Deferred formatting
-//! (`defmt`-style ids) can replace that later without changing the queue's contract.
+//! the queue has a known footprint (`DEPTH * size_of::<Record>()`, no heap) -- except that a
+//! message with no arguments, which is most of them, is kept as the `&'static str` it already
+//! is: no formatting, no copy. Measured on the bench (STM32F411 at 16 MHz, opt-level 1) before
+//! that fast path: 54 us for a static message, 78 us with one integer, 123 us with three
+//! arguments -- so the `fmt` machinery and the copy were most of the cost of the commonest
+//! case, not the formatting. Full deferred formatting (`defmt`-style ids decoded on the host)
+//! is a different console architecture -- a binary stream over RTT and a host decoder, where
+//! every console here is text read by a person -- and is a decision to make on its own, not an
+//! optimisation to slip in; the queue's contract would survive it either way.
 
 use core::cell::RefCell;
 use core::fmt::{self, Write};
@@ -16,6 +23,36 @@ use heapless::{Deque, String};
 
 pub const TEXT_CAPACITY: usize = 96;
 pub const DEPTH: usize = 32;
+
+/// A record's message: the literal itself when the call site had no arguments to format,
+/// otherwise the formatted (and possibly truncated) text.
+#[derive(Clone, Debug)]
+pub enum Text {
+        Static(&'static str),
+        Owned(String<TEXT_CAPACITY>),
+}
+
+impl Text {
+        pub fn as_str(&self) -> &str {
+                match self {
+                        Text::Static(s) => s,
+                        Text::Owned(s) => s.as_str(),
+                }
+        }
+}
+
+impl core::ops::Deref for Text {
+        type Target = str;
+        fn deref(&self) -> &str {
+                self.as_str()
+        }
+}
+
+impl fmt::Display for Text {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str(self.as_str())
+        }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Level {
@@ -44,7 +81,7 @@ pub struct Record {
         pub ts_us: u64,
         /// The producing crate or module, from `module_path!()`.
         pub target: &'static str,
-        pub text: String<TEXT_CAPACITY>,
+        pub text: Text,
 }
 
 impl fmt::Display for Record {
@@ -109,9 +146,15 @@ pub fn enabled(level: Level) -> bool {
 pub fn push(level: Level, target: &'static str, args: fmt::Arguments<'_>) {
         //   format OUTSIDE the critical section: formatting is the slow part, and holding the
         // lock through it would make every other producer -- including the other core -- wait
-        // on this one's printf
-        let mut text = String::new();
-        let _ = Truncating(&mut text).write_fmt(args);
+        // on this one's printf. A message with no arguments never touches fmt at all
+        let text = match args.as_str() {
+                Some(s) => Text::Static(s),
+                None => {
+                        let mut text = String::new();
+                        let _ = Truncating(&mut text).write_fmt(args);
+                        Text::Owned(text)
+                }
+        };
         critical_section::with(|cs| {
                 let mut st = STATE.borrow_ref_mut(cs);
                 if level > st.max_level {
@@ -140,7 +183,7 @@ pub fn drain(max: usize, mut sink: impl FnMut(&Record)) -> usize {
                                 let ts_us = st.clock.map_or(0, |c| c());
                                 let mut text = String::new();
                                 let _ = write!(Truncating(&mut text), "dropped {n} log records");
-                                return Some(Record { level: Level::Warn, ts_us, target: "light_core::log", text });
+                                return Some(Record { level: Level::Warn, ts_us, target: "light_core::log", text: Text::Owned(text) });
                         }
                         st.queue.pop_front()
                 });
@@ -256,6 +299,27 @@ mod tests {
                 assert_eq!(got[0].text.len(), TEXT_CAPACITY - 1);
                 assert!(got[0].text.starts_with('a'));
                 assert!(got[0].text[1..].chars().all(|c| c == 'é'));
+        }
+
+        #[test]
+        fn a_message_without_arguments_is_kept_by_reference() {
+                let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+                reset();
+                crate::info!("no arguments here");
+                //   a runtime value, because rustc folds literal arguments -- a string, an
+                // integer -- into the format string and hands over a static after all
+                crate::info!("one argument {}", core::hint::black_box(1));
+                let got = drain_all();
+                assert!(matches!(got[0].text, Text::Static("no arguments here")));
+                assert!(matches!(got[1].text, Text::Owned(_)));
+                assert_eq!(got[1].text.as_str(), "one argument 1");
+                //   and a static message longer than the buffer is not truncated: it was
+                // never copied
+                const LONG: &str = "0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789";
+                assert!(LONG.len() > TEXT_CAPACITY);
+                crate::info!("0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789");
+                let got = drain_all();
+                assert_eq!(got[0].text.as_str(), LONG);
         }
 
         #[test]

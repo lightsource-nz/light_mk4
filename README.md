@@ -361,3 +361,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   literal before `pico_sdk_init()` and against the variable `PICO_SDK` it defines after; every
   STREQUAL literal in the root CMakeLists is quoted now. The lesson from both is the same one:
   a change to the build has to reconfigure every tree, not the one being worked on.
+- 2026-08-30 — **what a log record costs, measured; and the last item on the decision's debt
+  list, re-scoped.** Sixteen `info!` calls timed on TIM2 on the Blackpill (16 MHz, opt-level
+  1): 54 us each with no arguments, 78 us with one integer, 123 us with three arguments --
+  roughly 6/8/13 us on the 150 MHz RP2350. The surprise is the floor: a message with nothing
+  to format still paid for the `fmt` machinery, a copy into the 96-byte record and the lock,
+  and that is the commonest kind of message. `log::Text` now keeps an argument-free message as
+  the `&'static str` it already is (`Arguments::as_str()`), and that case measures 16 us --
+  3.4x -- with the queue's contract, the drain API and the drop policy untouched. Full
+  deferred formatting was the decision's "later optimisation"; with these numbers it is not
+  an optimisation worth its cost -- what it would buy is the argument cases, at 8-13 us on the
+  boards that matter -- and it is not a small change: `defmt`-style ids mean a binary stream
+  over RTT and a host decoder, where every console here is text read by a person. It is a
+  console-architecture decision to take if and when RTT logging is wanted, not framework
+  debt. One trap for anyone testing this: rustc folds literal arguments (a string, an integer)
+  into the format string, so `info!("{}", 1)` arrives as a static too.
