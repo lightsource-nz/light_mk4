@@ -1,5 +1,6 @@
-//! STM32H743 board access for the light framework, on bare CMSIS: the port behind
-//! `light_core::hal` for the WeAct MiniSTM32H7xx, and the counterpart of `light-rp2`.
+//! STM32H743 chip access for the light framework, on bare CMSIS: the port behind
+//! `light_core::hal`, and the counterpart of `light-rp2`. Board wiring -- which pins carry
+//! what on whichever board the chip sits on -- lives with the application, not here.
 //!
 //! The C shell (`module/light_mk4_shell_cmsis`) owns what mk3's chip port owned: the CMSIS
 //! startup file and linker script, the clock tree (400 MHz off the crystal, with PLL1's Q output
@@ -21,7 +22,6 @@ use cortex_m as _;
 use core::sync::atomic::{AtomicU32, Ordering};
 use light_core::hal::{Clock, Idle};
 
-pub mod boards;
 pub mod gpio;
 pub mod spi;
 

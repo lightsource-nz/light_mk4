@@ -16,7 +16,8 @@ use light_core::{info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox
 use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
 use light_draw::{Flip, PixelFormat, Point, Rotation};
 use light_font::Font;
-use light_rp2::boards::po13::*;
+mod board;
+use board::*;
 use light_rp2::gpio::Output;
 use light_rp2::spi::Spi1Display;
 use light_rp2::tinyusb_midi::{MidiEvent, UsbMidiHost};

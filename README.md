@@ -30,15 +30,18 @@ the ones above it in this list and never on a port:
     crates/light-input      touch tracking and gestures, CST816T, the IMU model, QMI8658
     crates/light-ui         the widget toolkit
     crates/light-midi       the USB-MIDI forwarder engine and its transport trait
-    crates/light-rp2        RP2 port: the RP2040 or the RP2350 (feature rp2040 | rp2350), one
-                            source over the chip's pac; both RP2350 ISAs; TinyUSB host (usb-host)
-    crates/light-stm32h7    STM32H743 port, raw registers over bare CMSIS
-    crates/light-stm32f4    STM32F411 port, the same shape
+    crates/light-rp2        RP2 chip port: the RP2040 or the RP2350 (feature rp2040 | rp2350),
+                            one source over the chip's pac; both RP2350 ISAs; TinyUSB host
+                            (usb-host). The chip only -- no board knows it exists
+    crates/light-stm32h7    STM32H743 chip port, raw registers over bare CMSIS
+    crates/light-stm32f4    STM32F411 chip port, the same shape
     tools/crush             font-crusher in Rust: renders TrueType into LGF (and mk3's C pair)
     tools/vendor            freetype-sys, vendored with a one-line build.rs fix (see Cargo.toml)
     module/light_mk4_shell        the pico-sdk C shell (device and USB-host roles)
     module/light_mk4_shell_cmsis  the bare-CMSIS C shell (H743, F411)
-    module/light_mk4_<board>/rust the staticlib crate a board's firmware links (light_app_<board>)
+    module/light_mk4_<board>/rust the staticlib crate a board's firmware links (light_app_<board>);
+                                  its src/board.rs is the wiring -- pins, offsets, the taken-once
+                                  peripheral set. Board wiring is the application's, never a crate's
     module/light_mk4_<board>      the board's executable (module/<target>/ is where
                                   light-flash.ps1 looks for <target>.uf2)
     scripts/                the usual thin wrappers over $LIGHT_PATH/scripts
@@ -406,3 +409,13 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   hardware: no RP2040 was on the bench. The first flash wants the crossfire tree on a stock
   Pico over a debugprobe, and the thing to watch is the spinlock critical section under
   portable-atomic's fallback -- every `fetch_add` on the M0+ now takes lock 31.
+- 2026-08-31 — **board wiring belongs to the application.** The port crates had grown `boards`
+  modules -- the touch169, the po13 rig with its Pico-OLED-1.3 expansion board, the two WeAct
+  STM32 boards -- which baked one bench's hardware combinations into the framework. Gone: a
+  port crate now stops at the CHIP (gpio, buses, pwm, clock, critical section, and unsafe
+  constructors with a construct-once contract), and each application carries `src/board.rs`
+  -- its pins, its measured offsets, its taken-once peripheral set. Another user's Pico
+  wearing different hardware writes their own forty lines of wiring and touches nothing in
+  a crate. This is assessment decision 2's second half, done properly: the port is one axis,
+  and the board layer only instantiates drivers -- and it dropped light-rp2's dependency on
+  light-input, which existed only to name the touch169's IMU mounting.

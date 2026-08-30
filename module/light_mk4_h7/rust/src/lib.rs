@@ -14,7 +14,8 @@ use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::PixelFormat;
 use light_font::Font;
-use light_stm32h7::boards::mini_stm32h7::*;
+mod board;
+use board::*;
 use light_stm32h7::gpio::{Input, Output};
 use light_stm32h7::spi::Spi4Display;
 use light_stm32h7::{now_us, Breathe, Clocks, SysClock};

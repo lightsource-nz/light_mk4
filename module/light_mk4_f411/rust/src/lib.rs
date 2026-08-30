@@ -7,7 +7,8 @@
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
-use light_stm32f4::boards::blackpill::*;
+mod board;
+use board::*;
 use light_stm32f4::gpio::{Input, Output};
 use light_stm32f4::{now_us, Breathe, Clocks, SysClock};
 

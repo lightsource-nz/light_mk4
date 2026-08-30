@@ -18,7 +18,6 @@ usb-host = ["dep:light-midi"]
 
 [dependencies]
 light-core = { path = "../light-core" }
-light-input = { path = "../light-input" }
 light-midi = { path = "../light-midi", optional = true }
 #   no `rt` feature on either: the vector table, reset handler and linker script belong to
 # pico-sdk's runtime in the C shell. This crate only wants the register definitions

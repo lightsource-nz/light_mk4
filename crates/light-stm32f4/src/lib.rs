@@ -1,7 +1,7 @@
-//! STM32F411 board access for the light framework, on bare CMSIS: the WeAct Blackpill. The
-//! same shape as `light-stm32h7` at the F4's addresses -- GPIO on AHB1, a different RCC map --
-//! with a microsecond clock on the 32-bit TIM2. No bus drivers yet: the Blackpill carries a
-//! LED, a key and a console, and that is what mk3 ran on it.
+//! STM32F411 chip access for the light framework, on bare CMSIS: the same shape as
+//! `light-stm32h7` at the F4's addresses -- GPIO on AHB1, a different RCC map -- with a
+//! microsecond clock on the 32-bit TIM2. No bus drivers yet: nothing that has run on this
+//! chip needed one. Board wiring lives with the application, not here.
 
 #![no_std]
 
@@ -11,7 +11,6 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use cortex_m as _;
 use light_core::hal::{Clock, Idle};
 
-pub mod boards;
 pub mod gpio;
 
 mod reg {

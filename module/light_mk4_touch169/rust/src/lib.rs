@@ -30,7 +30,8 @@ use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, 
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
-use light_rp2::boards::touch169::*;
+mod board;
+use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::spi::Spi1Display;

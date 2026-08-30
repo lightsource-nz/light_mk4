@@ -15,9 +15,11 @@
 //! instructions, so the framework's atomics are `portable-atomic`'s, which fall back to this
 //! crate's critical section on that core and compile to the native instructions on the others.
 //!
-//! Ownership: a board's peripherals are taken ONCE, as an owned set, from `boards::<board>::take`.
-//! A second call answers `None`. The shell owns nothing the set contains; the set owns nothing
-//! the shell uses. That replaces the spike's `steal()`-with-a-doc-comment.
+//! This crate stops at the CHIP. What is soldered to it -- panels, keys, expansion boards --
+//! is board wiring, and that belongs to the application: each app carries a `board` module
+//! that names its pins, calls the unsafe constructors below exactly once behind a taken-once
+//! gate, and hands the peripherals over as an owned set. The framework does not know or care
+//! which bench rig anyone runs.
 
 #![no_std]
 
@@ -36,7 +38,6 @@ pub use rp235x_pac as pac;
 #[cfg(target_os = "none")]
 mod critical;
 
-pub mod boards;
 pub mod gpio;
 pub mod i2c;
 pub mod pwm;

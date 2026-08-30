@@ -328,7 +328,6 @@ dependencies = [
  "cortex-m",
  "critical-section",
  "light-core",
- "light-input",
  "light-midi",
  "portable-atomic",
  "rp2040-pac",

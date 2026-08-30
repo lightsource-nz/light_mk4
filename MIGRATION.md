@@ -27,7 +27,7 @@ a guess, and mk4 does not inherit guesses.
 | light_core_chip_stm32f446, stm32f103 | — | retired | no board on the bench; the F4 crate covers the F446 in an afternoon if one appears |
 | light_core_arch_host_os | `cargo test` | ported | the host tree is the test tier |
 | light_core_board_pico_hostmode | — | retired | pico-sdk hostmode existed to run C on the host; the mocked-hal tests do that job |
-| platform/ (board headers) | `boards` modules in each port crate | ported | wiring is code, owned once, taken once |
+| platform/ (board headers) | each application's `src/board.rs` | ported | wiring is code, owned once, taken once -- and it is the application's, never the framework's: a port crate stops at the chip |
 | scripts/, presets, CI workflow | unchanged, consumed | ported | `light-tools.ps1` adds cargo; nothing else changed |
 
 ## light_display
@@ -56,7 +56,7 @@ a guess, and mk4 does not inherit guesses.
 | light_button | `light-core::button` | ported | |
 | light_imu, light_imu_qmi8658 | `light-input::imu`, `qmi8658` | ported | |
 | light_ui_demo_touch169, _po13 | `light_mk4_touch169`, `light_mk4_pico2` | ported | |
-| light_ui_hw_ws_touch169, _po13 | port-crate `boards` | ported | |
+| light_ui_hw_ws_touch169, _po13 | the apps' `src/board.rs` | ported | board wiring lives with the application |
 | light_audio | — | pending | hw-verified under mk3 (PCM + tone on a PWM pin); a `light-rp2::pwm` client. Port when a rig wants sound |
 | light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | — | pending | build-verified only under mk3, never on hardware; verify in C first |
 | light_ui_demo_ws15rgb, light_ui_hw_ws15rgb | — | pending | with the SSD1351 |

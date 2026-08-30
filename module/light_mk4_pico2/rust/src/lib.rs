@@ -16,7 +16,8 @@ use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{Flip, PixelFormat, Rotation};
 use light_font::Font;
-use light_rp2::boards::po13::*;
+mod board;
+use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::spi::Spi1Display;
 use light_rp2::{now_us, Breathe, Clocks, SysClock};
