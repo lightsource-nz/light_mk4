@@ -45,6 +45,10 @@ enum AppEvent {
         /// Whether anything is mounted, for the LED.
         Mounted(bool),
         Stats,
+        /// Tear the host controller down and bring it back, from the console.
+        UsbReset,
+        /// Whether the engine's root-port-empty verdict resets the controller by itself.
+        AutoReset(bool),
 }
 
 static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
@@ -94,6 +98,13 @@ struct UsbMod {
         forwarder: Forwarder<USB_SLOTS>,
         events: Subscription,
         reset_pending: bool,
+        /// mk3 reset the controller whenever a disconnect emptied the root port, working
+        /// around a stale buffer-control state (hathach/tinyusb#3533) -- and the RP2350 needs
+        /// it too: without the reset the next enumeration panicked inside the USB IRQ. The
+        /// reset itself hung in tusb_deinit(), which closed devices after tearing down the
+        /// port's critical section; that is fixed in the pico-sdk TinyUSB fork. `usb autoreset
+        /// off` keeps the switch for the bench
+        auto_reset: bool,
         packets: u32,
         status: Status,
 }
@@ -117,16 +128,27 @@ impl Module for UsbMod {
         }
         fn poll(&mut self) -> Poll {
                 while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Stats = ev {
-                                info!("usb: {} mounted, hub addr {}, {} packets forwarded, {} dropped (cable), {} events dropped", self.forwarder.usb_mounted_count(), self.forwarder.hub_addr(), self.packets, self.forwarder.dropped, self.host.dropped_events());
+                        match ev {
+                                AppEvent::Stats => info!("usb: {} mounted, hub addr {}, {} packets forwarded, {} dropped (cable), {} events dropped, auto-reset {}", self.forwarder.usb_mounted_count(), self.forwarder.hub_addr(), self.packets, self.forwarder.dropped, self.host.dropped_events(), if self.auto_reset { "on" } else { "off" }),
+                                AppEvent::UsbReset => self.reset_pending = true,
+                                AppEvent::AutoReset(on) => {
+                                        self.auto_reset = on;
+                                        info!("usb: controller auto-reset on an empty root port {}", if on { "on" } else { "off" });
+                                }
+                                _ => {}
                         }
                 }
                 //   the reset is done here, at the top of a pass, never from inside the
                 // callback that asked for it
+                //   a reset unmounts everything, and those unmounts empty the bus, which would
+                // ask for a second reset: the verdicts of the pass that follows a reset are not
+                // honoured
+                let mut just_reset = false;
                 if self.reset_pending {
                         self.reset_pending = false;
-                        info!("resetting the USB host controller: the root port is empty");
+                        info!("resetting the USB host controller");
                         self.host.reset();
+                        just_reset = true;
                 }
                 self.host.task();
                 let mut busy = false;
@@ -149,8 +171,12 @@ impl Module for UsbMod {
                                 warn!("the host stack reported a slot the engine does not have");
                                 continue;
                         };
-                        if c.reset_host {
-                                self.reset_pending = true;
+                        if c.reset_host && !just_reset {
+                                if self.auto_reset {
+                                        self.reset_pending = true;
+                                } else {
+                                        info!("root port empty; the controller is left as it is (`usb autoreset on` to reset it)");
+                                }
                         }
                         let _ = EVENTS.publish(AppEvent::Mounted(c.any_usb_mounted));
                         self.publish_status();
@@ -315,7 +341,22 @@ impl ConsoleMod {
                 info!("> {line}");
                 let mut words = line.split_whitespace();
                 match words.next() {
-                        Some("help") => info!("commands: help | stats | quit"),
+                        Some("help") => info!("commands: help | stats | usb reset | usb autoreset on|off | quit"),
+                        Some("usb") => match words.next() {
+                                Some("reset") => {
+                                        let _ = EVENTS.publish(AppEvent::UsbReset);
+                                }
+                                Some("autoreset") => match words.next() {
+                                        Some("on") => {
+                                                let _ = EVENTS.publish(AppEvent::AutoReset(true));
+                                        }
+                                        Some("off") => {
+                                                let _ = EVENTS.publish(AppEvent::AutoReset(false));
+                                        }
+                                        _ => warn!("usage: usb autoreset on|off"),
+                                },
+                                _ => warn!("usage: usb reset | usb autoreset on|off"),
+                        },
                         Some("stats") => {
                                 info!("uptime {} s; console: {} bytes dropped; bus: {} refused", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused());
                                 let _ = EVENTS.publish(AppEvent::Stats);
@@ -369,7 +410,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         info!("USB host stack up: {} MIDI slots, hub aware", USB_SLOTS);
 
         static USB_MOD: static_cell::StaticCell<UsbMod> = static_cell::StaticCell::new();
-        let usb_mod = USB_MOD.init(UsbMod { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("slot"), reset_pending: false, packets: 0, status: Status::default() });
+        let usb_mod = USB_MOD.init(UsbMod { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("slot"), reset_pending: false, auto_reset: true, packets: 0, status: Status::default() });
         static OLED_MOD: static_cell::StaticCell<OledMod> = static_cell::StaticCell::new();
         let oled_mod = OLED_MOD.init(OledMod { display, layer, font, events: EVENTS.subscribe().expect("slot"), status: Status::default(), dirty: true, indicators_only: false });
         let mut led_mod = LedMod { led: p.led, events: EVENTS.subscribe().expect("slot") };

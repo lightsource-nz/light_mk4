@@ -62,8 +62,12 @@ static void __attribute__((noreturn)) shell_panic_finish(void)
                 stdio_flush();
         } else {
                 panic_pending = true;
+                //   busy_wait, never sleep: a panic raised inside an interrupt handler (TinyUSB's
+                // host assertions fire from the USB IRQ) would otherwise hit the SDK's own
+                // "attempted to sleep inside an exception handler" panic here, which re-enters
+                // this function and overwrites the message that mattered
                 for (uint32_t i = 0; i < PANIC_HANDOFF_TIMEOUT_MS && !panic_printed; i++)
-                        sleep_ms(1);
+                        busy_wait_us(1000);
         }
         reset_usb_boot(0, 0);
         __breakpoint();
