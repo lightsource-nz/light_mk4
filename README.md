@@ -276,3 +276,10 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   it rather than rebooting into a BOOTSEL nobody can see, and prints the message itself if
   core 1 never relays it. One earlier run died mid-play before that change and left no
   message; not seen since, and the halt-on-panic build is what will catch it if it returns.
+  **It returned, and the halt caught it:** `buf_ctrl @ 0x50100080 already available`, TinyUSB's
+  rp2040 host driver panicking in the USB IRQ on the stale-AVAILABLE hardware quirk -- on the
+  in-IRQ round-robin switch of the shared EPX between pending endpoints, a path the rebased
+  upstream driver added after the fork's fix for the same quirk on `hcd_edpt_xfer()`. Two
+  instruments on a hub, three endpoints sharing EPX, hit it within a minute. The same
+  force-clear on that path (fork commit bf8d79b) and a two-minute soak of playing on both
+  instruments passed: 164 packets forwarded, no panic.
