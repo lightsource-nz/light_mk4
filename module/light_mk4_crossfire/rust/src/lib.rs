@@ -67,6 +67,7 @@ fn log_sink(record: &log::Record) {
 /// Core 1: the UART log drain and console read. No USB here -- the host stack is core 0's.
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
+        CORE1_PASSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         log::drain(4, log_sink);
         for _ in 0..32 {
                 let b = unsafe { light_shell_read_byte() };
@@ -90,6 +91,12 @@ struct Status {
 }
 
 static STATUS: light_core::Mailbox<Status, 1> = light_core::Mailbox::new();
+
+/// Heartbeats, one per core, for a post-mortem that reads memory without halting anything:
+/// whether each core is still executing its loop is the first question, and it should not
+/// take a debugger session that disturbs the answer.
+static CORE0_PASSES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+static CORE1_PASSES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// Owns the host stack and the forwarding engine. Every pass: run the stack, apply what it
 /// reported, forward what arrived, and say what changed.
@@ -127,6 +134,7 @@ impl Module for UsbMod {
                 "usb"
         }
         fn poll(&mut self) -> Poll {
+                CORE0_PASSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
                                 AppEvent::Stats => info!("usb: {} mounted, hub addr {}, {} packets forwarded, {} dropped (cable), {} events dropped, auto-reset {}", self.forwarder.usb_mounted_count(), self.forwarder.hub_addr(), self.packets, self.forwarder.dropped, self.host.dropped_events(), if self.auto_reset { "on" } else { "off" }),
@@ -358,7 +366,7 @@ impl ConsoleMod {
                                 _ => warn!("usage: usb reset | usb autoreset on|off"),
                         },
                         Some("stats") => {
-                                info!("uptime {} s; console: {} bytes dropped; bus: {} refused", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused());
+                                info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(core::sync::atomic::Ordering::Relaxed), CORE1_PASSES.load(core::sync::atomic::Ordering::Relaxed), log::pending());
                                 let _ = EVENTS.publish(AppEvent::Stats);
                         }
                         Some("quit") => {

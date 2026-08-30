@@ -283,3 +283,16 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   instruments on a hub, three endpoints sharing EPX, hit it within a minute. The same
   force-clear on that path (fork commit bf8d79b) and a two-minute soak of playing on both
   instruments passed: 164 packets forwarded, no panic.
+- 2026-08-30 — **the attach/detach hang, and a lesson about attaching.** Pulling an
+  instrument from the hub "hung" the board: console silent, display frozen. A per-core
+  heartbeat (`stats` reports passes for both cores, readable from memory without halting)
+  and a two-core gdb session with openocd's flash probe disabled (`gdb_memory_map disable`,
+  `gdb_flash_program disable` -- the probe runs a bootrom stub over whatever the halted core
+  was doing, and had wrecked every earlier post-mortem) showed both cores alive but crawling:
+  core 0 was inside the USB IRQ, in TinyUSB's MIDI host driver re-arming the pulled device's
+  IN read from its own failed completion, timeout after timeout, and the hub's port-change
+  report that would have unmounted it never got a turn. Fixed in the fork (a617677): a read
+  is re-armed from the completion only on success; a failed one is marked stalled and re-armed
+  by the application's next read, from thread context. A dozen attach/detach cycles across
+  every port of a chained hub after that, heartbeats steady. Note the port map: a chained hub
+  is two hub chips, and the display shows the port number whichever chip reported it.
