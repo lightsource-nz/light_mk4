@@ -68,11 +68,29 @@ static void __attribute__((noreturn)) shell_panic_finish(void)
                 // this function and overwrites the message that mattered
                 for (uint32_t i = 0; i < PANIC_HANDOFF_TIMEOUT_MS && !panic_printed; i++)
                         busy_wait_us(1000);
+                //   core 1 never got to it -- it is blocked on a lock this core died holding,
+                // typically -- so the message is printed from here, which the UART allows and
+                // the CDC does not: on the device-role builds it is simply lost, and the
+                // message stays in panic_message for a debugger to read
+#ifdef LIGHT_SHELL_USB_HOST
+                if (!panic_printed) {
+                        printf("\n*** PANIC (core %u, unrelayed) ***\n%s\n", (unsigned) get_core_num(), panic_message);
+                        stdio_flush();
+                }
+#endif
         }
+#ifdef LIGHT_SHELL_USB_HOST
+        //   the host-role board is on an SWD dock and its USB port is a host port: BOOTSEL would
+        // be invisible and would wipe the message. Halt where a debugger can read it
+        __breakpoint();
+        while (true)
+                tight_loop_contents();
+#else
         reset_usb_boot(0, 0);
         __breakpoint();
         while (true)
                 tight_loop_contents();
+#endif
 }
 
 // a Rust panic, already formatted on the Rust side into msg[0..len)

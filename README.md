@@ -264,3 +264,15 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   one blamed on `PICO_USE_STACK_GUARDS`, which is unproven either way. Reading the lock from
   gdb acquires it too. The reliable sequence after a load is `monitor reset halt`, write 1 to
   0xd000017c, `monitor resume`.
+- 2026-08-30 — **crossfire forwards.** Two instruments on a chained hub (addresses 5 and 6,
+  the display's port map reading the inner chip's ports), 118 packets forwarded in 45 s of
+  playing, the RX/TX indicators pushing 73 frames of their own band. Three faults on the way
+  to that: the root-port-empty controller reset hung inside `tusb_deinit()`, which closed the
+  device tree after tearing down the port's critical section (fixed in the pico-sdk TinyUSB
+  fork, commit 676b027); without that reset the next enumeration panicked inside the USB IRQ,
+  so the RP2350 needs mk3's workaround as much as the RP2040 did; and the shell's panic
+  hand-off slept, which inside an interrupt handler raised the SDK's own panic over the one
+  that mattered. In the host role the shell now halts on a panic where the debugger can read
+  it rather than rebooting into a BOOTSEL nobody can see, and prints the message itself if
+  core 1 never relays it. One earlier run died mid-play before that change and left no
+  message; not seen since, and the halt-on-panic build is what will catch it if it returns.
