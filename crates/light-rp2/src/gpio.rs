@@ -1,21 +1,24 @@
 //! GPIO through the pac: function select, pads, SIO input/output.
 
 use light_core::{InputPin, OutputPin};
-use rp235x_pac as pac;
+use crate::pac;
 
-/// RP2350 GPIO function selects (datasheet table 9.4.1). Only the ones in use.
+/// GPIO function selects, the same numbers on both chips (RP2040 datasheet table 2.19.2,
+/// RP2350 table 9.4.1). Only the ones in use.
 pub const FUNC_SPI: u8 = 1;
 pub const FUNC_I2C: u8 = 3;
 pub const FUNC_SIO: u8 = 5;
 
 /// Route `pin` to `func`, with the pad configured the way pico-sdk's `gpio_set_function` does:
-/// input enabled, output not disabled, and -- RP2350 only -- isolation cleared, since pads
-/// power up ISOLATED and everything else looks correct while the pin does nothing.
+/// input enabled, output not disabled, and -- RP2350 only -- isolation cleared, since its pads
+/// power up ISOLATED and everything else looks correct while the pin does nothing. The RP2040
+/// has no such bit.
 pub fn set_function(pin: usize, func: u8) {
         let pads = unsafe { &*pac::PADS_BANK0::ptr() };
         let io = unsafe { &*pac::IO_BANK0::ptr() };
         pads.gpio(pin).modify(|_, w| w.ie().set_bit().od().clear_bit());
         io.gpio(pin).gpio_ctrl().write(|w| unsafe { w.funcsel().bits(func) });
+        #[cfg(feature = "rp2350")]
         pads.gpio(pin).modify(|_, w| w.iso().clear_bit());
 }
 

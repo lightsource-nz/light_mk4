@@ -30,7 +30,8 @@ the ones above it in this list and never on a port:
     crates/light-input      touch tracking and gestures, CST816T, the IMU model, QMI8658
     crates/light-ui         the widget toolkit
     crates/light-midi       the USB-MIDI forwarder engine and its transport trait
-    crates/light-rp2350     RP2350 port: rp235x-pac, both ISAs, TinyUSB host transport (usb-host)
+    crates/light-rp2        RP2 port: the RP2040 or the RP2350 (feature rp2040 | rp2350), one
+                            source over the chip's pac; both RP2350 ISAs; TinyUSB host (usb-host)
     crates/light-stm32h7    STM32H743 port, raw registers over bare CMSIS
     crates/light-stm32f4    STM32F411 port, the same shape
     tools/crush             font-crusher in Rust: renders TrueType into LGF (and mk3's C pair)
@@ -44,8 +45,9 @@ the ones above it in this list and never on a port:
     .github/workflows       the host test suite through the framework's shared workflow
 
 The port crates are target-only and are excluded from the host `cargo test` along with the
-app crates: a workspace-wide invocation unifies features, and the two `critical-section`
-flavours (cortex-m's single-core one in the STM32 ports, light-rp2350's own) cannot coexist.
+app crates: light-rp2 needs a chip chosen, and a workspace-wide invocation unifies features,
+so the two `critical-section` flavours (cortex-m's single-core one in the STM32 ports,
+light-rp2's own) cannot coexist.
 
 ## Building
 
@@ -387,3 +389,20 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   what it became -- ported, pending with the reason it waits, or retired with the reason --
   so the state of the migration is a table, not a reading of this log. The one item on it
   that gates a product: RP2040, which crossfire's stock Pico needs and no mk4 port covers.
+- 2026-08-30 — **RP2040: the port crate becomes `light-rp2`, one source for both chips.**
+  The blocks the port touches -- SIO, pads, IO, SPI, I2C, DMA, PWM, the timer -- are the
+  same IP on the RP2040 and the RP2350, and `rp2040-pac` 0.6 and `rp235x-pac` 0.2 come from
+  the same svd2rust generation, so every accessor the crate uses is spelled the same in both.
+  The chip is a feature (`rp2040` | `rp2350`, exactly one) and shows in three lines: which
+  pac is aliased, `TIMER` against `TIMER0`, and the RP2350's pad `ISO` bit. The fourth
+  difference is the Cortex-M0+ itself, which has no atomic read-modify-write: the framework's
+  atomics are now `light_core::atomic` (portable-atomic, with its critical-section fallback),
+  native instructions on the M33/M7/M4/Hazard3 and the port's spinlock section on the M0+.
+  The po13 board module is `boards::po13` -- a Pico or a Pico 2 in the dock, pin-compatible
+  -- and the two apps that run there forward the chip feature from the tree's PICO_PLATFORM
+  through `corrosion_set_features`. Presets `conf-light_mk4-pico-debug` (the demo) and
+  `conf-light_mk4-crossfire-pico-debug` (the product board), `openocd-rp2040.cfg`. Both build
+  for thumbv6m-none-eabi (127 KB / 115 KB text); every other tree still builds. NOT yet on
+  hardware: no RP2040 was on the bench. The first flash wants the crossfire tree on a stock
+  Pico over a debugprobe, and the thing to watch is the spinlock critical section under
+  portable-atomic's fallback -- every `fetch_add` on the M0+ now takes lock 31.

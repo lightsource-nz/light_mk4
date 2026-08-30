@@ -4,7 +4,7 @@
 //! into the next device on the bus.
 
 use light_core::{I2cBus, I2cError};
-use rp235x_pac as pac;
+use crate::pac;
 
 use crate::gpio;
 

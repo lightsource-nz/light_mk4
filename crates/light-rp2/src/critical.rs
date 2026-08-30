@@ -18,7 +18,7 @@
 //! either way. The bootrom leaves lock 31 free on both, and the debugger reading it acquires it
 //! on both -- write 1 to release.
 
-use rp235x_pac as pac;
+use crate::pac;
 
 const SPINLOCK: usize = 31;
 

@@ -10,10 +10,15 @@ description = "portable, no_std core of the light framework: the port interface,
 # with overflow as a value the caller must handle instead of a silent drop or a deadlock
 heapless = "0.8"
 #   the one concurrency primitive the core asks of a port. The port crate supplies the
-# implementation (light-rp2350: PRIMASK + SIO spinlock); tests use the std one below
+# implementation (light-rp2: PRIMASK + SIO spinlock); tests use the std one below
 critical-section = "1.2"
 #   ConstStaticCell: the sanctioned replacement for `static mut` -- see lib.rs
 static_cell = "2.1"
+#   the framework's atomics, re-exported as `light_core::atomic`: native instructions where
+# the core has them, a critical-section fallback where it does not (the RP2040's Cortex-M0+
+# has no atomic read-modify-write at all). A port's critical section is what makes the
+# fallback correct across two cores
+portable-atomic = { version = "1", features = ["critical-section"] }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }

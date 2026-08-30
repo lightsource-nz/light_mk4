@@ -1,0 +1,38 @@
+[package]
+name = "light-rp2"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "RP2-family board access for the light framework via the chip's pac: the RP2040 (Cortex-M0+) and the RP2350 (Cortex-M33 or Hazard3)"
+
+[features]
+#   exactly one chip. The two pacs expose the same accessors for every block this crate
+# touches (svd2rust of the same generation over near-identical SVDs), so the chip shows in
+# three places: which pac is aliased as `pac`, the timer block's name, and the RP2350's
+# pad isolation bit. Everything else is one source
+rp2040 = ["dep:rp2040-pac"]
+rp2350 = ["dep:rp235x-pac"]
+#   the TinyUSB host transport, which resolves against tinyusb_host at link time: only a
+# firmware whose shell was built in the host role can carry it
+usb-host = ["dep:light-midi"]
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-input = { path = "../light-input" }
+light-midi = { path = "../light-midi", optional = true }
+#   no `rt` feature on either: the vector table, reset handler and linker script belong to
+# pico-sdk's runtime in the C shell. This crate only wants the register definitions
+rp235x-pac = { version = "0.2", default-features = false, optional = true }
+rp2040-pac = { version = "0.6", default-features = false, optional = true }
+#   the restore state is "was this the outermost section", one bool
+critical-section = { version = "1.2", features = ["restore-state-bool"] }
+#   the Cortex-M0+ has no atomic read-modify-write instructions: portable-atomic's
+# critical-section fallback provides swap/fetch_add there through THIS crate's spinlock
+# section, and compiles to the native instructions everywhere else
+portable-atomic = { version = "1", features = ["critical-section"] }
+
+[target.'cfg(target_arch = "arm")'.dependencies]
+#   PRIMASK for the critical section; no `critical-section-single-core` feature, because that
+# implementation is wrong on a dual-core part -- see src/critical.rs. The Hazard3 build does
+# the same with mstatus.MIE through inline asm and does not pull this crate in at all
+cortex-m = "0.7"

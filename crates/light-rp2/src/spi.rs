@@ -4,7 +4,7 @@
 //! `light_ioport` RP2 backend for the DMA burst and its completion rule.
 
 use light_core::{Clock, SpiDisplayBus};
-use rp235x_pac as pac;
+use crate::pac;
 
 use crate::gpio::{self, Output};
 

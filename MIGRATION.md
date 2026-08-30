@@ -19,8 +19,9 @@ a guess, and mk4 does not inherit guesses.
 | light_core mqueue (logging) | `light-core::log` | ported | bounded, drop-with-counter, never blocks |
 | light_cli | `light-core::console::LineReader` + per-app dispatch | ported (partial) | string parsing is one front-end of the event bus, as decided; no command *tree* yet — apps match on words. A shared tree with help/aliases is pending until a second consumer needs one |
 | light_ioport (SPI, I2C, 3-wire, PIO-SPI) | `light-core::hal` traits + port crates | ported | SPI display bus and I2C only; PIO-SPI and 3-wire wait for a board that needs them |
-| light_core_chip_rp2350 | `light-rp2350` (ARM + Hazard3) | ported | |
-| light_core_chip_rp2040 | — | pending | no RP2040 board on the bench runs mk4 yet; `rp2040-pac` and the same shell would do it. Crossfire's stock Pico is the reason to |
+| light_core_chip_rp2350 | `light-rp2` (feature `rp2350`; ARM + Hazard3) | ported | |
+| light_core_chip_rp2040 | `light-rp2` (feature `rp2040`) | ported (build only) | one source with the RP2350 port; presets `conf-light_mk4-pico-debug`, `conf-light_mk4-crossfire-pico-debug`. Not yet flashed: no RP2040 on the bench |
+| light_core_chip_rp2_common | `light-rp2` | ported | the common code is the whole crate; the chip is three `cfg` lines |
 | light_core_chip_stm32h743 | `light-stm32h7` + CMSIS shell | ported | |
 | light_core_chip_stm32f411 | `light-stm32f4` + CMSIS shell | ported | console verified by pin state only (no VCP wiring) |
 | light_core_chip_stm32f446, stm32f103 | — | retired | no board on the bench; the F4 crate covers the F446 in an afternoon if one appears |
@@ -39,7 +40,7 @@ a guess, and mk4 does not inherit guesses.
 | light_display_sh1107 | `light-display::sh1107` | ported | po13 |
 | light_display_st7735 | `light-display::st7735` | ported | MiniSTM32H7 |
 | light_display_po13 (rig) | `light_mk4_pico2` | ported | |
-| light_backlight | `light-rp2350::pwm` | ported | a PWM level, not a switch |
+| light_backlight | `light-rp2::pwm` | ported | a PWM level, not a switch |
 | light_display_ssd1351 / light_display_ws15rgb | — | pending | hw-verified under mk3 (2026-08-23): port when the board is next on the bench. Needs the three-layer controller/panel/rig split kept |
 | light_display_sh1106 | — | pending | two rigs built under mk3, neither hardware-verified; verify in C first |
 | light_display_ssd1322 | — | retired (for now) | never lit a panel under mk3; three of five wires were never connected. Not framework code until it is |
@@ -56,7 +57,7 @@ a guess, and mk4 does not inherit guesses.
 | light_imu, light_imu_qmi8658 | `light-input::imu`, `qmi8658` | ported | |
 | light_ui_demo_touch169, _po13 | `light_mk4_touch169`, `light_mk4_pico2` | ported | |
 | light_ui_hw_ws_touch169, _po13 | port-crate `boards` | ported | |
-| light_audio | — | pending | hw-verified under mk3 (PCM + tone on a PWM pin); a `light-rp2350::pwm` client. Port when a rig wants sound |
+| light_audio | — | pending | hw-verified under mk3 (PCM + tone on a PWM pin); a `light-rp2::pwm` client. Port when a rig wants sound |
 | light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | — | pending | build-verified only under mk3, never on hardware; verify in C first |
 | light_ui_demo_ws15rgb, light_ui_hw_ws15rgb | — | pending | with the SSD1351 |
 
@@ -64,7 +65,7 @@ a guess, and mk4 does not inherit guesses.
 
 | mk3 module | mk4 | state | note |
 |---|---|---|---|
-| light_usbhost, light_usbhost_midi | `light-rp2350::tinyusb_midi` + `light-midi` | ported | TinyUSB stays C; callbacks cross into Rust; the fork's four host fixes are local commits |
+| light_usbhost, light_usbhost_midi | `light-rp2::tinyusb_midi` + `light-midi` | ported | TinyUSB stays C; callbacks cross into Rust; the fork's four host fixes are local commits |
 | light_usb (device), light_usb_midi | — | pending | the CDC console is in the C shell; a MIDI *device* role has no consumer yet |
 
 ## screen-test
@@ -101,5 +102,5 @@ a guess, and mk4 does not inherit guesses.
   the assessment's decision 6 made the event bus the primary thing and string parsing a
   front-end. Every app so far has been content with a `match` on words. Revisit when two
   apps want the same commands.
-- RP2040. The whole RP2 leg is RP2350-only. Crossfire's product board is a stock Pico; this
-  is the one item above that gates a product.
+- Hardware verification of the RP2040 build. The port exists; crossfire's product board is a
+  stock Pico, and until one is flashed the item that gates a product is still open.

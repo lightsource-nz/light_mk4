@@ -30,11 +30,11 @@ use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, 
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
-use light_rp2350::boards::touch169::*;
-use light_rp2350::gpio::{Input, Output};
-use light_rp2350::i2c::I2c1;
-use light_rp2350::spi::Spi1Display;
-use light_rp2350::{Breathe, Clocks, SysClock};
+use light_rp2::boards::touch169::*;
+use light_rp2::gpio::{Input, Output};
+use light_rp2::i2c::I2c1;
+use light_rp2::spi::Spi1Display;
+use light_rp2::{Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
         /// Hands a Rust panic to the shell, which prints it from the core that owns USB and
@@ -356,12 +356,12 @@ impl DisplayMod {
                 if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
                         return;
                 }
-                let now = light_rp2350::now_us();
+                let now = light_rp2::now_us();
                 //   through Ui::render, which also runs the rotation and page animations; the
                 // phase split that found Font::pixel is done by running the frame by hand with
                 // frame_begin / paint / commit / frame_end when it is wanted again
                 let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
-                let done = light_rp2350::now_us();
+                let done = light_rp2::now_us();
                 if drew || self.ui.is_animating() {
                         self.draw_us_max = self.draw_us_max.max(done - now);
                         self.push_started_us = Some(done);
@@ -410,7 +410,7 @@ impl Module for DisplayMod {
                 }
                 if let Some(started) = self.push_started_us {
                         if !self.layer.busy(&self.display) {
-                                self.push_us_max = self.push_us_max.max(light_rp2350::now_us() - started);
+                                self.push_us_max = self.push_us_max.max(light_rp2::now_us() - started);
                                 self.push_started_us = None;
                         }
                 }
@@ -476,7 +476,7 @@ impl Module for TouchMod {
                 if TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed) {
                         return Poll::Idle;
                 }
-                let now_ms = (light_rp2350::now_us() / 1000) as u32;
+                let now_ms = (light_rp2::now_us() / 1000) as u32;
                 let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
                 match ev {
                         cst816t::Event::Down { x, y } => {
@@ -529,7 +529,7 @@ impl Module for ImuMod {
                                 info!("imu: accel {} {} {} mg, {:?}, {} failed reads, {}.{} C", a[0], a[1], a[2], self.imu.orientation, self.imu.failures, self.imu.temperature_mc / 1000, (self.imu.temperature_mc % 1000).abs() / 100);
                         }
                 }
-                let now_ms = (light_rp2350::now_us() / 1000) as u32;
+                let now_ms = (light_rp2::now_us() / 1000) as u32;
                 if !self.imu.poll(now_ms) {
                         return Poll::Idle;
                 }
@@ -543,7 +543,7 @@ impl Module for ImuMod {
 
 /// Owns the backlight.
 struct BoardMod {
-        backlight: light_rp2350::pwm::PwmOutput,
+        backlight: light_rp2::pwm::PwmOutput,
         events: Subscription,
 }
 
@@ -703,14 +703,14 @@ impl Module for ConsoleMod {
 /// Entry point called by the C shell on core 0 once the runtime is up.
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
-        log::set_clock(light_rp2350::now_us);
+        log::set_clock(light_rp2::now_us);
         let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, peri {} Hz; spi1 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.touch_bus.actual_hz);
 
         let front: &'static mut [u8] = FRAME_FRONT.take();
         let back: &'static mut [u8] = FRAME_BACK.take();
-        let mut display = Display::new(St7789::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2350::now_us);
+        let mut display = Display::new(St7789::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2::now_us);
         display.set_back_buffer(back);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
@@ -720,7 +720,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         // application, which on a firmware that never returns is a static's lifetime
         static I2C: StaticCell<RefCell<I2c1>> = StaticCell::new();
         let i2c: &'static RefCell<I2c1> = I2C.init(RefCell::new(p.touch_bus));
-        let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2350::now_us() / 1000) as u32);
+        let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };

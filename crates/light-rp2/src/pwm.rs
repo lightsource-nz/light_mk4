@@ -5,11 +5,11 @@
 //! unlike the 8-9 kHz it once ran at, which was squarely audible as an LED-driver whine on one
 //! board's LCD backlight. Resolution comes from the wrap alone, not from the divider.
 
-use rp235x_pac as pac;
+use crate::pac;
 
 use crate::gpio::set_function;
 
-/// RP2350 GPIO function select for PWM.
+/// GPIO function select for PWM, the same on both chips.
 pub const FUNC_PWM: u8 = 4;
 
 pub struct PwmOutput {

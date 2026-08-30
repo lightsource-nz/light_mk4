@@ -5,15 +5,17 @@
 //! values and passes each to the driver that needs it, so two drivers cannot share a bus by
 //! accident and nothing can reach a peripheral the board did not wire.
 
-use core::sync::atomic::{AtomicBool, Ordering};
+use light_core::atomic::{AtomicBool, Ordering};
 
 use crate::gpio::{Input, Output};
+#[cfg(feature = "rp2350")]
 use crate::i2c::I2c1;
 use crate::spi::Spi1Display;
 use crate::Clocks;
 
 /// The Waveshare RP2350-Touch-LCD-1.69: pins from the board schematic, as recorded in mk3's
 /// `light_ui_hw_ws_touch169.h` and confirmed on hardware there.
+#[cfg(feature = "rp2350")]
 pub mod touch169 {
         use super::*;
 
@@ -94,9 +96,12 @@ pub mod touch169 {
         }
 }
 
-/// The po13 rig: a Raspberry Pi Pico 2 wearing the Waveshare Pico-OLED-1.3 (SH1107, 64x128
-/// portrait glass, 1 bpp) on SPI1, pins from mk3's `light_display_po13.h`.
-pub mod pico2 {
+/// The po13 rig: a Raspberry Pi Pico -- the RP2040 original or the Pico 2, which are
+/// pin-compatible, so this module serves whichever chip the crate is built for -- wearing the
+/// Waveshare Pico-OLED-1.3 (SH1107, 64x128 portrait glass, 1 bpp) on SPI1, pins from mk3's
+/// `light_display_po13.h`. The stock Pico with nothing on it is the same board minus the OLED
+/// and keys, and the LED is the one thing the two apps that run here need.
+pub mod po13 {
         use super::*;
 
         pub const PIN_LED: usize = 25;

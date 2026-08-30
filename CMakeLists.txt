@@ -75,13 +75,23 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2
                 # -- the layout every mk3 project shares, and worth matching rather than forking
                 # the script
+                #   the RP2 port crate is one source for both chips behind a feature; the
+                # two apps that run on either Pico forward it, and the tree's platform
+                # settles it here. The touch169 app names rp2350 itself: it runs nowhere else
+                if(PICO_PLATFORM MATCHES "^rp2040")
+                        set(_light_rp2_chip rp2040)
+                else()
+                        set(_light_rp2_chip rp2350)
+                endif()
+                corrosion_set_features(light_app_pico2 FEATURES ${_light_rp2_chip})
+                corrosion_set_features(light_app_crossfire FEATURES ${_light_rp2_chip})
                 if(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_1.69")
                         add_subdirectory(module/light_mk4_touch169)
-                elseif(PICO_BOARD STREQUAL "pico2")
-                        #   two applications share the Pico 2: the po13 demo, and crossfire
+                elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
+                        #   two applications share the Picos: the po13 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
                         # configure the shell differently -- chosen by the preset
-                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application the Pico 2 tree builds: pico2 or crossfire")
+                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the po13 demo) or crossfire")
                         if(LIGHT_MK4_PICO2_APP STREQUAL "crossfire")
                                 add_subdirectory(module/light_mk4_crossfire)
                         else()
@@ -105,11 +115,11 @@ endif()
 #   the host tree exists so scripts/test.ps1 -- and CI's project-test workflow -- run the Rust
 # tests through the same door as every other project: one ctest that is `cargo test` over the
 # portable crates. The staticlib crates are excluded: they have no tests and their panic
-# handlers are target-only anyway. So are the STM32 port crates, for a subtler reason: cargo
-# unifies features across everything in one invocation, and cortex-m's single-core critical
-# section selects critical-section's restore-state-u32 while light-rp2350 selects
-# restore-state-bool -- fine in a firmware build, which sees one port crate, a compile error in
-# a workspace-wide test run that sees both
+# handlers are target-only anyway. So are the port crates: light-rp2 needs a chip feature
+# chosen, and the STM32 ones for a subtler reason -- cargo unifies features across everything
+# in one invocation, and cortex-m's single-core critical section selects critical-section's
+# restore-state-u32 while light-rp2 selects restore-state-bool -- fine in a firmware build,
+# which sees one port crate, a compile error in a workspace-wide test run that sees both
 if(LIGHT_PLATFORM STREQUAL "HOST")
         include(CTest)
         find_program(LIGHT_CARGO cargo
@@ -118,7 +128,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-stm32h7 --exclude light-stm32f4
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

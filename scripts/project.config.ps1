@@ -16,6 +16,10 @@
                 'conf-light_mk4-pico2-release'    = 'build-pico2-release'
                 # crossfire: the Pico 2 with its USB port in the host role, own tree
                 'conf-light_mk4-crossfire-debug'  = 'build-crossfire'
+                # the RP2040 Pico: the po13 demo and crossfire (the product board), each
+                # its own tree; build/flash with -Preset
+                'conf-light_mk4-pico-debug'           = 'build-pico'
+                'conf-light_mk4-crossfire-pico-debug' = 'build-crossfire-pico'
                 # the same boards on the RP2350's Hazard3 cores: build/flash with -Preset
                 'conf-light_mk4-pico2-riscv-debug'    = 'build-pico2-riscv'
                 'conf-light_mk4-touch169-riscv-debug' = 'build-touch169-riscv'
@@ -77,6 +81,19 @@
                         PICO_PLATFORM     = 'rp2350-riscv'
                         Rust_CARGO_TARGET = 'riscv32imac-unknown-none-elf'
                 }
+                'conf-light_mk4-pico-debug'           = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'pico'
+                        PICO_PLATFORM     = 'rp2040'
+                        Rust_CARGO_TARGET = 'thumbv6m-none-eabi'
+                }
+                'conf-light_mk4-crossfire-pico-debug' = @{
+                        LIGHT_PLATFORM      = 'TARGET'
+                        LIGHT_BOARD         = 'pico'
+                        PICO_PLATFORM       = 'rp2040'
+                        Rust_CARGO_TARGET   = 'thumbv6m-none-eabi'
+                        LIGHT_MK4_PICO2_APP = 'crossfire'
+                }
                 'conf-light_mk4-touch169-riscv-debug' = @{
                         LIGHT_PLATFORM    = 'TARGET'
                         LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_1.69'
@@ -115,6 +132,14 @@
                 'conf-light_mk4-pico2-riscv-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                }
+                'conf-light_mk4-pico-debug' = @{
+                        Config = 'openocd-rp2040.cfg'
+                        Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
+                }
+                'conf-light_mk4-crossfire-pico-debug' = @{
+                        Config = 'openocd-rp2040.cfg'
+                        Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
                 }
                 # over the ST-Link; no SVD vendored for this part
                 'conf-light_mk4-mini-stm32h7-debug' = @{

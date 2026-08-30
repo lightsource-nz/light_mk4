@@ -116,6 +116,34 @@
             }
         },
         {
+            "name": "conf-light_mk4-pico-debug",
+            "description": "The po13 demo on an RP2040 Pico: the same app and wiring as the Pico 2 tree (the boards are pin-compatible), the RP2 port crate built with its rp2040 feature, Rust on thumbv6m-none-eabi -- the Cortex-M0+, whose missing atomics are portable-atomic's business.",
+            "inherits": [
+                "conf-light-pico",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-pico",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv6m-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
+            "name": "conf-light_mk4-crossfire-pico-debug",
+            "description": "crossfire on the stock RP2040 Pico -- the product board: the native port hosting USB-MIDI instruments, the console on the UART. Flashed and debugged over SWD through a debugprobe.",
+            "inherits": [
+                "conf-light-pico",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-crossfire-pico",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv6m-none-eabi",
+                "LIGHT_MK4_PICO2_APP": "crossfire"
+            }
+        },
+        {
             "name": "conf-light_mk4-crossfire-debug",
             "description": "crossfire on the po13 rig: the Pico 2's native USB port hosting USB-MIDI instruments, the OLED as the status display, the console on the UART through the debug probe. Flashed and debugged over SWD.",
             "inherits": [
@@ -169,6 +197,16 @@
             "name": "build-light_mk4_f411-debug",
             "configurePreset": "conf-light_mk4-blackpill-debug",
             "targets": ["light_mk4_f411"]
+        },
+        {
+            "name": "build-light_mk4_pico-debug",
+            "configurePreset": "conf-light_mk4-pico-debug",
+            "targets": ["light_mk4_pico2"]
+        },
+        {
+            "name": "build-light_mk4_crossfire-pico-debug",
+            "configurePreset": "conf-light_mk4-crossfire-pico-debug",
+            "targets": ["light_mk4_crossfire"]
         },
         {
             "name": "build-light_mk4_crossfire-debug",

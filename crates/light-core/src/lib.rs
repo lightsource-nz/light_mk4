@@ -35,3 +35,6 @@ pub use module::{Error, Module, Poll, Runtime};
 // application's frame buffers, frame layer and widget arena use; `static mut` is not used
 // anywhere in this workspace, and the aliasing argument that came with each one is gone
 pub use static_cell::{ConstStaticCell, StaticCell};
+//   and the one blessed source of atomics: `core::sync::atomic` has no swap or fetch_add on
+// the Cortex-M0+, portable-atomic has them everywhere, natively where the core can
+pub use portable_atomic as atomic;

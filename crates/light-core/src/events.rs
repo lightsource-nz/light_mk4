@@ -15,7 +15,7 @@
 //! through the port's critical section.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use portable_atomic::{AtomicU32, Ordering};
 use critical_section::Mutex;
 use heapless::Deque;
 

@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "heapless",
+ "portable-atomic",
  "static_cell",
 ]
 
@@ -321,7 +322,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "light-rp2350"
+name = "light-rp2"
 version = "0.1.0"
 dependencies = [
  "cortex-m",
@@ -329,6 +330,8 @@ dependencies = [
  "light-core",
  "light-input",
  "light-midi",
+ "portable-atomic",
+ "rp2040-pac",
  "rp235x-pac",
 ]
 
@@ -371,7 +374,7 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-midi",
- "light-rp2350",
+ "light-rp2",
 ]
 
 [[package]]
@@ -402,7 +405,7 @@ dependencies = [
  "light-display",
  "light-draw",
  "light-font",
- "light-rp2350",
+ "light-rp2",
  "light-ui",
 ]
 
@@ -416,7 +419,7 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-input",
- "light-rp2350",
+ "light-rp2",
  "light-ui",
 ]
 
@@ -458,6 +461,9 @@ name = "portable-atomic"
 version = "1.15.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "05c8b63e8d9609db387f0324918f81d68fe27748f084ef092fb35954d0539a85"
+dependencies = [
+ "critical-section",
+]
 
 [[package]]
 name = "proc-macro2"
@@ -475,6 +481,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
 dependencies = [
  "proc-macro2",
+]
+
+[[package]]
+name = "rp2040-pac"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83cbcd3f7a0ca7bbe61dc4eb7e202842bee4e27b769a7bf3a4a72fa399d6e404"
+dependencies = [
+ "cortex-m",
+ "vcell",
 ]
 
 [[package]]

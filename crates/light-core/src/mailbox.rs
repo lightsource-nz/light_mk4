@@ -6,7 +6,7 @@
 //! through the port's critical section, and `const`-constructible so it can be a `static`.
 
 use core::cell::RefCell;
-use core::sync::atomic::{AtomicU32, Ordering};
+use portable_atomic::{AtomicU32, Ordering};
 use critical_section::Mutex;
 use heapless::Deque;
 

@@ -16,10 +16,10 @@ use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{Flip, PixelFormat, Rotation};
 use light_font::Font;
-use light_rp2350::boards::pico2::*;
-use light_rp2350::gpio::{Input, Output};
-use light_rp2350::spi::Spi1Display;
-use light_rp2350::{now_us, Breathe, Clocks, SysClock};
+use light_rp2::boards::po13::*;
+use light_rp2::gpio::{Input, Output};
+use light_rp2::spi::Spi1Display;
+use light_rp2::{now_us, Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
         fn light_shell_panic(msg: *const u8, len: usize) -> !;
