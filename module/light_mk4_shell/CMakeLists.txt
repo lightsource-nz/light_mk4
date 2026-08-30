@@ -42,10 +42,14 @@ function(light_mk4_shell_configure TARGET)
                 pico_enable_stdio_usb(${TARGET} 0)
                 pico_enable_stdio_uart(${TARGET} 1)
         else()
-                #   the console is USB CDC on every device-role board: the touch169 has no SWD
-                # pads, and the po13 rig's UART has never been reliable through the probe
+                #   the console is USB CDC on every device-role board (the touch169 has no SWD
+                # pads and CDC is its only way in) -- AND the UART, for a board in the SWD dock
+                # whose own USB port is not cabled: the probe's CDC carries it. mk3-era doubts
+                # about the po13 UART through the probe were retired by crossfire's host-role
+                # console running on exactly that path. stdio writes go to both; reads take
+                # whichever arrives
                 pico_enable_stdio_usb(${TARGET} 1)
-                pico_enable_stdio_uart(${TARGET} 0)
+                pico_enable_stdio_uart(${TARGET} 1)
         endif()
         pico_add_extra_outputs(${TARGET})
 endfunction()

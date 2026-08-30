@@ -422,7 +422,21 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
-- 2026-08-31 — **board wiring belongs to the application.** The port crates had grown `boards`
+- 2026-08-31 — **the po13 verifies the refactors, and grows a UART console.** Everything since
+  the crate split -- the split itself, `ConstStaticCell` in place of every `static mut`,
+  portable-atomic, the board-wiring move, the shared CLI -- had been build-verified only on
+  the RP2350 boards. The po13 now runs it all: the widget demo on the glass, and a full CLI
+  session over the debug probe's UART -- help assembled from the table, stats answered by
+  three modules over the bus, `ui activate` toggling a button, usage-on-error, unknown-command,
+  loglevel round-trip. Two findings. FIRST: flashing over SWD failed with "[rp2350.cm0]
+  Examination failed" because the board's last firmware was the RISC-V build -- the chip boots
+  with the Hazard3 cores selected and the ARM debug config cannot examine cm0. The recovery is
+  openocd's rescue reset (`-c "set RESCUE 1" -f target/rp2350.cfg`), which resets everything
+  except the debug port, clearing ARCHSEL; the normal flash then goes through. Remember it
+  whenever an RP2350 last ran the other ISA. SECOND: the device-role shell now enables the
+  UART console alongside CDC -- a board in the SWD dock without its own USB cabled is served
+  by the probe's CDC-UART bridge, and crossfire's host-role console had already retired the
+  mk3-era doubt about that path. The port crates had grown `boards`
   modules -- the touch169, the po13 rig with its Pico-OLED-1.3 expansion board, the two WeAct
   STM32 boards -- which baked one bench's hardware combinations into the framework. Gone: a
   port crate now stops at the CHIP (gpio, buses, pwm, clock, critical section, and unsafe
