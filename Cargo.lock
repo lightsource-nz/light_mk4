@@ -299,12 +299,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-stm32h7"
+version = "0.1.0"
+dependencies = [
+ "cortex-m",
+ "critical-section",
+ "light-core",
+]
+
+[[package]]
 name = "light_app_crossfire"
 version = "0.1.0"
 dependencies = [
  "light-core",
  "light-font",
  "light-rp2350",
+ "static_cell",
+]
+
+[[package]]
+name = "light_app_h7"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-font",
+ "light-stm32h7",
  "static_cell",
 ]
 

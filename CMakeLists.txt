@@ -28,8 +28,10 @@ include(${LIGHT_PATH}/external/light_preinit.cmake)
 
 project(light_mk4 C CXX ASM)
 
-if(LIGHT_SYSTEM STREQUAL PICO_SDK)
-        pico_sdk_init()
+if(LIGHT_PLATFORM STREQUAL TARGET)
+        if(LIGHT_SYSTEM STREQUAL PICO_SDK)
+                pico_sdk_init()
+        endif()
 
         #   rustup installs to ~/.cargo/bin and does not touch PATH (light-tools.ps1 adds it for
         # the script layer); this lets a plain `cmake --preset` from a shell without it still
@@ -51,7 +53,7 @@ if(LIGHT_SYSTEM STREQUAL PICO_SDK)
         #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169 light_app_pico2 light_app_crossfire
+                CRATES light_app_touch169 light_app_pico2 light_app_crossfire light_app_h7
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -64,20 +66,32 @@ if(LIGHT_SYSTEM STREQUAL PICO_SDK)
         corrosion_set_hostbuild(crush)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightFont.cmake)
 
-        add_subdirectory(module/light_mk4_shell)
-        #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2 -- the
-        # layout every mk3 project shares, and worth matching rather than forking the script
-        if(PICO_BOARD STREQUAL waveshare_rp2350_touch_lcd_1.69)
-                add_subdirectory(module/light_mk4_touch169)
-        elseif(PICO_BOARD STREQUAL pico2)
-                #   two applications share the Pico 2: the po13 demo, and crossfire with the
-                # native port in its host role. One per tree -- they configure the shell
-                # differently -- chosen by the preset
-                set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application the Pico 2 tree builds: pico2 or crossfire")
-                if(LIGHT_MK4_PICO2_APP STREQUAL crossfire)
-                        add_subdirectory(module/light_mk4_crossfire)
+        if(LIGHT_SYSTEM STREQUAL PICO_SDK)
+                add_subdirectory(module/light_mk4_shell)
+                #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2
+                # -- the layout every mk3 project shares, and worth matching rather than forking
+                # the script
+                if(PICO_BOARD STREQUAL waveshare_rp2350_touch_lcd_1.69)
+                        add_subdirectory(module/light_mk4_touch169)
+                elseif(PICO_BOARD STREQUAL pico2)
+                        #   two applications share the Pico 2: the po13 demo, and crossfire
+                        # with the native port in its host role. One per tree -- they
+                        # configure the shell differently -- chosen by the preset
+                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application the Pico 2 tree builds: pico2 or crossfire")
+                        if(LIGHT_MK4_PICO2_APP STREQUAL crossfire)
+                                add_subdirectory(module/light_mk4_crossfire)
+                        else()
+                                add_subdirectory(module/light_mk4_pico2)
+                        endif()
+                endif()
+        elseif(LIGHT_SYSTEM STREQUAL CMSIS)
+                #   bare CMSIS: no SDK under the shell at all. The board selects the chip's
+                # shell and its application; only the H743 so far
+                if(LIGHT_BOARD STREQUAL mini_stm32h7)
+                        add_subdirectory(module/light_mk4_shell_cmsis)
+                        add_subdirectory(module/light_mk4_h7)
                 else()
-                        add_subdirectory(module/light_mk4_pico2)
+                        message(FATAL_ERROR "no mk4 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 is the one so far)")
                 endif()
         endif()
 endif()
@@ -94,7 +108,7 @@ if(LIGHT_PLATFORM STREQUAL HOST)
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()
