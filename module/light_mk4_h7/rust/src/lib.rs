@@ -32,8 +32,10 @@ pub struct ShellInfo {
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
-        /// The key: `(pressed, held_ms)` -- the hold length is known on release.
-        Key { pressed: bool, held_ms: u32 },
+        /// The key, released before the hold interval: the short press.
+        KeyShort,
+        /// The key held for the interval -- fired the moment it expires, not on release.
+        KeyHold,
         UiFocus { next: bool },
         UiActivate,
         UiBack,
@@ -108,13 +110,10 @@ impl DisplayMod {
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        AppEvent::Key { pressed: false, held_ms } => {
-                                if held_ms >= HOLD_MS {
-                                        let emitted = self.ui.activate();
-                                        Self::publish(emitted);
-                                } else {
-                                        self.ui.focus_next();
-                                }
+                        AppEvent::KeyShort => self.ui.focus_next(),
+                        AppEvent::KeyHold => {
+                                let emitted = self.ui.activate();
+                                Self::publish(emitted);
                         }
                         AppEvent::UiFocus { next: true } => self.ui.focus_next(),
                         AppEvent::UiFocus { next: false } => self.ui.focus_prev(),
@@ -193,10 +192,15 @@ impl Module for DisplayMod {
         }
 }
 
-/// The key, debounced, with the hold length on release.
+/// The key, debounced. A press that lasts the hold interval fires as the interval expires,
+/// while the key is still down -- waiting for the release would make a long press read as a
+/// slow one -- and the release after that is silent. A release before the interval is the
+/// short press.
 struct KeyMod {
         key: Button<Input>,
         pressed_at_ms: u32,
+        pressed: bool,
+        hold_fired: bool,
 }
 
 impl Module for KeyMod {
@@ -205,17 +209,30 @@ impl Module for KeyMod {
         }
         fn poll(&mut self) -> Poll {
                 let now_ms = (now_us() / 1000) as u32;
-                let Some(ev) = self.key.poll(now_ms) else { return Poll::Idle };
-                let pressed = ev == ButtonEvent::Press;
-                let held_ms = if pressed {
-                        self.pressed_at_ms = now_ms;
-                        0
-                } else {
-                        now_ms.wrapping_sub(self.pressed_at_ms)
-                };
-                info!("key {} ({held_ms} ms)", if pressed { "pressed" } else { "released" });
-                let _ = EVENTS.publish(AppEvent::Key { pressed, held_ms });
-                Poll::Busy
+                if let Some(ev) = self.key.poll(now_ms) {
+                        match ev {
+                                ButtonEvent::Press => {
+                                        self.pressed = true;
+                                        self.hold_fired = false;
+                                        self.pressed_at_ms = now_ms;
+                                }
+                                ButtonEvent::Release => {
+                                        self.pressed = false;
+                                        if !self.hold_fired {
+                                                info!("key: short press");
+                                                let _ = EVENTS.publish(AppEvent::KeyShort);
+                                        }
+                                }
+                        }
+                        return Poll::Busy;
+                }
+                if self.pressed && !self.hold_fired && now_ms.wrapping_sub(self.pressed_at_ms) >= HOLD_MS {
+                        self.hold_fired = true;
+                        info!("key: held {HOLD_MS} ms");
+                        let _ = EVENTS.publish(AppEvent::KeyHold);
+                        return Poll::Busy;
+                }
+                Poll::Idle
         }
 }
 
@@ -353,7 +370,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         static DISPLAY_MOD: static_cell::StaticCell<DisplayMod> = static_cell::StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod { display, layer, font, ui, backlight: p.backlight, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
-        let mut key_mod = KeyMod { key: Button::new(p.key, true), pressed_at_ms: 0 };
+        // K1 is active high -- see the board wiring
+        let mut key_mod = KeyMod { key: Button::new(p.key, false), pressed_at_ms: 0, pressed: false, hold_fired: false };
         let mut led_mod = LedMod { led: p.led, blinker: Blinker::new(500_000), blinking: true, events: EVENTS.subscribe().expect("slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 

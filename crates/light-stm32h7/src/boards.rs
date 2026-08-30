@@ -29,7 +29,10 @@ pub mod mini_stm32h7 {
         pub const PIN_DISPLAY_BL: Pin = Pin::new('E', 10);
         /// Active low.
         pub const PIN_LED: Pin = Pin::new('E', 3);
-        /// The user key K1, active low.
+        /// The user key K1: ACTIVE HIGH, pressing connects it to the supply. mk3's board header
+        /// said active low, and nothing in mk3 ever read it; sampled over SWD here, the pin sat
+        /// high under a pull-up whether pressed or not, and under a pull-down went high exactly
+        /// when pressed.
         pub const PIN_KEY: Pin = Pin::new('C', 13);
 
         pub struct Peripherals {
@@ -54,7 +57,7 @@ pub mod mini_stm32h7 {
                         // should be a frame, not the panel's power-up noise
                         backlight: Output::new(PIN_DISPLAY_BL, true),
                         led: Output::new(PIN_LED, true),
-                        key: Input::new_pull_up(PIN_KEY),
+                        key: Input::new_pull_down(PIN_KEY),
                 })
         }
 }

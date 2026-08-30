@@ -296,3 +296,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   by the application's next read, from thread context. A dozen attach/detach cycles across
   every port of a chained hub after that, heartbeats steady. Note the port map: a chained hub
   is two hub chips, and the display shows the port number whichever chip reported it.
+- 2026-08-30 — **the remaining legs.** RISC-V: the same port crate on the RP2350's Hazard3
+  cores, the ISA showing in exactly one place -- PRIMASK becomes `mstatus.MIE` through three
+  lines of inline asm in the critical section -- with presets that pick LIGHT_ARCH=riscv32 the
+  way screen-test's do; the whole po13 demo, keys and all, hardware-verified on the RISC-V
+  cores. STM32H7: a second port crate, `light-stm32h7`, written against the reference manual
+  rather than a pac (GPIO by port and pin, SPI4 with the H7 generation's rules mk3 found --
+  TSIZE per transaction, the FIFO primed before CSTART, EOT not TX-empty, every wait bounded
+  -- and a microsecond clock on the 32-bit TIM2), `light_core::st7735` for the MiniSTM32H7's
+  160x80 panel, and a CMSIS shell in place of pico-sdk's runtime: the caches, mk3's 400 MHz
+  clock tree, the ITM-and-USART console, CMSIS's startup and mk3's linker script, one core,
+  the log drained by a module. Built for thumbv7em-none-eabihf (hard float, matching the
+  shell's -mfloat-abi=hard; `use cortex_m as _` keeps the single-core critical section in the
+  link) and hardware-verified over the ST-Link: the widget demo on the panel, the LED, and K1
+  driving it -- a short press moves the focus, a hold activates the moment its interval
+  expires. K1 is ACTIVE HIGH: mk3's board header said otherwise and nothing in mk3 ever read
+  it; the pin sampled over SWD settled it. Two debugger notes for this board: connect under
+  reset (`reset_config srst_only srst_nogate connect_assert_srst`) when a plain attach fails
+  to examine the debug AP, and the SWO capture still needs the TPIU configured after the
+  firmware has switched to 400 MHz. Not ported: the F411 (no board on the bench) and the
+  SPI-link peer transport, which the engine models and the H7 is now ready to carry.

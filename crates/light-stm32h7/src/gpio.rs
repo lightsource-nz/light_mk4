@@ -99,11 +99,24 @@ pub struct Input {
 
 impl Input {
         pub fn new_pull_up(pin: Pin) -> Self {
+                Self::with_pull(pin, 1)
+        }
+
+        /// For a key that connects the pin to the supply when pressed.
+        pub fn new_pull_down(pin: Pin) -> Self {
+                Self::with_pull(pin, 2)
+        }
+
+        fn with_pull(pin: Pin, pupd: u32) -> Self {
                 pin.clock_enable();
                 let shift = u32::from(pin.pin) * 2;
-                reg::modify(pin.base() + PUPDR, 3 << shift, 1 << shift);
+                reg::modify(pin.base() + PUPDR, 3 << shift, pupd << shift);
                 pin.set_mode(0);
                 Self { pin }
+        }
+
+        pub fn is_high(&self) -> bool {
+                !self.is_low()
         }
 }
 
