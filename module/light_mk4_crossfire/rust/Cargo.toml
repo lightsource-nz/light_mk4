@@ -15,4 +15,3 @@ light-display = { path = "../../../crates/light-display" }
 light-midi = { path = "../../../crates/light-midi" }
 light-rp2350 = { path = "../../../crates/light-rp2350", features = ["usb-host"] }
 light-font = { path = "../../../crates/light-font" }
-static_cell = "2"

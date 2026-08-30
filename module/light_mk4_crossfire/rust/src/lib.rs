@@ -12,7 +12,7 @@
 use core::fmt::Write;
 use light_midi::{Forwarder, HUB_PORT_NONE};
 use light_display::sh1107::Sh1107;
-use light_core::{info, log, warn, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
 use light_draw::{Flip, PixelFormat, Point, Rotation};
 use light_font::Font;
@@ -57,7 +57,7 @@ static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
 /// 64x128 at 1 bpp: one kilobyte.
-static mut FRAME: [u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)] = [0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)];
+static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
 fn log_sink(record: &log::Record) {
@@ -405,10 +405,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         log::set_clock(now_us);
         let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
         let p = take(&clocks).expect("the board's peripherals are taken once");
-        // SAFETY: the one and only reference to FRAME, and to the layer
-        let frame: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
-        static mut LAYER: FrameLayer = FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1);
-        let layer: &'static mut FrameLayer = unsafe { &mut *core::ptr::addr_of_mut!(LAYER) };
+        let frame: &'static mut [u8] = FRAME.take();
+        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1));
+        let layer: &'static mut FrameLayer = LAYER.take();
         let display = Display::new(Sh1107::new(p.oled_bus), frame, OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1, now_us);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
@@ -419,9 +418,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let host = UsbMidiHost::init();
         info!("USB host stack up: {} MIDI slots, hub aware", USB_SLOTS);
 
-        static USB_MOD: static_cell::StaticCell<UsbMod> = static_cell::StaticCell::new();
+        static USB_MOD: StaticCell<UsbMod> = StaticCell::new();
         let usb_mod = USB_MOD.init(UsbMod { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("slot"), reset_pending: false, auto_reset: true, packets: 0, status: Status::default() });
-        static OLED_MOD: static_cell::StaticCell<OledMod> = static_cell::StaticCell::new();
+        static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
         let oled_mod = OLED_MOD.init(OledMod { display, layer, font, events: EVENTS.subscribe().expect("slot"), status: Status::default(), dirty: true, indicators_only: false });
         let mut led_mod = LedMod { led: p.led, events: EVENTS.subscribe().expect("slot") };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };

@@ -7,6 +7,7 @@
 
 //   the critical-section implementation is cortex-m's single-core one, and a crate nothing
 // names is a crate the linker never sees
+use core::sync::atomic::{AtomicU32, Ordering};
 use cortex_m as _;
 use light_core::hal::{Clock, Idle};
 
@@ -49,8 +50,11 @@ pub struct Clocks {
         pub tim_hz: u32,
 }
 
-static mut LAST_CNT: u32 = 0;
-static mut WRAPS: u32 = 0;
+//   the wrap tracking is two words read and written by whichever context calls now_us():
+// atomics with relaxed ordering, since a torn or reordered pair could only misplace a wrap by
+// one read, and there is one core and one caller in practice
+static LAST_CNT: AtomicU32 = AtomicU32::new(0);
+static WRAPS: AtomicU32 = AtomicU32::new(0);
 
 /// Start TIM2 at 1 MHz. Once, before `now_us` means anything.
 pub fn clock_init(clocks: &Clocks) {
@@ -67,14 +71,11 @@ pub fn clock_init(clocks: &Clocks) {
 /// Microseconds since `clock_init`, read at least once an hour to stay monotonic.
 pub fn now_us() -> u64 {
         let cnt = reg::read(TIM2_CNT);
-        // SAFETY: single core, one reader context
-        unsafe {
-                if cnt < LAST_CNT {
-                        WRAPS += 1;
-                }
-                LAST_CNT = cnt;
-                (u64::from(WRAPS) << 32) | u64::from(cnt)
+        if cnt < LAST_CNT.load(Ordering::Relaxed) {
+                WRAPS.fetch_add(1, Ordering::Relaxed);
         }
+        LAST_CNT.store(cnt, Ordering::Relaxed);
+        (u64::from(WRAPS.load(Ordering::Relaxed)) << 32) | u64::from(cnt)
 }
 
 #[derive(Clone, Copy, Default)]

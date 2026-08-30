@@ -18,6 +18,7 @@
 // names is a crate the linker never sees: this `use` is what keeps its acquire/release symbols
 // in the image
 use cortex_m as _;
+use core::sync::atomic::{AtomicU32, Ordering};
 use light_core::hal::{Clock, Idle};
 
 pub mod boards;
@@ -68,9 +69,10 @@ pub struct Clocks {
 }
 
 /// The microsecond clock: TIM2, the 32-bit timer, free-running at 1 MHz, read as a 64-bit
-/// count by tracking its wraps -- one core, so a plain static suffices.
-static mut LAST_CNT: u32 = 0;
-static mut WRAPS: u32 = 0;
+/// count by tracking its wraps. Atomics with relaxed ordering: one core and one caller in
+/// practice, and a torn pair could only misplace a wrap by one read.
+static LAST_CNT: AtomicU32 = AtomicU32::new(0);
+static WRAPS: AtomicU32 = AtomicU32::new(0);
 
 /// Start TIM2 at 1 MHz. Once, before `now_us` means anything.
 pub fn clock_init(clocks: &Clocks) {
@@ -88,14 +90,11 @@ pub fn clock_init(clocks: &Clocks) {
 /// which a polled runtime does many thousand times a second.
 pub fn now_us() -> u64 {
         let cnt = reg::read(TIM2_CNT);
-        // SAFETY: single core, and the runtime reads this from one context
-        unsafe {
-                if cnt < LAST_CNT {
-                        WRAPS += 1;
-                }
-                LAST_CNT = cnt;
-                (u64::from(WRAPS) << 32) | u64::from(cnt)
+        if cnt < LAST_CNT.load(Ordering::Relaxed) {
+                WRAPS.fetch_add(1, Ordering::Relaxed);
         }
+        LAST_CNT.store(cnt, Ordering::Relaxed);
+        (u64::from(WRAPS.load(Ordering::Relaxed)) << 32) | u64::from(cnt)
 }
 
 /// The system timer as a [`Clock`].

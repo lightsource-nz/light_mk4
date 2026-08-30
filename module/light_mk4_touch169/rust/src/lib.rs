@@ -26,7 +26,7 @@ use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::{Gesture, Tracker};
 use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
-use light_core::{debug, info, log, warn, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
@@ -56,9 +56,11 @@ pub struct ShellInfo {
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
 /// Two frame buffers, 134 KB each, in .bss: the panel is pushed from one while the next frame
-/// is drawn into the other. Handed out exactly once, in `light_app_main`.
-static mut FRAME_FRONT: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
-static mut FRAME_BACK: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
+/// is drawn into the other. A `ConstStaticCell` is built in place and handed out exactly
+/// once, by `take()`, which panics on a second call -- no `static mut`, no aliasing to reason
+/// about
+static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
+static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 /// The demo's font, rendered by crush at build time and handed over as a path by
 /// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
@@ -706,10 +708,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, peri {} Hz; spi1 at {} Hz, i2c1 at {} Hz", clocks.sys_hz, clocks.peri_hz, p.display_bus.actual_hz, p.touch_bus.actual_hz);
 
-        // SAFETY: the one and only references to the frame buffers, taken before anything can
-        // alias them
-        let front: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_FRONT) };
-        let back: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BACK) };
+        let front: &'static mut [u8] = FRAME_FRONT.take();
+        let back: &'static mut [u8] = FRAME_BACK.take();
         let mut display = Display::new(St7789::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, light_rp2350::now_us);
         display.set_back_buffer(back);
         let font = match Font::parse(FONT_BLOB) {
@@ -718,24 +718,23 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         //   one I2C bus, two drivers: shared through a RefCell that lives as long as the
         // application, which on a firmware that never returns is a static's lifetime
-        static I2C: static_cell::StaticCell<RefCell<I2c1>> = static_cell::StaticCell::new();
+        static I2C: StaticCell<RefCell<I2c1>> = StaticCell::new();
         let i2c: &'static RefCell<I2c1> = I2C.init(RefCell::new(p.touch_bus));
         let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2350::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
-        //   built in place in .bss -- see DisplayMod. SAFETY: each static is referenced exactly
-        // once, here, before anything else can reach it
-        static mut LAYER: FrameLayer = FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565);
-        static mut UI: Ui<AppEvent, UI_WIDGETS> = Ui::new();
-        let layer: &'static mut FrameLayer = unsafe { &mut *core::ptr::addr_of_mut!(LAYER) };
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = unsafe { &mut *core::ptr::addr_of_mut!(UI) };
+        //   built in place in .bss -- see DisplayMod -- and taken once
+        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
+        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        let layer: &'static mut FrameLayer = LAYER.take();
+        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         layer.bg = BG;
         ui.set_font(&font);
         let _ = FG;
         // module state is 'static in any case: the runtime never returns
-        static DISPLAY_MOD: static_cell::StaticCell<DisplayMod> = static_cell::StaticCell::new();
+        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod {
                 display,
                 layer,
@@ -749,7 +748,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 push_us_max: 0,
                 push_started_us: None,
         });
-        static TOUCH_MOD: static_cell::StaticCell<TouchMod> = static_cell::StaticCell::new();
+        static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 

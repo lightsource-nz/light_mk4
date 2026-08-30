@@ -281,6 +281,7 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "heapless",
+ "static_cell",
 ]
 
 [[package]]
@@ -371,7 +372,6 @@ dependencies = [
  "light-font",
  "light-midi",
  "light-rp2350",
- "static_cell",
 ]
 
 [[package]]
@@ -392,7 +392,6 @@ dependencies = [
  "light-font",
  "light-stm32h7",
  "light-ui",
- "static_cell",
 ]
 
 [[package]]
@@ -405,7 +404,6 @@ dependencies = [
  "light-font",
  "light-rp2350",
  "light-ui",
- "static_cell",
 ]
 
 [[package]]
@@ -420,7 +418,6 @@ dependencies = [
  "light-input",
  "light-rp2350",
  "light-ui",
- "static_cell",
 ]
 
 [[package]]

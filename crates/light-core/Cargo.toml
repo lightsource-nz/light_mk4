@@ -12,6 +12,8 @@ heapless = "0.8"
 #   the one concurrency primitive the core asks of a port. The port crate supplies the
 # implementation (light-rp2350: PRIMASK + SIO spinlock); tests use the std one below
 critical-section = "1.2"
+#   ConstStaticCell: the sanctioned replacement for `static mut` -- see lib.rs
+static_cell = "2.1"
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }

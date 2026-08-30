@@ -30,3 +30,8 @@ pub use events::{EventBus, Subscription};
 pub use hal::{Clock, I2cBus, I2cError, Idle, InputPin, OutputPin, SpiDisplayBus};
 pub use mailbox::Mailbox;
 pub use module::{Error, Module, Poll, Runtime};
+//   the one blessed way to own a large object in .bss: built in place by a const initialiser,
+// handed out exactly once as `&'static mut`, a second take a panic. This is what every
+// application's frame buffers, frame layer and widget arena use; `static mut` is not used
+// anywhere in this workspace, and the aliasing argument that came with each one is gone
+pub use static_cell::{ConstStaticCell, StaticCell};

@@ -376,3 +376,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   console-architecture decision to take if and when RTT logging is wanted, not framework
   debt. One trap for anyone testing this: rustc folds literal arguments (a string, an integer)
   into the format string, so `info!("{}", 1)` arrives as a static too.
+- 2026-08-30 — **no `static mut` anywhere, and the migration ledger.** Every application had
+  the same pattern for its frame buffers, frame layer and widget arena: a `static mut` in .bss
+  and an `unsafe { &mut *addr_of_mut!(..) }` with a comment promising it was the only
+  reference. `light_core::ConstStaticCell` (static_cell's, re-exported as the one blessed
+  way) builds the object in place with a const initialiser and hands it out exactly once --
+  a second `take()` panics instead of aliasing -- so the promise is enforced and the
+  `unsafe` is gone. The two STM32 clocks' wrap trackers are relaxed atomics. The workspace
+  has no `static mut` left. And `MIGRATION.md` lists every mk3 module of every consumer with
+  what it became -- ported, pending with the reason it waits, or retired with the reason --
+  so the state of the migration is a table, not a reading of this log. The one item on it
+  that gates a product: RP2040, which crossfire's stock Pico needs and no mk4 port covers.

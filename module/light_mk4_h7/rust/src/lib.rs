@@ -10,7 +10,7 @@ use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::st7735::St7735;
 use light_ui::{scroll, Desc, Page, Ui};
-use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::PixelFormat;
 use light_font::Font;
@@ -52,8 +52,8 @@ static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 /// Two 25 KB frame buffers in AXI SRAM.
-static mut FRAME_FRONT: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
-static mut FRAME_BACK: [u8; FRAME_BYTES] = [0; FRAME_BYTES];
+static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
+static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
 fn log_sink(record: &log::Record) {
@@ -355,13 +355,13 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let p = take(&clocks).expect("the board's peripherals are taken once");
         info!("clocks: sys {} Hz, apb2 {} Hz, timers {} Hz; spi4 at {} Hz", clocks.sys_hz, clocks.apb2_hz, clocks.tim_hz, p.display_bus.actual_hz);
 
-        // SAFETY: the one and only references to the frame buffers and the statics below
-        let front: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_FRONT) };
-        let back: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME_BACK) };
-        static mut LAYER: FrameLayer = FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565);
-        static mut UI: Ui<AppEvent, UI_WIDGETS> = Ui::new();
-        let layer: &'static mut FrameLayer = unsafe { &mut *core::ptr::addr_of_mut!(LAYER) };
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = unsafe { &mut *core::ptr::addr_of_mut!(UI) };
+        // built in place in .bss and taken exactly once; a second take() panics
+        let front: &'static mut [u8] = FRAME_FRONT.take();
+        let back: &'static mut [u8] = FRAME_BACK.take();
+        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
+        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        let layer: &'static mut FrameLayer = LAYER.take();
+        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         let mut display = Display::new(St7735::new(p.display_bus), front, DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565, now_us);
         display.set_back_buffer(back);
         let font = match Font::parse(FONT_BLOB) {
@@ -370,7 +370,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         ui.set_font(&font);
 
-        static DISPLAY_MOD: static_cell::StaticCell<DisplayMod> = static_cell::StaticCell::new();
+        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod { display, layer, font, ui, backlight: p.backlight, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
         // K1 is active high -- see the board wiring
         let mut key_mod = KeyMod { key: Button::new(p.key, false), pressed_at_ms: 0, pressed: false, hold_fired: false };

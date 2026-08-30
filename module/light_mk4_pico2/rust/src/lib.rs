@@ -12,7 +12,7 @@ use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::sh1107::Sh1107;
 use light_ui::{scroll, Desc, Page, Ui};
-use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{Flip, PixelFormat, Rotation};
 use light_font::Font;
@@ -54,7 +54,7 @@ static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
 /// 64x128 at 1 bpp: one kilobyte.
-static mut FRAME: [u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)] = [0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)];
+static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 
 fn log_sink(record: &log::Record) {
@@ -332,8 +332,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         log::set_clock(now_us);
         let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
         let p = take(&clocks).expect("the board's peripherals are taken once");
-        // SAFETY: the one and only reference to FRAME
-        let frame: &'static mut [u8] = unsafe { &mut *core::ptr::addr_of_mut!(FRAME) };
+        let frame: &'static mut [u8] = FRAME.take();
         let display = Display::new(Sh1107::new(p.oled_bus), frame, OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1, now_us);
         let font = match Font::parse(FONT_BLOB) {
                 Ok(f) => f,
@@ -342,13 +341,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut led_mod = LedMod { led: p.led, blinker: Blinker::new(500_000), blinking: true, toggles: 0, events: EVENTS.subscribe().expect("slot") };
         // in .bss rather than on core 0's small stack: the frame layer and the widget arena
         // together are a good part of it
-        static mut LAYER: FrameLayer = FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1);
-        static mut UI: Ui<AppEvent, UI_WIDGETS> = Ui::new();
-        // SAFETY: each static is referenced exactly once, here
-        let layer: &'static mut FrameLayer = unsafe { &mut *core::ptr::addr_of_mut!(LAYER) };
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = unsafe { &mut *core::ptr::addr_of_mut!(UI) };
+        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1));
+        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        let layer: &'static mut FrameLayer = LAYER.take();
+        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         ui.set_font(&font);
-        static OLED_MOD: static_cell::StaticCell<OledMod> = static_cell::StaticCell::new();
+        static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
         let oled_mod = OLED_MOD.init(OledMod { display, layer, font, ui, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });
         let mut keys_mod = KeysMod { keys: [Button::new(p.key0, true), Button::new(p.key1, true)], presses: 0 };
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
