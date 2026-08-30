@@ -422,6 +422,12 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the touch169 verifies the refactors too.** BOOTSEL flash through the
+  1200-baud reset, then the full CLI session over its CDC: the table-assembled help, stats
+  answered by four modules (display frame timings, the touch controller's NACK counters, the
+  IMU live at FaceUp), `ui press 120 140` landing on a button, backlight PWM levels, render
+  pause/resume, and both error paths. With the po13's session below, every refactor since the
+  crate split has now run on both RP2350 boards.
 - 2026-08-31 — **the po13 verifies the refactors, and grows a UART console.** Everything since
   the crate split -- the split itself, `ConstStaticCell` in place of every `static mut`,
   portable-atomic, the board-wiring move, the shared CLI -- had been build-verified only on
