@@ -281,6 +281,22 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "heapless",
+]
+
+[[package]]
+name = "light-display"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "heapless",
+ "light-core",
+ "light-draw",
+]
+
+[[package]]
+name = "light-draw"
+version = "0.1.0"
+dependencies = [
  "light-font",
 ]
 
@@ -289,12 +305,29 @@ name = "light-font"
 version = "0.1.0"
 
 [[package]]
+name = "light-input"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "light-core",
+]
+
+[[package]]
+name = "light-midi"
+version = "0.1.0"
+dependencies = [
+ "heapless",
+]
+
+[[package]]
 name = "light-rp2350"
 version = "0.1.0"
 dependencies = [
  "cortex-m",
  "critical-section",
  "light-core",
+ "light-input",
+ "light-midi",
  "rp235x-pac",
 ]
 
@@ -317,11 +350,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-ui"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "heapless",
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+]
+
+[[package]]
 name = "light_app_crossfire"
 version = "0.1.0"
 dependencies = [
  "light-core",
+ "light-display",
+ "light-draw",
  "light-font",
+ "light-midi",
  "light-rp2350",
  "static_cell",
 ]
@@ -339,8 +387,11 @@ name = "light_app_h7"
 version = "0.1.0"
 dependencies = [
  "light-core",
+ "light-display",
+ "light-draw",
  "light-font",
  "light-stm32h7",
+ "light-ui",
  "static_cell",
 ]
 
@@ -349,8 +400,11 @@ name = "light_app_pico2"
 version = "0.1.0"
 dependencies = [
  "light-core",
+ "light-display",
+ "light-draw",
  "light-font",
  "light-rp2350",
+ "light-ui",
  "static_cell",
 ]
 
@@ -360,8 +414,12 @@ version = "0.1.0"
 dependencies = [
  "critical-section",
  "light-core",
+ "light-display",
+ "light-draw",
  "light-font",
+ "light-input",
  "light-rp2350",
+ "light-ui",
  "static_cell",
 ]
 

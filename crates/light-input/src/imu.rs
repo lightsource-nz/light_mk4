@@ -7,7 +7,7 @@
 //! down rotated has no fixed relationship to the glass, and orientation codes are defined
 //! against the glass.
 
-use crate::hal::I2cError;
+use light_core::hal::I2cError;
 
 pub const AXES: usize = 3;
 pub const X: usize = 0;

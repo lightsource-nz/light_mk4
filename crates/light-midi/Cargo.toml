@@ -1,0 +1,9 @@
+[package]
+name = "light-midi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the USB-MIDI forwarder engine: mounts, hub ports, activity, and the transport trait a USB host stack implements"
+
+[dependencies]
+heapless = "0.8"

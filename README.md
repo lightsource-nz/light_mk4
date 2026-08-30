@@ -18,16 +18,34 @@ This is a spike, not the framework. It exists to retire specific unknowns before
 
 ## Layout
 
+One cargo workspace, one version for all of it (`[workspace.package].version`, bumped in the
+commit that `light-release.ps1` tags). The portable crates are layered, each depending only on
+the ones above it in this list and never on a port:
+
     Cargo.toml              workspace
-    crates/light-core       portable, no_std, host-testable framework code
+    crates/light-core       the port interface (hal), module runtime, log queue, event bus, mailbox
     crates/light-font       the LGF bitmap font format: no_std reader, encoder behind `alloc`
-    crates/light-rp2350     RP2350 board/peripheral access via rp235x-pac
+    crates/light-draw       the rasteriser: canvas, transforms, pixel formats, regions, text
+    crates/light-display    the chunked display core, the frame layer, ST7789 / SH1107 / ST7735
+    crates/light-input      touch tracking and gestures, CST816T, the IMU model, QMI8658
+    crates/light-ui         the widget toolkit
+    crates/light-midi       the USB-MIDI forwarder engine and its transport trait
+    crates/light-rp2350     RP2350 port: rp235x-pac, both ISAs, TinyUSB host transport (usb-host)
+    crates/light-stm32h7    STM32H743 port, raw registers over bare CMSIS
+    crates/light-stm32f4    STM32F411 port, the same shape
     tools/crush             font-crusher in Rust: renders TrueType into LGF (and mk3's C pair)
     tools/vendor            freetype-sys, vendored with a one-line build.rs fix (see Cargo.toml)
-    module/light_mk4_touch169/rust   the staticlib crate the firmware links (light_app_touch169)
-    module/light_mk4_touch169        the C shell: main.c + pico-sdk executable (module/<target>/
-                                     is where light-flash.ps1 looks for <target>.uf2)
+    module/light_mk4_shell        the pico-sdk C shell (device and USB-host roles)
+    module/light_mk4_shell_cmsis  the bare-CMSIS C shell (H743, F411)
+    module/light_mk4_<board>/rust the staticlib crate a board's firmware links (light_app_<board>)
+    module/light_mk4_<board>      the board's executable (module/<target>/ is where
+                                  light-flash.ps1 looks for <target>.uf2)
     scripts/                the usual thin wrappers over $LIGHT_PATH/scripts
+    .github/workflows       the host test suite through the framework's shared workflow
+
+The port crates are target-only and are excluded from the host `cargo test` along with the
+app crates: a workspace-wide invocation unifies features, and the two `critical-section`
+flavours (cortex-m's single-core one in the STM32 ports, light-rp2350's own) cannot coexist.
 
 ## Building
 
@@ -328,3 +346,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   under its pull-up, PA9 idling high with the USART running. The ST-Link's VCP (COM10) is
   not wired to PA9/PA10 on this board either, so the console has been exercised only through
   the pin states; a USB-serial on PA9/PA10 would finish that.
+- 2026-08-30 — **the crate split: the spike becomes a layout.** `light-core` had grown to
+  eight thousand lines holding the runtime, the rasteriser, the display stack, the toolkit,
+  the MIDI engine and five drivers -- the spike's shape. It is now six crates along the lines
+  the assessment's decision 10 drew (see Layout), `Region` moved from the display core into
+  `light-draw` where the geometry lives, one workspace version, and a CI workflow calling the
+  framework's shared host-test job. A `git mv` refactor and no behaviour change: the same 103
+  host tests pass in their new crates and all six firmware trees build. Two things fell out of
+  reconfiguring every tree at once. The host test suite had not compiled since the H7 commit:
+  cortex-m's `critical-section-single-core` selects `restore-state-u32`, light-rp2350 selects
+  `restore-state-bool`, and a workspace-wide `cargo test` unifies both -- the STM32 port crates
+  are now excluded from it like the app crates. And the pico trees had silently lost their
+  executables in the same commit: `if(LIGHT_SYSTEM STREQUAL PICO_SDK)` compared against a
+  literal before `pico_sdk_init()` and against the variable `PICO_SDK` it defines after; every
+  STREQUAL literal in the root CMakeLists is quoted now. The lesson from both is the same one:
+  a change to the build has to reconfigure every tree, not the one being worked on.

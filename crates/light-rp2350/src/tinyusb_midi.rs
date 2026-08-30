@@ -1,4 +1,4 @@
-//! The USB-MIDI host transport: TinyUSB's `tuh_midi_*` API behind [`light_core::midi::Transport`],
+//! The USB-MIDI host transport: TinyUSB's `tuh_midi_*` API behind [`light_midi::Transport`],
 //! and the class callbacks the stack expects the application to define.
 //!
 //! Everything here runs on core 0, in the context the shell's `light_shell_usb_host_task()` is
@@ -10,7 +10,7 @@
 //! Only meaningful in a firmware whose shell was built for the host role; the symbols resolve
 //! against `tinyusb_host` at link time.
 
-use light_core::midi::{BusInfo, Mount, Packet, Transport};
+use light_midi::{BusInfo, Mount, Packet, Transport};
 use light_core::Mailbox;
 
 #[repr(C)]

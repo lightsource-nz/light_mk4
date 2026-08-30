@@ -1,6 +1,6 @@
 [package]
 name = "light_app_f411"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "the Rust half of the Blackpill firmware: LED, key and console on the STM32F411"

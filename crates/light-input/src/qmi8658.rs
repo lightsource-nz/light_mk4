@@ -5,7 +5,7 @@
 //! codes turned out inverted. The WHO_AM_I read at init is the first real evidence either way;
 //! mk3 confirmed this configuration and the touch169's axis map on hardware.
 
-use crate::hal::{I2cBus, I2cError};
+use light_core::hal::{I2cBus, I2cError};
 use crate::imu::{scale_sample, ImuDriver, Sample, AXES};
 
 /// SA0 pulled high, as strapped on the RP2350-Touch-LCD-1.69; 0x6A with SA0 low.

@@ -15,6 +15,8 @@
 //! traffic goes through the transport, and what an application must react to -- a display to
 //! update, a host controller to reset -- comes out as return values.
 
+#![no_std]
+
 use heapless::Vec;
 
 /// A USB-MIDI event packet: byte 0 is `(cable << 4) | code_index_number`, bytes 1..4 the MIDI

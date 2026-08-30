@@ -1,6 +1,6 @@
 [package]
 name = "light_app_h7"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "the Rust half of the MiniSTM32H7 firmware: the widget demo on the board's ST7735, its key and its console"
@@ -10,6 +10,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 light-core = { path = "../../../crates/light-core" }
+light-draw = { path = "../../../crates/light-draw" }
+light-display = { path = "../../../crates/light-display" }
+light-ui = { path = "../../../crates/light-ui" }
 light-stm32h7 = { path = "../../../crates/light-stm32h7" }
 light-font = { path = "../../../crates/light-font" }
 static_cell = "2"

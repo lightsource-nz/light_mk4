@@ -2,7 +2,7 @@
 //! the mk4 stack, on the po13 rig: a Pico 2 whose native USB port hosts the instruments (one,
 //! or a hub of them), the Pico-OLED-1.3 as the status display, the console on the UART.
 //!
-//! The forwarding engine is `light_core::midi`, portable and host-tested; the transport is
+//! The forwarding engine is `light_midi`, portable and host-tested; the transport is
 //! TinyUSB through the shell's host role (`light_rp2350::tinyusb_midi`); this file is the wiring:
 //! a module that drives the stack and the engine, a module that draws the status, the LED, and
 //! the console.
@@ -10,9 +10,11 @@
 #![no_std]
 
 use core::fmt::Write;
-use light_core::midi::{Forwarder, HUB_PORT_NONE};
-use light_core::sh1107::Sh1107;
-use light_core::{info, log, warn, Display, EventBus, Flip, FrameLayer, LineReader, LogicalRegion, Mailbox, Module, PixelFormat, Point, Poll, Rotation, Runtime, Subscription, UpdateError};
+use light_midi::{Forwarder, HUB_PORT_NONE};
+use light_display::sh1107::Sh1107;
+use light_core::{info, log, warn, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
+use light_draw::{Flip, PixelFormat, Point, Rotation};
 use light_font::Font;
 use light_rp2350::boards::pico2::*;
 use light_rp2350::gpio::Output;

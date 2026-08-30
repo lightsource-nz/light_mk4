@@ -1,0 +1,12 @@
+[package]
+name = "light-draw"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the rasteriser: a canvas drawing in logical coordinates onto a physical buffer through a rotation and flip, with text from an LGF font"
+
+[dependencies]
+light-font = { path = "../light-font" }
+
+[dev-dependencies]
+light-font = { path = "../light-font", features = ["alloc"] }

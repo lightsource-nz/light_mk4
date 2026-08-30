@@ -1,9 +1,9 @@
 [package]
 name = "light-core"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "portable, no_std core of the light framework (mk4 spike)"
+description = "portable, no_std core of the light framework: the port interface, the module runtime, logging, events"
 
 [dependencies]
 #   fixed-capacity containers with no allocator: every mk3 "MAX_*" array becomes one of these,
@@ -12,8 +12,6 @@ heapless = "0.8"
 #   the one concurrency primitive the core asks of a port. The port crate supplies the
 # implementation (light-rp2350: PRIMASK + SIO spinlock); tests use the std one below
 critical-section = "1.2"
-light-font = { path = "../light-font" }
 
 [dev-dependencies]
 critical-section = { version = "1.2", features = ["std"] }
-light-font = { path = "../light-font", features = ["alloc"] }

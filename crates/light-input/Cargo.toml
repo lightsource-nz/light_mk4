@@ -1,0 +1,12 @@
+[package]
+name = "light-input"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "input above the port interface: touch tracking and gestures, the CST816T controller, the IMU model and the QMI8658"
+
+[dependencies]
+light-core = { path = "../light-core" }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }

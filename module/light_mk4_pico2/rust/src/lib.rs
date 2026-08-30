@@ -10,9 +10,11 @@
 
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
-use light_core::sh1107::Sh1107;
-use light_core::ui::{scroll, Desc, Page, Ui};
-use light_core::{info, log, warn, Blinker, Display, EventBus, Flip, FrameLayer, LineReader, Mailbox, Module, PixelFormat, Poll, Rotation, Runtime, Subscription, UpdateError};
+use light_display::sh1107::Sh1107;
+use light_ui::{scroll, Desc, Page, Ui};
+use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_display::{Display, FrameLayer, UpdateError};
+use light_draw::{Flip, PixelFormat, Rotation};
 use light_font::Font;
 use light_rp2350::boards::pico2::*;
 use light_rp2350::gpio::{Input, Output};

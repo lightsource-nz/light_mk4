@@ -46,7 +46,7 @@ pub mod touch169 {
         /// How the IMU is mounted, CONFIRMED on hardware by mk3 with the +1g-points-up
         /// convention: chip +Y points right, chip +X points up the screen, chip +Z points into
         /// it. A real rotation -- the transposition and the inversion corroborate each other.
-        pub const IMU_AXIS_MAP: light_core::imu::AxisMap = light_core::imu::AxisMap { source: [light_core::imu::Y, light_core::imu::X, light_core::imu::Z], sign: [1, 1, -1] };
+        pub const IMU_AXIS_MAP: light_input::imu::AxisMap = light_input::imu::AxisMap { source: [light_input::imu::Y, light_input::imu::X, light_input::imu::Z], sign: [1, 1, -1] };
 
         /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
         pub const DISPLAY_DMA_CH: usize = 15;

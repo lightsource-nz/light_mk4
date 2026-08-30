@@ -1,0 +1,17 @@
+[package]
+name = "light-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the widget toolkit: pages, stacks, buttons and scrolls over the frame layer, with touch, focus navigation and animated transitions"
+
+[dependencies]
+heapless = "0.8"
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+light-display = { path = "../light-display" }
+light-font = { path = "../light-font" }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
+light-font = { path = "../light-font", features = ["alloc"] }

@@ -22,12 +22,14 @@
 //! widget sits. Input arrives in PANEL coordinates -- what a touch controller reports -- and is
 //! untransformed here, because the toolkit is the one thing that knows the rotation.
 
+#![no_std]
+
 use heapless::Vec;
 
-use crate::display::{Display, DisplayDriver, Region};
-use crate::draw::{Canvas, Flip, Point, Rotation, Transform};
-use crate::frames::{FrameLayer, LogicalRegion, MAX_REGIONS};
-use crate::{debug, error, trace, warn};
+use light_display::{Display, DisplayDriver, Region};
+use light_draw::{Canvas, Flip, Point, Rotation, Transform};
+use light_display::frames::{FrameLayer, LogicalRegion, MAX_REGIONS};
+use light_core::{debug, error, trace, warn};
 use light_font::Font;
 
 /// A widget rectangle: inclusive, logical, signed -- a widget positioned partly off the canvas
@@ -673,7 +675,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         pub fn create_button(&mut self, parent: Option<WidgetId>, rect: Rect, label: &'static str, emit: Option<A>, nav: Nav<A>) -> Result<WidgetId, Error> {
-                let id = self.add(parent, Kind::Button(Button { label, emit, nav, corner_radius: 0, corners: crate::draw::corner::NONE }), rect, true)?;
+                let id = self.add(parent, Kind::Button(Button { label, emit, nav, corner_radius: 0, corners: light_draw::corner::NONE }), rect, true)?;
                 // the first focusable widget takes focus, so a two-button rig always has
                 // somewhere to start cycling from
                 if self.focused.is_none() {
@@ -1064,7 +1066,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         0
                                 };
                                 b.corner_radius = r as u8;
-                                b.corners = if r > 0 { crate::draw::corner::BOTTOM } else { crate::draw::corner::NONE };
+                                b.corners = if r > 0 { light_draw::corner::BOTTOM } else { light_draw::corner::NONE };
                         }
                         y += h + gap;
                 }
@@ -1297,7 +1299,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// which case the caller draws the settled tree without waiting a pass.
         fn rotation_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, now_us: u64) -> Step {
                 if !self.rotate_started {
-                        if !display.is_double_buffered() || display.format() != crate::draw::PixelFormat::Rgb565 {
+                        if !display.is_double_buffered() || display.format() != light_draw::PixelFormat::Rgb565 {
                                 // nowhere to hold the image, or nothing to rotate it with: a
                                 // correct snap beats a broken animation
                                 let target = self.rotate_target;
@@ -1341,7 +1343,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// One step of a page transition; the same contract as `rotation_step`.
         fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> Step {
                 if !self.page_move_started {
-                        let can_animate = display.is_double_buffered() && display.format() == crate::draw::PixelFormat::Rgb565;
+                        let can_animate = display.is_double_buffered() && display.format() == light_draw::PixelFormat::Rgb565;
                         if !can_animate {
                                 self.page_moving = false;
                                 self.invalidate_all();
@@ -1809,7 +1811,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let r = self.draw_rect_of(w.rect);
                 if win.border {
                         if win.corner_radius != 0 {
-                                c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), crate::draw::corner::ALL, false);
+                                c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), light_draw::corner::ALL, false);
                         } else {
                                 c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), false);
                         }
@@ -1977,9 +1979,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
 #[cfg(test)]
 mod tests {
         use super::*;
-        use crate::display::{DisplayDriver, Frame, Region};
-        use crate::draw::PixelFormat;
-        use crate::hal::Clock;
+        use light_display::{DisplayDriver, Frame, Region};
+        use light_draw::PixelFormat;
+        use light_core::hal::Clock;
         use light_font::Encoder;
         extern crate std;
         use std::vec::Vec as StdVec;
@@ -2078,7 +2080,7 @@ mod tests {
                 // the flush last row is a rounded-bottom button with hit slop to the canvas edge
                 let last = ui.children(root).last().unwrap();
                 let b = ui.get(last).unwrap();
-                assert_eq!(b.button().unwrap().corners, crate::draw::corner::BOTTOM);
+                assert_eq!(b.button().unwrap().corners, light_draw::corner::BOTTOM);
                 assert_eq!(b.hit_slop_y1, 3);
         }
 

@@ -13,9 +13,10 @@
 //! are sampled at half a pixel so the joins never open; a disc is filled from the same spans
 //! its outline would trace; Q15 rounds rather than truncates.
 
+#![no_std]
+
 use light_font::Font;
 
-use crate::display::Region;
 
 /// How pixels are packed in the physical buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,6 +40,57 @@ impl PixelFormat {
                 self.stride(width) * height as usize
         }
 }
+
+/// An inclusive rectangle in physical (panel) coordinates.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+        pub x0: u16,
+        pub y0: u16,
+        pub x1: u16,
+        pub y1: u16,
+}
+
+impl Region {
+        pub const fn new(x0: u16, y0: u16, x1: u16, y1: u16) -> Self {
+                Self { x0, y0, x1, y1 }
+        }
+
+        pub const fn full(width: u16, height: u16) -> Self {
+                Self { x0: 0, y0: 0, x1: width - 1, y1: height - 1 }
+        }
+
+        pub const fn width(&self) -> u16 {
+                self.x1 - self.x0 + 1
+        }
+
+        pub const fn height(&self) -> u16 {
+                self.y1 - self.y0 + 1
+        }
+
+        /// The smallest region covering both. This is how a caller honours the rule that a
+        /// region update must cover what was drawn before as well as what is drawn now.
+        pub fn union(&self, other: &Region) -> Region {
+                Region {
+                        x0: self.x0.min(other.x0),
+                        y0: self.y0.min(other.y0),
+                        x1: self.x1.max(other.x1),
+                        y1: self.y1.max(other.y1),
+                }
+        }
+
+        /// Clamp into the panel. Both corners against the same bound, so a region that was
+        /// entirely off-panel collapses to an edge rather than inverting -- an inverted region
+        /// has a meaningless chunk count and would never complete.
+        pub fn clamped(&self, width: u16, height: u16) -> Region {
+                Region {
+                        x0: self.x0.min(width - 1),
+                        y0: self.y0.min(height - 1),
+                        x1: self.x1.min(width - 1),
+                        y1: self.y1.min(height - 1),
+                }
+        }
+}
+
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum Rotation {

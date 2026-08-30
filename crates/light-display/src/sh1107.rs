@@ -6,7 +6,7 @@
 //! output byte is assembled bit by bit.
 
 use crate::display::{DisplayDriver, Frame, Region};
-use crate::hal::{Clock, SpiDisplayBus};
+use light_core::hal::{Clock, SpiDisplayBus};
 
 pub const CMD_SET_COL_ADDR_LOW: u8 = 0x00;
 pub const CMD_SET_COL_ADDR_HIGH: u8 = 0x10;

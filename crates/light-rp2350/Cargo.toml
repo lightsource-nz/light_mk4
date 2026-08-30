@@ -1,6 +1,6 @@
 [package]
 name = "light-rp2350"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "RP2350 board access for the light framework via rp235x-pac (mk4 spike)"
@@ -8,10 +8,12 @@ description = "RP2350 board access for the light framework via rp235x-pac (mk4 s
 [features]
 #   the TinyUSB host transport, which resolves against tinyusb_host at link time: only a
 # firmware whose shell was built in the host role can carry it
-usb-host = []
+usb-host = ["dep:light-midi"]
 
 [dependencies]
 light-core = { path = "../light-core" }
+light-input = { path = "../light-input" }
+light-midi = { path = "../light-midi", optional = true }
 #   no `rt` feature: the vector table, reset handler and linker script belong to pico-sdk's
 # runtime in the C shell. This crate only wants the register definitions
 rp235x-pac = { version = "0.2", default-features = false }

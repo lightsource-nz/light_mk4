@@ -28,8 +28,12 @@ include(${LIGHT_PATH}/external/light_preinit.cmake)
 
 project(light_mk4 C CXX ASM)
 
-if(LIGHT_PLATFORM STREQUAL TARGET)
-        if(LIGHT_SYSTEM STREQUAL PICO_SDK)
+#   every STREQUAL literal below is QUOTED. An unquoted word on the right of STREQUAL is
+# dereferenced if a variable of that name exists, and pico_sdk_init() defines one called
+# PICO_SDK -- so `LIGHT_SYSTEM STREQUAL PICO_SDK` was true before the SDK initialised and
+# false after, and the pico trees silently configured with no executable in them
+if(LIGHT_PLATFORM STREQUAL "TARGET")
+        if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
                 pico_sdk_init()
         endif()
 
@@ -66,31 +70,31 @@ if(LIGHT_PLATFORM STREQUAL TARGET)
         corrosion_set_hostbuild(crush)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightFont.cmake)
 
-        if(LIGHT_SYSTEM STREQUAL PICO_SDK)
+        if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
                 add_subdirectory(module/light_mk4_shell)
                 #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2
                 # -- the layout every mk3 project shares, and worth matching rather than forking
                 # the script
-                if(PICO_BOARD STREQUAL waveshare_rp2350_touch_lcd_1.69)
+                if(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_1.69")
                         add_subdirectory(module/light_mk4_touch169)
-                elseif(PICO_BOARD STREQUAL pico2)
+                elseif(PICO_BOARD STREQUAL "pico2")
                         #   two applications share the Pico 2: the po13 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
                         # configure the shell differently -- chosen by the preset
                         set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application the Pico 2 tree builds: pico2 or crossfire")
-                        if(LIGHT_MK4_PICO2_APP STREQUAL crossfire)
+                        if(LIGHT_MK4_PICO2_APP STREQUAL "crossfire")
                                 add_subdirectory(module/light_mk4_crossfire)
                         else()
                                 add_subdirectory(module/light_mk4_pico2)
                         endif()
                 endif()
-        elseif(LIGHT_SYSTEM STREQUAL CMSIS)
+        elseif(LIGHT_SYSTEM STREQUAL "CMSIS")
                 #   bare CMSIS: no SDK under the shell at all. The board selects the chip's
                 # shell and its application; only the H743 so far
                 add_subdirectory(module/light_mk4_shell_cmsis)
-                if(LIGHT_BOARD STREQUAL mini_stm32h7)
+                if(LIGHT_BOARD STREQUAL "mini_stm32h7")
                         add_subdirectory(module/light_mk4_h7)
-                elseif(LIGHT_BOARD STREQUAL blackpill)
+                elseif(LIGHT_BOARD STREQUAL "blackpill")
                         add_subdirectory(module/light_mk4_f411)
                 else()
                         message(FATAL_ERROR "no mk4 application for the CMSIS board '${LIGHT_BOARD}' (mini_stm32h7 and blackpill so far)")
@@ -106,7 +110,7 @@ endif()
 # section selects critical-section's restore-state-u32 while light-rp2350 selects
 # restore-state-bool -- fine in a firmware build, which sees one port crate, a compile error in
 # a workspace-wide test run that sees both
-if(LIGHT_PLATFORM STREQUAL HOST)
+if(LIGHT_PLATFORM STREQUAL "HOST")
         include(CTest)
         find_program(LIGHT_CARGO cargo
                 PATHS "$ENV{USERPROFILE}/.cargo/bin" "$ENV{HOME}/.cargo/bin")

@@ -3,7 +3,7 @@
 //! orientation and BGR order.
 
 use crate::display::{DisplayDriver, Frame, Region};
-use crate::hal::{Clock, SpiDisplayBus};
+use light_core::hal::{Clock, SpiDisplayBus};
 
 pub const CMD_SWRESET: u8 = 0x01;
 pub const CMD_SLPOUT: u8 = 0x11;

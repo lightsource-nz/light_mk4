@@ -20,13 +20,15 @@
 
 use core::cell::RefCell;
 use core::fmt::Write;
-use light_core::cst816t::{self, Cst816t};
-use light_core::imu::{Imu, Orientation};
-use light_core::qmi8658::Qmi8658;
-use light_core::st7789::St7789;
-use light_core::touch::{Gesture, Tracker};
-use light_core::ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
-use light_core::{debug, info, log, warn, Display, EventBus, FrameLayer, LineReader, Mailbox, Module, PixelFormat, Poll, Rotation, Runtime, Subscription, UpdateError};
+use light_input::cst816t::{self, Cst816t};
+use light_input::imu::{Imu, Orientation};
+use light_input::qmi8658::Qmi8658;
+use light_display::st7789::St7789;
+use light_input::touch::{Gesture, Tracker};
+use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
+use light_core::{debug, info, log, warn, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_display::{Display, FrameLayer, UpdateError};
+use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_rp2350::boards::touch169::*;
 use light_rp2350::gpio::{Input, Output};
@@ -250,7 +252,7 @@ impl DisplayMod {
                                         if let cst816t::Event::Down { .. } = t {
                                                 // the front buffer as it stands, to the whole panel
                                                 if !self.display.busy() {
-                                                        let _ = self.display.update_async(light_core::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+                                                        let _ = self.display.update_async(light_display::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
                                                 }
                                         }
                                 }

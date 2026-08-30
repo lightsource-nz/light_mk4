@@ -1,0 +1,33 @@
+# Builds and runs the host test suite on every push and pull request.
+#
+# The same shared workflow every mk3 project calls: it checks the framework out beside this
+# repository (scripts/ and CMakeLists.txt reach it as ../light_framework_mk3), installs ninja,
+# and runs scripts/test.ps1 -- which configures the host tree and runs its one ctest, `cargo
+# test` over the portable crates. Nothing Rust-specific is installed: ubuntu-latest carries a
+# stable rustup toolchain, and the host build needs no cross target. crush's bundled FreeType
+# builds with the runner's C compiler and cmake.
+#
+# Firmware trees are not built here: they need the arm and riscv cross toolchains, pico-sdk and
+# the CMSIS device checkouts, and a green host run is what CI is for -- the firmware is verified
+# on the bench, per board, before anything is called done.
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: host tests
+    uses: lightsource-nz/light_framework_mk3/.github/workflows/project-test.yml@v1
+    with:
+      project: light_mk4

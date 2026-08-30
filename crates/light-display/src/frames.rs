@@ -24,7 +24,7 @@
 use heapless::Vec;
 
 use crate::display::{Display, DisplayDriver, Region, UpdateError};
-use crate::draw::{Canvas, Flip, PixelFormat, Rotation, Transform};
+use light_draw::{Canvas, Flip, PixelFormat, Rotation, Transform};
 
 /// A logical region with room to fall off the canvas: content near an edge extends past it,
 /// and clipping needs to see that as negative rather than wrapped.
@@ -149,13 +149,13 @@ impl FrameLayer {
 
         /// A physical (panel) point into logical coordinates -- where a touch landed on the
         /// canvas as drawn.
-        pub fn untransform_point(&self, phys_x: i32, phys_y: i32) -> crate::draw::Point {
+        pub fn untransform_point(&self, phys_x: i32, phys_y: i32) -> light_draw::Point {
                 let m = self.transform();
                 let det = m.a * m.d - m.b * m.c;
                 let px = phys_x - m.tx;
                 let py = phys_y - m.ty;
                 let (w, h) = self.logical_size();
-                crate::draw::Point::new(((m.d * px - m.b * py) * det).clamp(0, i32::from(w) - 1), ((m.a * py - m.c * px) * det).clamp(0, i32::from(h) - 1))
+                light_draw::Point::new(((m.d * px - m.b * py) * det).clamp(0, i32::from(w) - 1), ((m.a * py - m.c * px) * det).clamp(0, i32::from(h) - 1))
         }
 
         pub fn rotation(&self) -> Rotation {
@@ -313,7 +313,7 @@ impl FrameLayer {
 mod tests {
         use super::*;
         use crate::display::{DisplayDriver, Frame};
-        use crate::hal::Clock;
+        use light_core::hal::Clock;
         extern crate std;
         use core::sync::atomic::{AtomicU64, Ordering};
         use std::vec::Vec as StdVec;

@@ -1,6 +1,6 @@
 [package]
 name = "light-font"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "the LGF bitmap font format: a no_std zero-copy reader, and an encoder behind the `alloc` feature"

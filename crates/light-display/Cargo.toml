@@ -1,0 +1,14 @@
+[package]
+name = "light-display"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the chunked display core, the frame layer above it, and the panel drivers that have lit a panel: ST7789, SH1107, ST7735"
+
+[dependencies]
+heapless = "0.8"
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }

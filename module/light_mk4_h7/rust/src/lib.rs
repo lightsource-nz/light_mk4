@@ -8,9 +8,11 @@
 
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
-use light_core::st7735::St7735;
-use light_core::ui::{scroll, Desc, Page, Ui};
-use light_core::{info, log, warn, Blinker, Display, EventBus, FrameLayer, LineReader, Mailbox, Module, PixelFormat, Poll, Runtime, Subscription, UpdateError};
+use light_display::st7735::St7735;
+use light_ui::{scroll, Desc, Page, Ui};
+use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
+use light_display::{Display, FrameLayer, UpdateError};
+use light_draw::PixelFormat;
 use light_font::Font;
 use light_stm32h7::boards::mini_stm32h7::*;
 use light_stm32h7::gpio::{Input, Output};

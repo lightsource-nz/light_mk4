@@ -1,6 +1,6 @@
 [package]
 name = "light_app_pico2"
-version = "0.1.0"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "the Rust half of the bare Pico 2 spike firmware: LED and console, for the SWD rig"
@@ -10,6 +10,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 light-core = { path = "../../../crates/light-core" }
+light-draw = { path = "../../../crates/light-draw" }
+light-display = { path = "../../../crates/light-display" }
+light-ui = { path = "../../../crates/light-ui" }
 light-rp2350 = { path = "../../../crates/light-rp2350" }
 light-font = { path = "../../../crates/light-font" }
 static_cell = "2"
