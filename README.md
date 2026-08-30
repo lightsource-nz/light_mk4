@@ -424,6 +424,20 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **`debug.ps1 -ProbeRs`: the fast flash-and-run path the spike wanted.**
+  `light-debug.ps1` (shared, in the framework repo) grows a probe-rs branch: download the
+  ELF, reset, done -- no OpenOCD, no gdb, always batch. On the RP2350 that also sidesteps
+  the two debugger contaminations this log has documented: the flash-probe ROM stub run over
+  a halted core, and SIO spinlock 31 held by the debugger's own reads. Each Debug entry in
+  project.config.ps1 now carries `Chip`, probe-rs's name for the part (RP235x, RP235x_riscv,
+  RP2040, STM32H743VI, STM32F411CE -- all in probe-rs 0.32's registry). The gdb path is
+  unchanged and remains the way to a `monitor` command or a breakpoint. Verified to the last
+  step a probe-less bench allows: the refused-combination and missing-Chip errors, and the
+  full wiring reaching `probe-rs download` with the right chip and ELF. The first live use
+  wants a board on the debugprobe; one wrinkle found on the way: a per-project wrapper
+  forwards a NAMED parameter list, so a new shared-script switch reaches nobody until each
+  wrapper forwards it -- light_mk4's does, the sibling projects' will when they take Chip
+  entries.
 - 2026-08-31 — **`light-power`: mk3's power layer joins the framework.** The model
   (`Power<S: PowerSource>`) carries every judgement mk3 made once: the SAFE-BY-DEFAULT
   request ceiling that starts at the USB-C 5V rail (raising it is a claim about the board's

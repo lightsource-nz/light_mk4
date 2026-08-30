@@ -117,36 +117,46 @@
         # which OpenOCD config and SVD belong to which board -- see screen-test's config for
         # why getting this pairing wrong misbehaves rather than erroring
         Debug = @{
+                # Chip is probe-rs's name for the part, for debug.ps1 -ProbeRs (fast
+                # flash-and-run; no openocd, no spinlock-31 contamination)
                 'conf-light_mk4-pico2-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                        Chip   = 'RP235x'
                 }
                 'conf-light_mk4-pico2-release' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                        Chip   = 'RP235x'
                 }
                 'conf-light_mk4-crossfire-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                        Chip   = 'RP235x'
                 }
                 'conf-light_mk4-pico2-riscv-debug' = @{
                         Config = 'openocd-rp2350.cfg'
                         Svd    = '../pico-sdk/src/rp2350/hardware_regs/RP2350.svd'
+                        Chip   = 'RP235x_riscv'
                 }
                 'conf-light_mk4-pico-debug' = @{
                         Config = 'openocd-rp2040.cfg'
                         Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
+                        Chip   = 'RP2040'
                 }
                 'conf-light_mk4-crossfire-pico-debug' = @{
                         Config = 'openocd-rp2040.cfg'
                         Svd    = '../pico-sdk/src/rp2040/hardware_regs/RP2040.svd'
+                        Chip   = 'RP2040'
                 }
                 # over the ST-Link; no SVD vendored for this part
                 'conf-light_mk4-mini-stm32h7-debug' = @{
                         Config = 'openocd-stm32h7.cfg'
+                        Chip   = 'STM32H743VI'
                 }
                 'conf-light_mk4-blackpill-debug' = @{
                         Config = 'openocd-stm32f4.cfg'
+                        Chip   = 'STM32F411CE'
                 }
         }
 
