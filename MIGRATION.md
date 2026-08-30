@@ -17,7 +17,7 @@ a guess, and mk4 does not inherit guesses.
 |---|---|---|---|
 | light_core (objects, modules, tasks) | `light-core::module`, `events`, `mailbox` | ported | explicit registration, typed event bus; the kobject tree and refcounts are gone by design |
 | light_core mqueue (logging) | `light-core::log` | ported | bounded, drop-with-counter, never blocks |
-| light_cli | `light-core::console::LineReader` + per-app dispatch | ported (partial) | string parsing is one front-end of the event bus, as decided; no command *tree* yet — apps match on words. A shared tree with help/aliases is pending until a second consumer needs one |
+| light_cli | `light-core::cli` + `console::LineReader` | ported | one grammar: the `Cli` owns echo, help, loglevel, quit and usage-on-error; an app supplies a table of commands parsing into its event type. Not mk3's 26-command tree machinery — that died with decision 3, and nothing misses it |
 | light_ioport (SPI, I2C, 3-wire, PIO-SPI) | `light-core::hal` traits + port crates | ported | SPI display bus and I2C only; PIO-SPI and 3-wire wait for a board that needs them |
 | light_core_chip_rp2350 | `light-rp2` (feature `rp2350`; ARM + Hazard3) | ported | |
 | light_core_chip_rp2040 | `light-rp2` (feature `rp2040`) | ported (build only) | one source with the RP2350 port; presets `conf-light_mk4-pico-debug`, `conf-light_mk4-crossfire-pico-debug`. Not yet flashed: no RP2040 on the bench |
@@ -98,9 +98,5 @@ a guess, and mk4 does not inherit guesses.
 
 ## What is not on any list
 
-- The `light_cli` command tree proper (help, aliases, subcommands shared across modules) —
-  the assessment's decision 6 made the event bus the primary thing and string parsing a
-  front-end. Every app so far has been content with a `match` on words. Revisit when two
-  apps want the same commands.
 - Hardware verification of the RP2040 build. The port exists; crossfire's product board is a
   stock Pico, and until one is flashed the item that gates a product is still open.

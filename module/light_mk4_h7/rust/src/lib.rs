@@ -10,6 +10,7 @@ use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::st7735::St7735;
 use light_ui::{scroll, Desc, Page, Ui};
+use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::PixelFormat;
@@ -281,43 +282,53 @@ impl Module for LedMod {
 }
 
 /// The console: drains the log to the shell, reads bytes from it, parses lines.
+//   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
+// this table is everything this application adds
+fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; log pending {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), log::pending());
+        Parsed::Event(AppEvent::Stats)
+}
+
+fn parse_led(w: &mut Words) -> Parsed<AppEvent> {
+        match w.next() {
+                Some("blink") => Parsed::Event(AppEvent::LedBlink(true)),
+                Some("off") => Parsed::Event(AppEvent::LedBlink(false)),
+                _ => Parsed::Usage,
+        }
+}
+
+fn parse_ui(w: &mut Words) -> Parsed<AppEvent> {
+        match (w.next(), w.next()) {
+                (Some("focus"), Some("next")) => Parsed::Event(AppEvent::UiFocus { next: true }),
+                (Some("focus"), Some("prev")) => Parsed::Event(AppEvent::UiFocus { next: false }),
+                (Some("activate"), _) => Parsed::Event(AppEvent::UiActivate),
+                (Some("back"), _) => Parsed::Event(AppEvent::UiBack),
+                _ => Parsed::Usage,
+        }
+}
+
+static COMMANDS: &[Command<AppEvent>] = &[
+        Command { name: "stats", usage: "stats", parse: parse_stats },
+        Command { name: "led", usage: "led blink|off", parse: parse_led },
+        Command { name: "ui", usage: "ui focus next|prev | ui activate | ui back", parse: parse_ui },
+];
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
+
 struct ConsoleMod {
         reader: LineReader<96>,
 }
 
 impl ConsoleMod {
         fn dispatch(&mut self, line: &str) -> Poll {
-                info!("> {line}");
-                let mut words = line.split_whitespace();
-                let event = match (words.next(), words.next(), words.next()) {
-                        (Some("help"), _, _) => {
-                                info!("commands: help | stats | led blink|off | ui focus next|prev | ui activate | ui back | quit");
-                                None
+                match CLI.dispatch(line) {
+                        Outcome::Quiet => Poll::Idle,
+                        Outcome::Shutdown => Poll::Shutdown,
+                        Outcome::Event(e) => {
+                                let _ = EVENTS.publish(e);
+                                Poll::Busy
                         }
-                        (Some("stats"), _, _) => {
-                                info!("uptime {} s; console: {} bytes dropped; bus: {} refused; log pending {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), log::pending());
-                                Some(AppEvent::Stats)
-                        }
-                        (Some("led"), Some("blink"), _) => Some(AppEvent::LedBlink(true)),
-                        (Some("led"), Some("off"), _) => Some(AppEvent::LedBlink(false)),
-                        (Some("ui"), Some("focus"), Some("next")) => Some(AppEvent::UiFocus { next: true }),
-                        (Some("ui"), Some("focus"), Some("prev")) => Some(AppEvent::UiFocus { next: false }),
-                        (Some("ui"), Some("activate"), _) => Some(AppEvent::UiActivate),
-                        (Some("ui"), Some("back"), _) => Some(AppEvent::UiBack),
-                        (Some("quit"), _, _) => {
-                                info!("shutting down");
-                                return Poll::Shutdown;
-                        }
-                        (Some(other), _, _) => {
-                                warn!("unknown command '{other}' -- try help");
-                                None
-                        }
-                        (None, _, _) => None,
-                };
-                if let Some(e) = event {
-                        let _ = EVENTS.publish(e);
+                        Outcome::Handled => Poll::Busy,
                 }
-                Poll::Busy
         }
 }
 

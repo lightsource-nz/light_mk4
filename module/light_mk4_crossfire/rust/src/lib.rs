@@ -12,6 +12,7 @@
 use core::fmt::Write;
 use light_midi::{Forwarder, HUB_PORT_NONE};
 use light_display::sh1107::Sh1107;
+use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
 use light_draw::{Flip, PixelFormat, Point, Rotation};
@@ -343,43 +344,43 @@ impl Module for LedMod {
         }
 }
 
+//   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
+// this table is everything this application adds
+fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), CORE1_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
+        Parsed::Event(AppEvent::Stats)
+}
+
+fn parse_usb(w: &mut Words) -> Parsed<AppEvent> {
+        match (w.next(), w.next()) {
+                (Some("reset"), _) => Parsed::Event(AppEvent::UsbReset),
+                (Some("autoreset"), Some("on")) => Parsed::Event(AppEvent::AutoReset(true)),
+                (Some("autoreset"), Some("off")) => Parsed::Event(AppEvent::AutoReset(false)),
+                _ => Parsed::Usage,
+        }
+}
+
+static COMMANDS: &[Command<AppEvent>] = &[
+        Command { name: "stats", usage: "stats", parse: parse_stats },
+        Command { name: "usb", usage: "usb reset | usb autoreset on|off", parse: parse_usb },
+];
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
+
 struct ConsoleMod {
         reader: LineReader<96>,
 }
 
 impl ConsoleMod {
         fn dispatch(&mut self, line: &str) -> Poll {
-                info!("> {line}");
-                let mut words = line.split_whitespace();
-                match words.next() {
-                        Some("help") => info!("commands: help | stats | usb reset | usb autoreset on|off | quit"),
-                        Some("usb") => match words.next() {
-                                Some("reset") => {
-                                        let _ = EVENTS.publish(AppEvent::UsbReset);
-                                }
-                                Some("autoreset") => match words.next() {
-                                        Some("on") => {
-                                                let _ = EVENTS.publish(AppEvent::AutoReset(true));
-                                        }
-                                        Some("off") => {
-                                                let _ = EVENTS.publish(AppEvent::AutoReset(false));
-                                        }
-                                        _ => warn!("usage: usb autoreset on|off"),
-                                },
-                                _ => warn!("usage: usb reset | usb autoreset on|off"),
-                        },
-                        Some("stats") => {
-                                info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), CORE1_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
-                                let _ = EVENTS.publish(AppEvent::Stats);
+                match CLI.dispatch(line) {
+                        Outcome::Quiet => Poll::Idle,
+                        Outcome::Shutdown => Poll::Shutdown,
+                        Outcome::Event(e) => {
+                                let _ = EVENTS.publish(e);
+                                Poll::Busy
                         }
-                        Some("quit") => {
-                                info!("shutting down");
-                                return Poll::Shutdown;
-                        }
-                        Some(other) => warn!("unknown command '{other}' -- try help"),
-                        None => {}
+                        Outcome::Handled => Poll::Busy,
                 }
-                Poll::Busy
         }
 }
 

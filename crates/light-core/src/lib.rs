@@ -17,6 +17,7 @@
 
 pub mod blink;
 pub mod button;
+pub mod cli;
 pub mod console;
 pub mod events;
 pub mod hal;

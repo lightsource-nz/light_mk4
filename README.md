@@ -409,6 +409,19 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   hardware: no RP2040 was on the bench. The first flash wants the crossfire tree on a stock
   Pico over a debugprobe, and the thing to watch is the spinlock critical section under
   portable-atomic's fallback -- every `fetch_add` on the M0+ now takes lock 31.
+- 2026-08-31 — **`light_core::cli`: decision 6's last piece.** The bus made every input path
+  publish the same typed events; what remained was five hand-written copies of the same
+  word-matching. The shared `Cli` now owns echo, `help` (assembled from the table), the
+  `loglevel` and `quit` built-ins, usage-on-bad-arguments and the unknown-command reply; an
+  application hands it a `static` table of commands, each a name, a usage line and a parse
+  function into the app's own event type. All five consoles converted -- the diff is almost
+  entirely deletion -- and `loglevel` thereby arrived on the four boards that never had it.
+  `stats` stays a table entry, not a built-in: every application's stats line is its own.
+  One wrinkle worth recording: a table parse function cannot reach module state, so the
+  touch169's per-module console counters are reported where the Stats event is published,
+  not where it is parsed. The cli's tests include the decision-6 property directly: a console
+  line and a test injection produce the same record on the same bus, indistinguishable to a
+  subscriber.
 - 2026-08-31 — **board wiring belongs to the application.** The port crates had grown `boards`
   modules -- the touch169, the po13 rig with its Pico-OLED-1.3 expansion board, the two WeAct
   STM32 boards -- which baked one bench's hardware combinations into the framework. Gone: a

@@ -6,6 +6,7 @@
 
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
+use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, EventBus, LineReader, Mailbox, Module, Poll, Runtime, Subscription};
 mod board;
 use board::*;
@@ -115,46 +116,46 @@ impl Module for KeyMod {
         }
 }
 
+//   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
+// this table is everything this application adds
+fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; log pending {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), log::pending());
+        Parsed::Event(AppEvent::Stats)
+}
+
+fn parse_led(w: &mut Words) -> Parsed<AppEvent> {
+        match (w.next(), w.next()) {
+                (Some("blink"), _) => Parsed::Event(AppEvent::LedBlink(true)),
+                (Some("off"), _) => Parsed::Event(AppEvent::LedBlink(false)),
+                (Some("rate"), Some(ms)) => match ms.parse::<u32>() {
+                        Ok(ms) if ms >= 10 => Parsed::Event(AppEvent::LedRate(ms)),
+                        _ => Parsed::Usage,
+                },
+                _ => Parsed::Usage,
+        }
+}
+
+static COMMANDS: &[Command<AppEvent>] = &[
+        Command { name: "stats", usage: "stats", parse: parse_stats },
+        Command { name: "led", usage: "led blink|off | led rate MS (>= 10)", parse: parse_led },
+];
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
+
 struct ConsoleMod {
         reader: LineReader<96>,
 }
 
 impl ConsoleMod {
         fn dispatch(&mut self, line: &str) -> Poll {
-                info!("> {line}");
-                let mut words = line.split_whitespace();
-                let event = match (words.next(), words.next()) {
-                        (Some("help"), _) => {
-                                info!("commands: help | stats | led blink|off | led rate MS | quit");
-                                None
+                match CLI.dispatch(line) {
+                        Outcome::Quiet => Poll::Idle,
+                        Outcome::Shutdown => Poll::Shutdown,
+                        Outcome::Event(e) => {
+                                let _ = EVENTS.publish(e);
+                                Poll::Busy
                         }
-                        (Some("stats"), _) => {
-                                info!("uptime {} s; console: {} bytes dropped; bus: {} refused; log pending {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), log::pending());
-                                Some(AppEvent::Stats)
-                        }
-                        (Some("led"), Some("blink")) => Some(AppEvent::LedBlink(true)),
-                        (Some("led"), Some("off")) => Some(AppEvent::LedBlink(false)),
-                        (Some("led"), Some("rate")) => match words.next().and_then(|s| s.parse::<u32>().ok()) {
-                                Some(ms) if ms >= 10 => Some(AppEvent::LedRate(ms)),
-                                _ => {
-                                        warn!("usage: led rate MS (>= 10)");
-                                        None
-                                }
-                        },
-                        (Some("quit"), _) => {
-                                info!("shutting down");
-                                return Poll::Shutdown;
-                        }
-                        (Some(other), _) => {
-                                warn!("unknown command '{other}' -- try help");
-                                None
-                        }
-                        (None, _) => None,
-                };
-                if let Some(e) = event {
-                        let _ = EVENTS.publish(e);
+                        Outcome::Handled => Poll::Busy,
                 }
-                Poll::Busy
         }
 }
 

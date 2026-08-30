@@ -26,6 +26,7 @@ use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::{Gesture, Tracker};
 use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
+use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
@@ -583,103 +584,88 @@ struct ConsoleMod {
 
 impl ConsoleMod {
         fn dispatch(&mut self, line: &str) -> Poll {
-                info!("> {line}");
-                let mut words = line.split_whitespace();
-                let Some(cmd) = words.next() else { return Poll::Idle };
-                let mut args = words;
-                let event = match cmd {
-                        "help" => {
-                                info!("commands: help | stats | backlight N | ui focus next|prev | ui activate | ui press X Y | ui back | render pause|resume|repush | touch hold|free | loglevel error|warn|info|debug|trace | quit");
-                                None
+                match CLI.dispatch(line) {
+                        Outcome::Quiet => Poll::Idle,
+                        Outcome::Shutdown => Poll::Shutdown,
+                        Outcome::Event(c) => {
+                                //   the console's own counters live on this module, which a
+                                // table parse function cannot reach: reported here, alongside
+                                // whatever every other module says to the same event
+                                if let Command::Stats = c {
+                                        info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
+                                }
+                                if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
+                                        warn!("event bus full; dropped {e:?}");
+                                }
+                                Poll::Busy
                         }
-                        "stats" => {
-                                info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
-                                Some(Command::Stats)
-                        }
-                        "backlight" => match args.next().and_then(|s| s.parse::<u16>().ok()) {
-                                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Some(Command::Backlight(level)),
-                                _ => {
-                                        warn!("usage: backlight 0..{}", BACKLIGHT_LEVEL_MAX);
-                                        None
-                                }
-                        },
-                        "ui" => match (args.next(), args.next(), args.next()) {
-                                (Some("focus"), Some("next"), _) => Some(Command::UiFocus { next: true }),
-                                (Some("focus"), Some("prev"), _) => Some(Command::UiFocus { next: false }),
-                                (Some("activate"), _, _) => Some(Command::UiActivate),
-                                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
-                                        (Ok(x), Ok(y)) => Some(Command::UiPress { x, y }),
-                                        _ => {
-                                                warn!("usage: ui press X Y (panel coordinates)");
-                                                None
-                                        }
-                                },
-                                (Some("back"), _, _) => Some(Command::UiBack),
-                                _ => {
-                                        warn!("usage: ui focus next|prev | ui activate | ui press X Y | ui back");
-                                        None
-                                }
-                        },
-                        "touch" => match args.next() {
-                                Some("hold") => {
-                                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
-                                        info!("touch: reads held while the panel is being pushed");
-                                        None
-                                }
-                                Some("free") => {
-                                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
-                                        info!("touch: reads not held");
-                                        None
-                                }
-                                _ => {
-                                        warn!("usage: touch hold|free");
-                                        None
-                                }
-                        },
-                        "render" => match args.next() {
-                                Some("pause") => Some(Command::RenderMode(RenderMode::Paused)),
-                                Some("resume") => Some(Command::RenderMode(RenderMode::Normal)),
-                                Some("repush") => Some(Command::RenderMode(RenderMode::Repush)),
-                                _ => {
-                                        warn!("usage: render pause|resume|repush");
-                                        None
-                                }
-                        },
-                        "loglevel" => {
-                                let level = match args.next() {
-                                        Some("error") => Some(log::Level::Error),
-                                        Some("warn") => Some(log::Level::Warn),
-                                        Some("info") => Some(log::Level::Info),
-                                        Some("debug") => Some(log::Level::Debug),
-                                        Some("trace") => Some(log::Level::Trace),
-                                        _ => None,
-                                };
-                                match level {
-                                        Some(l) => {
-                                                log::set_max_level(l);
-                                                info!("log level {}", l.as_str());
-                                        }
-                                        None => warn!("usage: loglevel error|warn|info|debug|trace"),
-                                }
-                                None
-                        }
-                        "quit" => {
-                                info!("shutting down");
-                                return Poll::Shutdown;
-                        }
-                        other => {
-                                warn!("unknown command '{other}' -- try help");
-                                None
-                        }
-                };
-                if let Some(c) = event {
-                        if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
-                                warn!("event bus full; dropped {e:?}");
-                        }
+                        Outcome::Handled => Poll::Busy,
                 }
-                Poll::Busy
         }
 }
+
+//   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
+// this table is everything this application adds. The parse functions produce the same
+// `Command` events a touch produces -- a console line, a tap and a host test are the same
+// record on the same bus
+fn parse_stats(_w: &mut Words) -> Parsed<Command> {
+        Parsed::Event(Command::Stats)
+}
+
+fn parse_backlight(w: &mut Words) -> Parsed<Command> {
+        match w.next().and_then(|s| s.parse::<u16>().ok()) {
+                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Parsed::Event(Command::Backlight(level)),
+                _ => Parsed::Usage,
+        }
+}
+
+fn parse_ui(w: &mut Words) -> Parsed<Command> {
+        match (w.next(), w.next(), w.next()) {
+                (Some("focus"), Some("next"), _) => Parsed::Event(Command::UiFocus { next: true }),
+                (Some("focus"), Some("prev"), _) => Parsed::Event(Command::UiFocus { next: false }),
+                (Some("activate"), _, _) => Parsed::Event(Command::UiActivate),
+                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
+                        (Ok(x), Ok(y)) => Parsed::Event(Command::UiPress { x, y }),
+                        _ => Parsed::Usage,
+                },
+                (Some("back"), _, _) => Parsed::Event(Command::UiBack),
+                _ => Parsed::Usage,
+        }
+}
+
+fn parse_touch(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                Some("hold") => {
+                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
+                        info!("touch: reads held while the panel is being pushed");
+                        Parsed::Done
+                }
+                Some("free") => {
+                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
+                        info!("touch: reads not held");
+                        Parsed::Done
+                }
+                _ => Parsed::Usage,
+        }
+}
+
+fn parse_render(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                Some("pause") => Parsed::Event(Command::RenderMode(RenderMode::Paused)),
+                Some("resume") => Parsed::Event(Command::RenderMode(RenderMode::Normal)),
+                Some("repush") => Parsed::Event(Command::RenderMode(RenderMode::Repush)),
+                _ => Parsed::Usage,
+        }
+}
+
+static COMMANDS: &[CliCommand<Command>] = &[
+        CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+        CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
+        CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
+        CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
+        CliCommand { name: "render", usage: "render pause|resume|repush", parse: parse_render },
+];
+static CLI: Cli<Command> = Cli::new(COMMANDS);
 
 impl Module for ConsoleMod {
         fn name(&self) -> &'static str {
