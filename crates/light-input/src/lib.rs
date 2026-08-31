@@ -9,6 +9,7 @@
 pub mod axs15231b;
 pub mod cst328;
 pub mod cst816t;
+pub mod gt911;
 pub mod imu;
 pub mod qmi8658;
 pub mod touch;

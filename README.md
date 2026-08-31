@@ -424,6 +424,30 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the RGB scanout engine: the 4" board builds.** The RP2350-Touch-LCD-4's
+  ST7701S has no GDDRAM -- every pixel of every frame streams over a 16-bit DPI bus
+  forever -- and `light_rp2::rgb` makes that a hardware-only loop. Four hand-assembled PIO
+  programs (ported from Waveshare's reference): hsync free-runs HSYNC+PCLK at 2x PCLK,
+  vsync counts lines off its IRQ, and on the second PIO block -- IRQ flags do not cross
+  blocks, so it WATCHES the sync pins -- rgb_de raises DE per active line while the data
+  machine pulls one word per pixel onto 16 pins. Both blocks run with GPIOBASE=16, the
+  RP2350B feature that fits sync pins in the 20s and data up to GPIO 39 into one window.
+  The feeding deliberately rejects the reference's design: their chunked DMA is restarted
+  from an interrupt handler (late IRQ = sheared frame; their examples overclock to 240 MHz
+  for headroom). Here the data channel streams the WHOLE frame in one 230,400-transfer
+  pass and chains to a one-word reprogram channel that copies the framebuffer address from
+  a control word back into the data channel's read-address trigger -- a two-channel
+  hardware loop with no interrupts and no deadline for software to miss, at the stock
+  150 MHz. A buffer flip is one store into the control word. The framebuffer is the
+  decision: 480x480 RGB565 is 450 KB of the 520 KB SRAM, single-buffered for bring-up
+  (drawing races the scan; tearing accepted until measured), with `set_framebuffer` as the
+  flip hook for whatever comes later. Above it the chunk model degenerates on purpose:
+  `light-display::scanout` answers zero chunks for every region and the frame layer never
+  notices the panel is self-refreshing. Around the engine: `st7701s` (the bit-banged 9-bit
+  init, verbatim, ending in the SLPOUT/DISPON this panel genuinely wants), the GT911
+  driver (16-bit registers; `I2cBus` grew write_register16 with a payload; explicit
+  release reports, unlike the AXS), and the touch4 app -- touch, IMU, RTC and battery all
+  on one shared i2c1. Builds and host-tests green; the glass will say the rest.
 - 2026-08-31 — **the 3.49's backlight is a threshold drive, measured.** "Dim just blacks
   the screen" opened a hunt that first ACQUITTED the PWM: the slice registers read back
   correct at every level (top 1000, cc tracking, counter running, pin muxed, pad toggling)

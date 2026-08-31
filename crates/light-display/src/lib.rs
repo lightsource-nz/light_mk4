@@ -8,7 +8,9 @@
 pub mod axs15231b;
 pub mod display;
 pub mod frames;
+pub mod scanout;
 pub mod sh1107;
+pub mod st7701s;
 pub mod st7735;
 pub mod st7789;
 

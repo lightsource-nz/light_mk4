@@ -44,6 +44,8 @@ pub mod i2c;
 pub mod i2s;
 pub mod pwm;
 pub mod qspi;
+#[cfg(feature = "rp2350")]
+pub mod rgb;
 pub mod spi;
 pub mod spi_bus;
 #[cfg(feature = "usb-host")]

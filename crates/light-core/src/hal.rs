@@ -106,6 +106,14 @@ pub trait I2cBus {
                 Err(I2cError::Bus)
         }
 
+        /// Write `src` after the 16-bit `reg` (big-endian) as one transaction with a STOP --
+        /// the GT911's status acknowledge is the first user. Default-implemented like the
+        /// other 16-bit operations.
+        fn write_register16(&mut self, addr: u8, reg: u16, src: &[u8]) -> Result<(), I2cError> {
+                let _ = (addr, reg, src);
+                Err(I2cError::Bus)
+        }
+
         /// A raw write of `src` as one transaction with a STOP -- for parts whose protocol is
         /// a command blob rather than a register address (the AXS15231B's touch half sends an
         /// 11-byte command, then reads the answer). Default-implemented like the 16-bit
@@ -141,6 +149,10 @@ impl<B: I2cBus> I2cBus for &core::cell::RefCell<B> {
 
         fn write_command16(&mut self, addr: u8, reg: u16) -> Result<(), I2cError> {
                 self.borrow_mut().write_command16(addr, reg)
+        }
+
+        fn write_register16(&mut self, addr: u8, reg: u16, src: &[u8]) -> Result<(), I2cError> {
+                self.borrow_mut().write_register16(addr, reg, src)
         }
 
         fn write_raw(&mut self, addr: u8, src: &[u8]) -> Result<(), I2cError> {

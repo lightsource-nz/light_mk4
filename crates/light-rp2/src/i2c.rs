@@ -243,6 +243,17 @@ macro_rules! i2c_instance {
                                 self.write(addr, &[(reg >> 8) as u8, reg as u8], false)
                         }
 
+                        fn write_register16(&mut self, addr: u8, reg: u16, src: &[u8]) -> Result<(), I2cError> {
+                                //   one transaction: the big-endian register, the payload, a STOP.
+                                // Bounded scratch: no part yet writes more than a few bytes
+                                let mut frame = [0u8; 10];
+                                assert!(src.len() <= frame.len() - 2);
+                                frame[0] = (reg >> 8) as u8;
+                                frame[1] = reg as u8;
+                                frame[2..2 + src.len()].copy_from_slice(src);
+                                self.write(addr, &frame[..2 + src.len()], false)
+                        }
+
                         fn write_raw(&mut self, addr: u8, src: &[u8]) -> Result<(), I2cError> {
                                 self.write(addr, src, false)
                         }

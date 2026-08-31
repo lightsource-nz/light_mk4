@@ -14,6 +14,8 @@ pub const FUNC_I2C: u8 = 3;
 pub const FUNC_SIO: u8 = 5;
 pub const FUNC_PIO0: u8 = 6;
 pub const FUNC_PIO1: u8 = 7;
+/// RP2350 only: the third PIO block.
+pub const FUNC_PIO2: u8 = 8;
 
 /// Route `pin` to `func`, with the pad configured the way pico-sdk's `gpio_set_function` does:
 /// input enabled, output not disabled, and -- RP2350 only -- isolation cleared, since its pads
