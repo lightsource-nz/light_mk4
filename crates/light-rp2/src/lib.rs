@@ -38,8 +38,10 @@ pub use rp235x_pac as pac;
 #[cfg(target_os = "none")]
 mod critical;
 
+pub mod adc;
 pub mod gpio;
 pub mod i2c;
+pub mod i2s;
 pub mod pwm;
 pub mod qspi;
 pub mod spi;

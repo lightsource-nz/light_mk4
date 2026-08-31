@@ -1,0 +1,9 @@
+[package]
+name = "light-rtc"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Real-time clock drivers for the light framework, over the I2C bus trait"
+
+[dependencies]
+light-core = { path = "../light-core" }

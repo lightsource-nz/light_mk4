@@ -276,6 +276,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-audio"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
+
+[[package]]
 name = "light-core"
 version = "0.1.0"
 dependencies = [
@@ -340,6 +347,13 @@ dependencies = [
  "portable-atomic",
  "rp2040-pac",
  "rp235x-pac",
+]
+
+[[package]]
+name = "light-rtc"
+version = "0.1.0"
+dependencies = [
+ "light-core",
 ]
 
 [[package]]
@@ -447,12 +461,14 @@ dependencies = [
 name = "light_app_touch349"
 version = "0.1.0"
 dependencies = [
+ "light-audio",
  "light-core",
  "light-display",
  "light-draw",
  "light-font",
  "light-input",
  "light-rp2",
+ "light-rtc",
  "light-ui",
 ]
 

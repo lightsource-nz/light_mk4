@@ -19,14 +19,18 @@ use light_display::axs15231b::Axs15231b;
 use light_input::touch::{Gesture, Tracker};
 use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
+use light_audio::Es8311;
 use light_font::Font;
+use light_rtc::{Datetime, Pcf85063a};
 mod board;
 use board::*;
-use light_rp2::gpio::Input;
+use light_rp2::adc::Adc;
+use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
+use light_rp2::i2s::PioI2sOut;
 use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
 
@@ -72,6 +76,11 @@ enum Command {
         UiPress { x: u16, y: u16 },
         UiBack,
         RenderMode(RenderMode),
+        RtcShow,
+        RtcSet(Datetime),
+        Tone { hz: u16, ms: u16 },
+        ToneOff,
+        Volume(u8),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -88,7 +97,7 @@ enum UiAction {
         DragConsumed,
 }
 
-static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
+static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 static PUSHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static TOUCH_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
@@ -462,8 +471,165 @@ impl Module for ImuMod {
         }
 }
 
+/// The PCF85063A on the shared i2c1, beside the IMU. Battery-backed: it keeps time across
+/// power-off, and says so -- the oscillator-stop flag marks a time nobody set.
+struct RtcMod {
+        rtc: Pcf85063a<&'static RefCell<I2c1>>,
+        events: Subscription,
+}
+
+impl RtcMod {
+        fn report(&mut self) {
+                match self.rtc.now() {
+                        Ok((t, kept)) => info!(
+                                "rtc: {:04}-{:02}-{:02} {:02}:{:02}:{:02} (weekday {}){}",
+                                t.year,
+                                t.month,
+                                t.day,
+                                t.hour,
+                                t.minute,
+                                t.second,
+                                t.weekday,
+                                if kept { "" } else { " UNSET since power loss" }
+                        ),
+                        Err(e) => warn!("rtc read failed: {e:?}"),
+                }
+        }
+}
+
+impl Module for RtcMod {
+        fn name(&self) -> &'static str {
+                "rtc"
+        }
+        fn load(&mut self) -> Result<(), ()> {
+                match self.rtc.init() {
+                        Ok(()) => self.report(),
+                        Err(e) => warn!("pcf85063a did not answer: {e:?}"),
+                }
+                Ok(())
+        }
+        fn poll(&mut self) -> Poll {
+                let mut busy = false;
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        match ev {
+                                AppEvent::Command(Command::Stats) | AppEvent::Command(Command::RtcShow) => {
+                                        busy = true;
+                                        self.report();
+                                }
+                                AppEvent::Command(Command::RtcSet(t)) => {
+                                        busy = true;
+                                        match self.rtc.set(&t) {
+                                                Ok(()) => self.report(),
+                                                Err(e) => warn!("rtc set failed: {e:?}"),
+                                        }
+                                }
+                                _ => {}
+                        }
+                }
+                if busy { Poll::Busy } else { Poll::Idle }
+        }
+}
+
+/// One period of sine at 20000 amplitude, 32 steps -- plenty for a bring-up beeper.
+static SINE: [i16; 32] = [
+        0, 3902, 7654, 11111, 14142, 16629, 18478, 19616, 20000, 19616, 18478, 16629, 14142, 11111, 7654, 3902, 0, -3902, -7654, -11111, -14142, -16629, -18478, -19616, -20000, -19616, -18478, -16629,
+        -14142, -11111, -7654, -3902,
+];
+
+/// The ES8311 codec on the shared i2c1 plus the PIO I2S transport: a tone generator for
+/// bring-up, fed through the transport's ping-pong DMA stream (silence when nothing
+/// plays), so a long frame draw cannot starve the codec into audible chop.
+struct AudioMod {
+        codec: Es8311<&'static RefCell<I2c1>>,
+        i2s: PioI2sOut,
+        pa: Output,
+        events: Subscription,
+        /// Phase accumulator into [`SINE`]; the top 5 bits index the table.
+        phase: u32,
+        phase_inc: u32,
+        /// Sample frames left to play; 0 is silence.
+        remaining: u32,
+}
+
+impl Module for AudioMod {
+        fn name(&self) -> &'static str {
+                "audio"
+        }
+        fn load(&mut self) -> Result<(), ()> {
+                match self.codec.probe() {
+                        Ok(Some(id)) => info!("es8311 chip id confirmed: 0x{id:04x}"),
+                        Ok(None) => warn!("es8311 answered with an unexpected chip id"),
+                        Err(e) => warn!("es8311 did not answer the chip id read: {e:?}"),
+                }
+                let mut clock = SysClock;
+                if let Err(e) = self.codec.init(AUDIO_SAMPLE_HZ, &mut clock) {
+                        warn!("es8311 init failed: {e:?}");
+                        return Ok(());
+                }
+                let _ = self.codec.set_volume(73);
+                static STREAM_A: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
+                static STREAM_B: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
+                self.i2s.start_stream([STREAM_A.take(), STREAM_B.take()]);
+                self.pa.set(true);
+                info!("audio up: es8311 master at {} Hz, PIO1 mclk+dout; the UART console pins now carry audio", AUDIO_SAMPLE_HZ);
+                Ok(())
+        }
+        fn poll(&mut self) -> Poll {
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        match ev {
+                                AppEvent::Command(Command::Tone { hz, ms }) => {
+                                        self.phase_inc = ((u64::from(hz) << 32) / u64::from(AUDIO_SAMPLE_HZ)) as u32;
+                                        self.remaining = u32::from(ms) * AUDIO_SAMPLE_HZ / 1000;
+                                        info!("tone {hz} Hz for {ms} ms");
+                                }
+                                AppEvent::Command(Command::ToneOff) => {
+                                        self.remaining = 0;
+                                        info!("tone off");
+                                }
+                                AppEvent::Command(Command::Volume(v)) => match self.codec.set_volume(v) {
+                                        Ok(()) => info!("volume {v}"),
+                                        Err(e) => warn!("volume set failed: {e:?}"),
+                                },
+                                AppEvent::Command(Command::Stats) => {
+                                        info!("audio: {} stream underruns", self.i2s.underruns);
+                                }
+                                _ => {}
+                        }
+                }
+                let playing = self.remaining > 0;
+                //   pre-borrowed so the closure captures fields disjoint from self.i2s
+                let phase = &mut self.phase;
+                let inc = self.phase_inc;
+                let remaining = &mut self.remaining;
+                self.i2s.refill(|buf| {
+                        let mut i = 0;
+                        while i + 1 < buf.len() {
+                                let s = if *remaining > 0 { SINE[(*phase >> 27) as usize] } else { 0 };
+                                let w = (s as u16 as u32) << 16;
+                                buf[i] = w;
+                                buf[i + 1] = w;
+                                if *remaining > 0 {
+                                        *phase = phase.wrapping_add(inc);
+                                        *remaining -= 1;
+                                }
+                                i += 2;
+                        }
+                });
+                if playing { Poll::Busy } else { Poll::Idle }
+        }
+        fn unload(&mut self) {
+                self.pa.set(false);
+        }
+}
+
 struct BoardMod {
         backlight: light_rp2::pwm::PwmOutput,
+        /// The power latch: high since board::take(); driven low on unload = power off.
+        sys_en: Output,
+        /// The side button, low when pressed; held [`POWER_OFF_HOLD_MS`] = shutdown.
+        button: Input,
+        battery: Adc,
+        pressed_since_ms: Option<u32>,
         events: Subscription,
 }
 
@@ -485,16 +651,41 @@ impl Module for BoardMod {
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Backlight(level)) = ev {
-                                busy = true;
-                                self.apply(level);
-                                info!("backlight {level}");
+                        match ev {
+                                AppEvent::Command(Command::Backlight(level)) => {
+                                        busy = true;
+                                        self.apply(level);
+                                        info!("backlight {level}");
+                                }
+                                AppEvent::Command(Command::Stats) => {
+                                        //   12-bit read across 3.3 V behind the divider
+                                        let raw = u32::from(self.battery.read());
+                                        let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
+                                        info!("battery: {mv} mV (raw {raw})");
+                                }
+                                _ => {}
                         }
+                }
+                //   the side button: the reference's 1.5 s hold is the power-off gesture. The
+                // shutdown flows through the runtime like the console's `quit`, so every
+                // module unloads before this module's unload releases the power latch
+                let now_ms = (light_rp2::now_us() / 1000) as u32;
+                if self.button.is_low() {
+                        let since = *self.pressed_since_ms.get_or_insert(now_ms);
+                        if now_ms.wrapping_sub(since) >= POWER_OFF_HOLD_MS {
+                                info!("power button held; shutting down");
+                                return Poll::Shutdown;
+                        }
+                } else {
+                        self.pressed_since_ms = None;
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
                 self.apply(0);
+                //   on battery this is the power-off; on USB the rails stay up and the
+                // runtime parks in the idle loop
+                self.sys_en.set(false);
         }
 }
 
@@ -571,8 +762,87 @@ fn parse_render(w: &mut Words) -> Parsed<Command> {
         }
 }
 
+fn split3(s: &str, sep: char) -> Option<(u16, u8, u8)> {
+        let mut it = s.split(sep);
+        let a = it.next()?.parse().ok()?;
+        let b = it.next()?.parse().ok()?;
+        let c = it.next()?.parse().ok()?;
+        if it.next().is_some() {
+                return None;
+        }
+        Some((a, b, c))
+}
+
+/// Zeller's congruence, mapped to 0 = Sunday, the register's convention.
+fn weekday(y: u16, m: u8, d: u8) -> u8 {
+        let (mut y, mut m) = (i32::from(y), i32::from(m));
+        if m < 3 {
+                m += 12;
+                y -= 1;
+        }
+        let (k, j) = (y % 100, y / 100);
+        let h = (i32::from(d) + 13 * (m + 1) / 5 + k + k / 4 + j / 4 + 5 * j) % 7;
+        ((h + 6) % 7) as u8
+}
+
+fn parse_rtc(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                None => Parsed::Event(Command::RtcShow),
+                Some("set") => {
+                        let (Some(date), Some(time)) = (w.next(), w.next()) else { return Parsed::Usage };
+                        let Some((year, month, day)) = split3(date, '-') else { return Parsed::Usage };
+                        let Some((hour, minute, second)) = split3(time, ':') else { return Parsed::Usage };
+                        let valid = (1..=12).contains(&month) && (1..=31).contains(&day) && hour < 24 && minute < 60 && second < 60 && (1970..=2069).contains(&year);
+                        if !valid {
+                                return Parsed::Usage;
+                        }
+                        Parsed::Event(Command::RtcSet(Datetime {
+                                year,
+                                month,
+                                day,
+                                weekday: weekday(year, month, day),
+                                hour: hour as u8,
+                                minute: minute as u8,
+                                second: second as u8,
+                        }))
+                }
+                _ => Parsed::Usage,
+        }
+}
+
+fn parse_tone(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                Some("off") => Parsed::Event(Command::ToneOff),
+                Some(hz) => {
+                        let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
+                        if !(20..=10_000).contains(&hz) {
+                                return Parsed::Usage;
+                        }
+                        let ms = match w.next() {
+                                None => 500,
+                                Some(ms) => match ms.parse::<u16>() {
+                                        Ok(ms) if ms > 0 => ms,
+                                        _ => return Parsed::Usage,
+                                },
+                        };
+                        Parsed::Event(Command::Tone { hz, ms })
+                }
+                None => Parsed::Usage,
+        }
+}
+
+fn parse_volume(w: &mut Words) -> Parsed<Command> {
+        match w.next().and_then(|s| s.parse::<u8>().ok()) {
+                Some(v) if v <= 100 => Parsed::Event(Command::Volume(v)),
+                _ => Parsed::Usage,
+        }
+}
+
 static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+        CliCommand { name: "rtc", usage: "rtc | rtc set YYYY-MM-DD HH:MM:SS", parse: parse_rtc },
+        CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
+        CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
@@ -622,8 +892,25 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Axs15231bTouch::new(p.touch_bus, p.touch_int, TOUCH_MAP, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(imu_i2c));
 
-        let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut board_mod = BoardMod {
+                backlight: p.backlight,
+                sys_en: p.sys_en,
+                button: p.power_button,
+                battery: p.battery,
+                pressed_since_ms: None,
+                events: EVENTS.subscribe().expect("subscriber slot"),
+        };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(imu_i2c), events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut audio_mod = AudioMod {
+                codec: Es8311::new(imu_i2c),
+                i2s: p.i2s,
+                pa: p.audio_pa,
+                events: EVENTS.subscribe().expect("subscriber slot"),
+                phase: 0,
+                phase_inc: 0,
+                remaining: 0,
+        };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
@@ -648,11 +935,13 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
-        let mut rt: Runtime<5> = Runtime::new();
+        let mut rt: Runtime<7> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
+        rt.add(&mut rtc_mod).expect("capacity");
+        rt.add(&mut audio_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");

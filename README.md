@@ -424,6 +424,28 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 3.49 fills out: battery, power latch, RTC and audio.** Four of the
+  board's six remaining peripherals, each hardware-verified as it landed. `light-rp2` grew
+  `adc` (the framework's first ADC: one-shot blocking reads, ~2 us at the 48 MHz ADC clock;
+  the RP2350B's channels start at GPIO 40) and the battery divider reads a plausible 4.2 V;
+  the SYS_EN power latch is driven high as board::take()'s FIRST act -- on battery the
+  board is only powered while the user holds the button until that line runs -- and the
+  side button's 1.5 s hold flows through the runtime like the console's `quit`, every
+  module unloading before the latch releases. The PCF85063A (new `light-rtc` crate, shared
+  i2c1) keeps the reference's 1970 year base and surfaces the oscillator-stop flag as
+  "trust me or not"; it read UNSET on first contact, took the bench clock, and has kept
+  time through every reflash since -- the backup supply is real. The ES8311 (new
+  `light-audio` crate) is configured as the I2S MASTER -- this side only feeds it a
+  PIO-generated 256-Fs MCLK and answers its BCLK/LRCLK as a slave writer
+  (`light-rp2::i2s`, both programs hand-assembled with the wait pins baked in from board
+  wiring). The first cut fed the four-word TX FIFO from poll() and was audibly CHOPPY: 83
+  us of FIFO headroom against 15 ms frame draws. The stream is ping-pong DMA now -- two 4
+  KB buffers chained through two channels, ~21 ms each, refilled from poll, underruns
+  counted not guessed at -- and a 4 s tone over six full-frame redraws played clean with
+  zero underruns beyond the expected one at boot (display init's 600 ms reset drains the
+  first ring; it restarts itself). One board fact with teeth: PA_CTRL and DOUT are GPIO 0
+  and 1, so audio RETIRES THE UART CONSOLE on this board -- CDC only from here. Still
+  pending: PSRAM on CS1, the TF slot, the microphone half of the codec.
 - 2026-08-31 — **the 3.49's freeze hunt: the panel ignores its own windowing.** The bring-up
   session below ended with every counter clean; real use then showed "long gaps in touch
   response after every touch", and the hunt that followed is a lesson in symptom attribution:
