@@ -5,6 +5,7 @@
 
 #![no_std]
 
+pub mod axs15231b;
 pub mod display;
 pub mod frames;
 pub mod sh1107;

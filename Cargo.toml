@@ -15,6 +15,7 @@ members = [
         "tools/crush",
         "module/light_mk4_touch169/rust",
         "module/light_mk4_touch28/rust",
+        "module/light_mk4_touch349/rust",
         "module/light_mk4_pico2/rust",
         "module/light_mk4_crossfire/rust",
         "module/light_mk4_h7/rust",

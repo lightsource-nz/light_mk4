@@ -105,6 +105,21 @@ pub trait I2cBus {
                 let _ = (addr, reg);
                 Err(I2cError::Bus)
         }
+
+        /// A raw write of `src` as one transaction with a STOP -- for parts whose protocol is
+        /// a command blob rather than a register address (the AXS15231B's touch half sends an
+        /// 11-byte command, then reads the answer). Default-implemented like the 16-bit
+        /// operations, for the same reason.
+        fn write_raw(&mut self, addr: u8, src: &[u8]) -> Result<(), I2cError> {
+                let _ = (addr, src);
+                Err(I2cError::Bus)
+        }
+
+        /// A raw read of `dst.len()` bytes with a STOP, no register address.
+        fn read_raw(&mut self, addr: u8, dst: &mut [u8]) -> Result<(), I2cError> {
+                let _ = (addr, dst);
+                Err(I2cError::Bus)
+        }
 }
 
 /// Two drivers on one bus -- the touch169's touch controller and IMU share I2C1 -- each take a
@@ -127,4 +142,44 @@ impl<B: I2cBus> I2cBus for &core::cell::RefCell<B> {
         fn write_command16(&mut self, addr: u8, reg: u16) -> Result<(), I2cError> {
                 self.borrow_mut().write_command16(addr, reg)
         }
+
+        fn write_raw(&mut self, addr: u8, src: &[u8]) -> Result<(), I2cError> {
+                self.borrow_mut().write_raw(addr, src)
+        }
+
+        fn read_raw(&mut self, addr: u8, dst: &mut [u8]) -> Result<(), I2cError> {
+                self.borrow_mut().read_raw(addr, dst)
+        }
+}
+
+/// A QSPI display bus: four data lines, a clock, chip select -- and no D/C wire, so a
+/// register write is ONE chip-select frame carrying a serial command header and its data,
+/// which is why this is not [`SpiDisplayBus`] with more pins. The AXS15231B is the first
+/// part: commands go out expanded onto D0 alone inside the 4-bit framing, pixel bursts open
+/// with a header and then stream 4 bits per clock.
+pub trait QspiDisplayBus {
+        /// One register write, a single CS frame: command header, then `data`.
+        fn write_register(&mut self, cmd: u8, data: &[u8]);
+
+        /// Open a pixel burst: CS asserted, the pixel-write header sent for `cmd` (the
+        /// panel's RAMWR-family command). Data follows through
+        /// [`QspiDisplayBus::start_data`]; the frame stays open until
+        /// [`QspiDisplayBus::is_complete`] answers true.
+        fn begin_pixels(&mut self, cmd: u8);
+
+        /// Stream data into the open pixel burst and return immediately.
+        ///
+        /// # Safety
+        ///
+        /// `bytes` is read asynchronously (by DMA) after this returns; the caller keeps it
+        /// alive and unmodified until [`QspiDisplayBus::is_complete`] answers true -- the same
+        /// contract as [`SpiDisplayBus::start_data`], upheld the same way by the display core.
+        unsafe fn start_data(&mut self, bytes: &[u8]);
+
+        /// Whether the transfer has fully left the wire. Closes the pixel frame (deasserts
+        /// CS) the first time it answers true. True when nothing is in flight.
+        fn is_complete(&mut self) -> bool;
+
+        /// Pulse the panel's reset line. Blocking; init only.
+        fn reset_pulse(&mut self, clock: &mut dyn Clock);
 }

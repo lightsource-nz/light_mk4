@@ -1,4 +1,8 @@
 //! GPIO through the pac: function select, pads, SIO input/output.
+//!
+//! Both banks: pins 0..=29 on the RP2040 and the RP2350A, and the RP2350B's full 48, whose
+//! upper sixteen live behind the SIO's GPIO_HI_* registers -- same bits, different address,
+//! selected here so no caller thinks about which half a pin is in.
 
 use light_core::{InputPin, OutputPin};
 use crate::pac;
@@ -8,6 +12,8 @@ use crate::pac;
 pub const FUNC_SPI: u8 = 1;
 pub const FUNC_I2C: u8 = 3;
 pub const FUNC_SIO: u8 = 5;
+pub const FUNC_PIO0: u8 = 6;
+pub const FUNC_PIO1: u8 = 7;
 
 /// Route `pin` to `func`, with the pad configured the way pico-sdk's `gpio_set_function` does:
 /// input enabled, output not disabled, and -- RP2350 only -- isolation cleared, since its pads
@@ -40,13 +46,28 @@ impl Output {
                 set_function(pin, FUNC_SIO);
                 out.set(initial);
                 let sio = unsafe { &*pac::SIO::ptr() };
-                sio.gpio_oe_set().write(|w| unsafe { w.bits(1 << pin) });
+                let mask = 1u32 << (pin & 31);
+                #[cfg(feature = "rp2350")]
+                if pin >= 32 {
+                        sio.gpio_hi_oe_set().write(|w| unsafe { w.bits(mask) });
+                        return out;
+                }
+                sio.gpio_oe_set().write(|w| unsafe { w.bits(mask) });
                 out
         }
 
         pub fn set(&mut self, high: bool) {
                 let sio = unsafe { &*pac::SIO::ptr() };
-                let mask = 1u32 << self.pin;
+                let mask = 1u32 << (self.pin & 31);
+                #[cfg(feature = "rp2350")]
+                if self.pin >= 32 {
+                        if high {
+                                sio.gpio_hi_out_set().write(|w| unsafe { w.bits(mask) });
+                        } else {
+                                sio.gpio_hi_out_clr().write(|w| unsafe { w.bits(mask) });
+                        }
+                        return;
+                }
                 if high {
                         sio.gpio_out_set().write(|w| unsafe { w.bits(mask) });
                 } else {
@@ -77,7 +98,13 @@ impl Input {
                 set_function(pin, FUNC_SIO);
                 set_pull_up(pin);
                 let sio = unsafe { &*pac::SIO::ptr() };
-                sio.gpio_oe_clr().write(|w| unsafe { w.bits(1 << pin) });
+                let mask = 1u32 << (pin & 31);
+                #[cfg(feature = "rp2350")]
+                if pin >= 32 {
+                        sio.gpio_hi_oe_clr().write(|w| unsafe { w.bits(mask) });
+                        return Self { pin };
+                }
+                sio.gpio_oe_clr().write(|w| unsafe { w.bits(mask) });
                 Self { pin }
         }
 }
@@ -85,6 +112,11 @@ impl Input {
 impl InputPin for Input {
         fn is_low(&self) -> bool {
                 let sio = unsafe { &*pac::SIO::ptr() };
-                sio.gpio_in().read().bits() & (1 << self.pin) == 0
+                let mask = 1u32 << (self.pin & 31);
+                #[cfg(feature = "rp2350")]
+                if self.pin >= 32 {
+                        return sio.gpio_hi_in().read().bits() & mask == 0;
+                }
+                sio.gpio_in().read().bits() & mask == 0
         }
 }

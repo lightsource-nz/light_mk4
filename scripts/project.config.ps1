@@ -10,6 +10,7 @@
                 'conf-light_mk4-host-debug'     = 'build-host'
                 'conf-light_mk4-touch169-debug' = 'build-touch169'
                 'conf-light_mk4-touch28-debug'  = 'build-touch28'
+                'conf-light_mk4-touch349-debug' = 'build-touch349'
                 'conf-light_mk4-pico2-debug'    = 'build-pico2'
                 # the release profile (opt-level s, fat LTO), as separate trees so the debug
                 # ones stay warm: build/flash with -Preset conf-light_mk4-<board>-release
@@ -37,6 +38,7 @@
                 # uf2 because the 1.69 exposes no SWD pads
                 'light_mk4_touch169' = @{ Preset = 'conf-light_mk4-touch169-debug'; Flash = 'uf2' }
                 'light_mk4_touch28'  = @{ Preset = 'conf-light_mk4-touch28-debug'; Flash = 'uf2' }
+                'light_mk4_touch349' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
                 # the po13 rig flashes over SWD; Flash='swd' records that light-flash.ps1's
                 # BOOTSEL path is not how an image reaches it
                 'light_mk4_pico2'    = @{ Preset = 'conf-light_mk4-pico2-debug'; Flash = 'swd' }
@@ -53,6 +55,12 @@
                 'conf-light_mk4-touch28-debug'  = @{
                         LIGHT_PLATFORM    = 'TARGET'
                         LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_2.8'
+                        PICO_PLATFORM     = 'rp2350-arm-s'
+                        Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
+                }
+                'conf-light_mk4-touch349-debug' = @{
+                        LIGHT_PLATFORM    = 'TARGET'
+                        LIGHT_BOARD       = 'waveshare_rp2350_touch_lcd_3.49'
                         PICO_PLATFORM     = 'rp2350-arm-s'
                         Rust_CARGO_TARGET = 'thumbv8m.main-none-eabi'
                 }

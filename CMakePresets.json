@@ -52,6 +52,20 @@
             }
         },
         {
+            "name": "conf-light_mk4-touch349-debug",
+            "description": "The Waveshare RP2350-Touch-LCD-3.49: the widget demo on the 172x640 QSPI bar display (AXS15231B, PIO-driven), the first RP2350B board here. Flashed over BOOTSEL.",
+            "inherits": [
+                "conf-light-waveshare-touch349",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-touch349",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
             "name": "conf-light_mk4-touch169-release",
             "description": "The touch169 firmware with cargo's release profile (opt-level s, fat LTO): Corrosion takes the profile from CMAKE_BUILD_TYPE. Separate tree, so the debug one stays warm.",
             "inherits": [
@@ -187,6 +201,11 @@
         }
     ],
     "buildPresets": [
+        {
+            "name": "build-light_mk4_touch349-debug",
+            "configurePreset": "conf-light_mk4-touch349-debug",
+            "targets": ["light_mk4_touch349"]
+        },
         {
             "name": "build-light_mk4_touch28-debug",
             "configurePreset": "conf-light_mk4-touch28-debug",

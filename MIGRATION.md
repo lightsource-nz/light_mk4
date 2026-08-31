@@ -61,6 +61,13 @@ a guess, and mk4 does not inherit guesses.
 | light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | `light-input::cst328` + `light_mk4_touch28` (+ its `board.rs`) | ported | hw-verified 2026-08-31: taps hit, drags scroll, swipe-back works, IMU axis map measured -- and zero CST328 read failures under the load that wedges the 1.69's CST816T |
 | light_ui_demo_ws15rgb, light_ui_hw_ws15rgb | — | pending | with the SSD1351 |
 
+## new boards (no mk3 counterpart)
+
+| board | mk4 | state | note |
+|---|---|---|---|
+| Waveshare RP2350-Touch-LCD-3.49 (AXS15231B QSPI) | `light-rp2::qspi` + `light-display::axs15231b` + `light-input::axs15231b` + `light_mk4_touch349` | built, bring-up pending | authored from Waveshare's reference demo; first QSPI panel, first RP2350B board, first upper-bank GPIO use |
+| Waveshare RP2350-Touch-LCD-4 (ST7701S RGB, GT911) | — | scoped | needs a continuous RGB scanout engine (4 PIO SMs + DMA, no GDDRAM): a new display integration, its own leg. GT911's 16-bit registers already fit `I2cBus` |
+
 ## light_usb
 
 | mk3 module | mk4 | state | note |

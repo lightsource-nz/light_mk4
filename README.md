@@ -424,6 +424,24 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **two more Waveshare boards surveyed; the 3.49 built, the 4 scoped.** The
+  RP2350-Touch-LCD-3.49 (AXS15231B, 172x640) and -4 (ST7701S RGB, 480x480, GT911) are both
+  RP2350B parts, which grew `light-rp2` its upper-bank GPIO support (SIO GPIO_HI_*), a
+  second I2C instance (one macro stamps I2c0 and I2c1), and PIO function selects. The 3.49
+  is the first QSPI panel: `light_core::hal::QspiDisplayBus` exists because an AXS register
+  write is ONE chip-select frame (no D/C wire), `light_rp2::qspi::PioQspiDisplayBus` drives
+  it from a hand-assembled two-instruction PIO program (commands bit-expanded onto D0 inside
+  the 4-bit framing, pixels DMA-fed raw -- Waveshare's reference structure, kept), the panel
+  driver carries the vendor init table verbatim (deliberately no SLPOUT/DISPON -- the
+  reference sends neither), and the touch half is a raw command-blob protocol behind
+  `I2cBus`'s new write_raw/read_raw. `light_mk4_touch349` builds with double 215 KB frame
+  buffers; the backlight is INVERTED (the reference writes 100-value); wiring provenance is
+  the reference demo, so everything is unverified until the glass. Two build-system traps
+  re-met and fixed: the new board names had to join mk3's RP2350 allow-list (the memory's
+  "omission silently builds rp2040 code", exactly), and the board headers came from
+  Waveshare's own demo into the pico-sdk fork. The 4" is scoped, not built: a continuous
+  RGB scanout engine (four PIO SMs + DMA feeding scanlines forever, no GDDRAM) is a new
+  display integration, not a driver, and comes as its own leg.
 - 2026-08-31 — **the touch28 board: the CST328's first hardware.** mk3 authored this board's
   support without hardware (schematic + two reference drivers); the board arrived and the
   definition came across: `I2cBus` grew 16-bit register operations (default-implemented, so

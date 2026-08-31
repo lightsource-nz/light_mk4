@@ -6,6 +6,7 @@
 
 #![no_std]
 
+pub mod axs15231b;
 pub mod cst328;
 pub mod cst816t;
 pub mod imu;

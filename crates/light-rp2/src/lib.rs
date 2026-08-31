@@ -41,6 +41,7 @@ mod critical;
 pub mod gpio;
 pub mod i2c;
 pub mod pwm;
+pub mod qspi;
 pub mod spi;
 #[cfg(feature = "usb-host")]
 pub mod tinyusb_midi;
