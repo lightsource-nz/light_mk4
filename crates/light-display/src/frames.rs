@@ -307,6 +307,16 @@ impl FrameLayer {
         pub fn pending(&self) -> &[Region] {
                 &self.pending
         }
+
+        /// Where a logical region lands on the PANEL, through the same transform the canvas
+        /// draws through -- for a caller scheduling work against physical scan position (a
+        /// scanned panel's beam). `None` when the region misses the canvas entirely.
+        pub fn to_physical(&self, r: LogicalRegion) -> Option<Region> {
+                let (w, h) = self.logical_size();
+                let r = r.normalised().clipped(w, h)?;
+                let transform = Transform::for_canvas(self.rotation, self.flip, self.width, self.height);
+                Some(transform.rect(&Region::new(r.x0 as u16, r.y0 as u16, r.x1 as u16, r.y1 as u16)))
+        }
 }
 
 #[cfg(test)]

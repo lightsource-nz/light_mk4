@@ -86,6 +86,31 @@ fn side2(instr: u16, side: u16) -> u16 {
 /// flip race-free against the DMA read.
 static FRAME_ADDR: AtomicU32 = AtomicU32::new(0);
 
+//   what `beam_row` reads: the data channel and the frame geometry, set once at
+// construction like FRAME_ADDR. Zero width means "no engine yet".
+static SCAN_CH: AtomicU32 = AtomicU32::new(0);
+static SCAN_W: AtomicU32 = AtomicU32::new(0);
+static SCAN_TOTAL: AtomicU32 = AtomicU32::new(0);
+
+/// The row the scanout is READING right now -- the beam position, from the data channel's
+/// remaining transfer count. A single-buffered caller uses this to race the beam: a draw
+/// that begins just behind it can never be overtaken. During vertical blanking the channel
+/// has already chained and reloaded for the next frame, so blanking reads as row 0 --
+/// "just wrapped" and "in the blank" are deliberately the same answer. The FIFO prefetch
+/// makes it read a handful of pixels ahead of the glass; callers keep a margin. 0 until an
+/// engine exists.
+pub fn beam_row() -> u16 {
+        let w = SCAN_W.load(Ordering::Acquire);
+        if w == 0 {
+                return 0;
+        }
+        let ch = SCAN_CH.load(Ordering::Relaxed) as usize;
+        let total = SCAN_TOTAL.load(Ordering::Relaxed);
+        let dma = unsafe { &*pac::DMA::ptr() };
+        let remaining = dma.ch(ch).ch_trans_count().read().bits() & 0x0FFF_FFFF;
+        (total.saturating_sub(remaining) / w) as u16
+}
+
 pub struct RgbPins {
         pub de: usize,
         pub vsync: usize,
@@ -115,6 +140,9 @@ impl RgbScanout {
                 assert!(pins.pclk == pins.hsync + 1, "HSYNC and PCLK are one sideset group");
                 assert!(pins.de >= GPIO_BASE && pins.data0 + 15 <= 47, "pins must sit in the GPIOBASE-16 window");
                 FRAME_ADDR.store(fb as u32, Ordering::Release);
+                SCAN_CH.store(dma_data as u32, Ordering::Relaxed);
+                SCAN_TOTAL.store(u32::from(width) * u32::from(height), Ordering::Relaxed);
+                SCAN_W.store(u32::from(width), Ordering::Release);
 
                 let resets = unsafe { &*pac::RESETS::ptr() };
                 resets.reset().modify(|_, w| w.pio1().clear_bit().pio2().clear_bit());

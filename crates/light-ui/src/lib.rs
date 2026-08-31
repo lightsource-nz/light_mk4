@@ -565,6 +565,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.rotating || self.page_moving
         }
 
+        /// The union of everything invalidated since the last repaint, in LOGICAL
+        /// coordinates -- what the next `render` will paint, known BEFORE it paints. `None`
+        /// when the tree is clean or the WHOLE canvas is pending (`is_dirty` distinguishes
+        /// the two). A single-buffered scanned panel schedules its draw against this: the
+        /// bounds against the beam.
+        pub fn dirty_bounds(&self) -> Option<Rect> {
+                if self.pending_all {
+                        return None;
+                }
+                let mut it = self.pending.iter();
+                let first = *it.next()?;
+                Some(it.fold(first, |a, r| Rect::new(a.x0.min(r.x0), a.y0.min(r.y0), a.x1.max(r.x1), a.y1.max(r.y1))))
+        }
+
         /// The font's cell metrics, which layout and truncation need; fonts are fixed-pitch.
         pub fn set_font(&mut self, font: &Font<'_>) {
                 self.cell_w = i32::from(font.cell_width());

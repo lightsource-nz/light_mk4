@@ -424,6 +424,21 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-01 — **tear-free single-buffering: racing the beam instead of buying a buffer.**
+  The 4" board's deferred display expansion. A second 450 KB framebuffer does not exist on
+  a 520 KB chip, but the scanout engine already knows what a back buffer would be standing
+  in for: `light_rp2::rgb::beam_row()` reads the beam position straight off the data
+  channel's remaining count (vblank deliberately answers "just wrapped"). Above it,
+  `Ui::dirty_bounds()` exposes the union of pending invalidations BEFORE painting and
+  `FrameLayer::to_physical()` maps it through the canvas transform to panel rows, so the
+  app can gate each draw: a partial region waits until the beam is past its bottom row --
+  it will not be back for most of a frame -- or far enough above that the draw finishes
+  first; a full-canvas draw or animation step starts at the wrap and OUTRUNS the beam,
+  painting rows ~3x faster than the 31.5 kHz scan, so the beam only ever reads finished
+  rows. Zero bytes of RAM, one deferral counter in `stats` (`beam waits`), and the draw
+  estimate is the measured worst case, not a guess. The `set_framebuffer` flip hook stays
+  for a board with the memory to use it. Verified on the glass: transitions and toggles
+  clean, 0 frames skipped.
 - 2026-08-31 — **the 4" glass lights: a handshake race and a clock requirement.** The
   scanout's bring-up was a lesson in perfect-looking wires: DMA verifiably walking the
   framebuffer at 15 Mpix/s, no starvation, all four state machines running -- and a black

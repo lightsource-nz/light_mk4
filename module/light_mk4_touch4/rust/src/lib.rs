@@ -175,6 +175,9 @@ struct DisplayMod {
         mode: RenderMode,
         drag_reported: bool,
         draw_us_max: u64,
+        /// Renders deferred because the beam was inside the dirty area -- the tear-free
+        /// gate's pulse.
+        beam_waits: u32,
 }
 
 impl DisplayMod {
@@ -297,15 +300,55 @@ impl DisplayMod {
                                 }
                         }
                         AppEvent::Command(Command::Stats) => {
-                                info!("display: {} frames drawn, {} skipped; max draw {} us (scanout: refresh is hardware)", self.layer.frames(), self.layer.skipped, self.draw_us_max);
+                                info!(
+                                        "display: {} frames drawn, {} skipped, {} beam waits; max draw {} us (scanout: refresh is hardware)",
+                                        self.layer.frames(),
+                                        self.layer.skipped,
+                                        self.beam_waits,
+                                        self.draw_us_max
+                                );
                                 self.draw_us_max = 0;
                         }
                         _ => {}
                 }
         }
 
+        /// Whether a draw started NOW cannot collide with the scan. The panel has no back
+        /// buffer -- drawing races the beam in the live framebuffer -- but the engine's DMA
+        /// read pointer IS the beam, so the race is winnable by scheduling: a partial region
+        /// is safe once the beam is past its bottom row (it will not be back for most of a
+        /// frame), or far enough above that the draw finishes first; a full-canvas draw
+        /// (and any animation step) starts at the wrap and OUTRUNS the beam -- painting
+        /// covers rows at ~3x the 31.5 kHz line scan, so the beam only ever reads finished
+        /// rows. Tear-free updates for zero bytes of RAM.
+        fn beam_safe(&mut self) -> bool {
+                //   a whole draw expressed in beam-lines (measured max 5.3 ms at 31.5 kHz,
+                // rounded up), and how far past the wrap still counts as "just wrapped"
+                // (vblank reads as row 0)
+                const DRAW_LINES: u16 = 176;
+                const WRAP_LINES: u16 = 16;
+                let beam = light_rp2::rgb::beam_row();
+                let span = if self.ui.is_animating() {
+                        None
+                } else {
+                        self.ui.dirty_bounds().and_then(|r| self.layer.to_physical(r)).map(|r| (r.y0, r.y1))
+                };
+                let safe = match span {
+                        Some((top, bottom)) if bottom - top < DISPLAY_HEIGHT - 1 => beam > bottom || beam + DRAW_LINES < top,
+                        _ => beam <= WRAP_LINES,
+                };
+                if !safe {
+                        self.beam_waits += 1;
+                }
+                safe
+        }
+
         fn render(&mut self) {
                 if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
+                        return;
+                }
+                if !self.beam_safe() {
+                        // dirty stays set; poll returns Busy and retries within a line or two
                         return;
                 }
                 let now = light_rp2::now_us();
@@ -774,6 +817,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 mode: RenderMode::Normal,
                 drag_reported: false,
                 draw_us_max: 0,
+                beam_waits: 0,
         });
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
