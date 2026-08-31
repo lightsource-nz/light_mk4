@@ -152,6 +152,19 @@ impl<B: I2cBus> I2cBus for &core::cell::RefCell<B> {
         }
 }
 
+/// A full-duplex SPI master with no framing opinions: the caller owns chip select and
+/// clocks bytes both ways. The SD card in SPI mode is the first consumer -- its protocol
+/// interleaves command, response and data bytes under one held CS, which none of the
+/// display-bus shapes can express.
+pub trait SpiBus {
+        /// Clock one byte out while clocking one in.
+        fn transfer(&mut self, tx: u8) -> u8;
+
+        /// Change the clock rate: SD initialization must run below 400 kHz, data runs at
+        /// MHz. The achieved rate may be approximate.
+        fn set_hz(&mut self, hz: u32);
+}
+
 /// A QSPI display bus: four data lines, a clock, chip select -- and no D/C wire, so a
 /// register write is ONE chip-select frame carrying a serial command header and its data,
 /// which is why this is not [`SpiDisplayBus`] with more pins. The AXS15231B is the first

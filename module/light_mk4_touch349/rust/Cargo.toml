@@ -17,4 +17,5 @@ light-ui = { path = "../../../crates/light-ui" }
 light-audio = { path = "../../../crates/light-audio" }
 light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350"] }
 light-rtc = { path = "../../../crates/light-rtc" }
+light-sd = { path = "../../../crates/light-sd" }
 light-font = { path = "../../../crates/light-font" }

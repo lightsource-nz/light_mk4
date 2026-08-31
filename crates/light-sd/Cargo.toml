@@ -1,0 +1,9 @@
+[package]
+name = "light-sd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SD/TF card access for the light framework: the SPI-mode block layer"
+
+[dependencies]
+light-core = { path = "../light-core" }

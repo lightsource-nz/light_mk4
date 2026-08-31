@@ -424,6 +424,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 3.49's last two peripherals: the TF slot reads, and the PSRAM turns
+  out not to exist.** The TF slot is wired for SDIO (CLK 26, CMD 27, D0..D3 28..31), which
+  maps exactly onto SPI1 with D3 as chip select -- so the classic SPI-mode fallback needed
+  no PIO engine, just a shape the hal lacked: `SpiBus`, a full-duplex byte exchange with
+  caller-owned CS and a rate change (SD init must run under 400 kHz, data runs at MHz),
+  implemented as `light-rp2::spi_bus::Spi1Bus` beside the display-framed SPI. The new
+  `light-sd` crate is the SPI-mode block layer -- CMD0/CMD8/ACMD41/CMD58/CSD and
+  single-block reads, three host tests scripting the wire byte for byte -- and stops at
+  "blocks read back": a filesystem is a separate decision, not a peripheral. On the glass:
+  an empty slot answers NoCard cleanly, and a 64 GB card identified as SDHC/XC, decoded
+  123,596,800 blocks from its CSD, and read block 0 with the boot signature present. The
+  PSRAM story ended differently: GPIO 47 is the RP2350B's XIP CS1 and the vendor demo pack
+  carries a whole PSRAM library, but the SDK's auto-detection (wired in through
+  `hardware_psram` and a one-function C shim) reads no chip ID, and the wiki's spec list
+  carries no PSRAM -- the library is family boilerplate, not evidence of fitment. MEASURED
+  ABSENT; the auto-detect stays wired so a fitted variant lights up unchanged, and the
+  `psram` console command reports whatever detection found.
 - 2026-08-31 — **the 3.49 fills out: battery, power latch, RTC and audio.** Four of the
   board's six remaining peripherals, each hardware-verified as it landed. `light-rp2` grew
   `adc` (the framework's first ADC: one-shot blocking reads, ~2 us at the 48 MHz ADC clock;

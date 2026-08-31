@@ -25,12 +25,14 @@ use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
+use light_sd::SpiSd;
 mod board;
 use board::*;
 use light_rp2::adc::Adc;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
 use light_rp2::i2s::PioI2sOut;
+use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
 
@@ -38,6 +40,34 @@ unsafe extern "C" {
         fn light_shell_panic(msg: *const u8, len: usize) -> !;
         fn light_shell_log(msg: *const u8, len: usize);
         fn light_shell_read_byte() -> i32;
+        /// From this board's psram_info.c: what the SDK's runtime init detected on CS1.
+        fn light_board_psram_size() -> u32;
+}
+
+/// The XIP CS1 window, through the UNCACHED alias -- a memtest through the cache would
+/// largely test the cache.
+const PSRAM_UNCACHED_BASE: u32 = 0x1500_0000;
+
+/// Write-and-read three 4 KB regions (start, middle, end) with an address-derived pattern.
+/// Returns (words checked, mismatches).
+fn psram_test(size: u32) -> (u32, u32) {
+        let (mut checked, mut bad) = (0u32, 0u32);
+        for base in [0u32, size / 2, size.saturating_sub(4096)] {
+                let p = (PSRAM_UNCACHED_BASE + base) as *mut u32;
+                for i in 0..1024usize {
+                        // SAFETY: within the detected PSRAM window; nothing else lives there
+                        unsafe { core::ptr::write_volatile(p.add(i), (base ^ i as u32).wrapping_mul(0x9E37_79B9)) };
+                }
+                for i in 0..1024usize {
+                        let want = (base ^ i as u32).wrapping_mul(0x9E37_79B9);
+                        // SAFETY: as above
+                        if unsafe { core::ptr::read_volatile(p.add(i)) } != want {
+                                bad += 1;
+                        }
+                        checked += 1;
+                }
+        }
+        (checked, bad)
 }
 
 #[repr(C)]
@@ -81,6 +111,8 @@ enum Command {
         Tone { hz: u16, ms: u16 },
         ToneOff,
         Volume(u8),
+        Psram,
+        Sd,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -629,6 +661,9 @@ struct BoardMod {
         /// The side button, low when pressed; held [`POWER_OFF_HOLD_MS`] = shutdown.
         button: Input,
         battery: Adc,
+        /// The TF slot; probed on demand (the `sd` command), not at boot -- an empty slot
+        /// is this board's ordinary state.
+        sd: SpiSd<Spi1Bus, Output>,
         pressed_since_ms: Option<u32>,
         events: Subscription,
 }
@@ -662,6 +697,35 @@ impl Module for BoardMod {
                                         let raw = u32::from(self.battery.read());
                                         let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
                                         info!("battery: {mv} mV (raw {raw})");
+                                }
+                                AppEvent::Command(Command::Psram) => {
+                                        busy = true;
+                                        let size = unsafe { light_board_psram_size() };
+                                        if size == 0 {
+                                                info!("psram: none detected");
+                                        } else {
+                                                let (checked, bad) = psram_test(size);
+                                                info!("psram: {} KB detected; {} words tested, {} mismatches", size / 1024, checked, bad);
+                                        }
+                                }
+                                AppEvent::Command(Command::Sd) => {
+                                        busy = true;
+                                        let mut clock = SysClock;
+                                        match self.sd.init(&mut clock) {
+                                                Ok(card) => {
+                                                        let mb = card.blocks / 2048;
+                                                        let kind = if card.high_capacity { "SDHC/XC" } else { "SDSC" };
+                                                        let mut block = [0u8; 512];
+                                                        match self.sd.read_block(0, &mut block) {
+                                                                Ok(()) => {
+                                                                        let sig = block[510] == 0x55 && block[511] == 0xAA;
+                                                                        info!("sd: {mb} MB {kind} ({} blocks); block 0 read, boot signature {}", card.blocks, if sig { "present" } else { "absent" });
+                                                                }
+                                                                Err(e) => warn!("sd: {mb} MB {kind} identified but block 0 read failed: {e:?}"),
+                                                        }
+                                                }
+                                                Err(e) => info!("sd: {e:?}"),
+                                        }
                                 }
                                 _ => {}
                         }
@@ -843,6 +907,8 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "rtc", usage: "rtc | rtc set YYYY-MM-DD HH:MM:SS", parse: parse_rtc },
         CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
+        CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
+        CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Command::Sd) },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
@@ -897,6 +963,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 sys_en: p.sys_en,
                 button: p.power_button,
                 battery: p.battery,
+                sd: SpiSd::new(p.sd_spi, p.sd_cs),
                 pressed_since_ms: None,
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };

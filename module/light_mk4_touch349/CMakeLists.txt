@@ -2,13 +2,23 @@
 # the AXS15231B's first bring-up, and the first board on the RP2350's upper GPIO bank.
 add_executable(light_mk4_touch349
         ../light_mk4_shell/src/main.c
+        src/psram_info.c
 )
 
 target_link_libraries(light_mk4_touch349 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
+        hardware_psram
         light_app_touch349
+)
+
+#   the 8 MB PSRAM on the XIP CS1 pin: the SDK's runtime init brings it up before main.
+# The CS pin is the board's wiring; the SIZE is auto-detected (read from the chip's ID),
+# so a board variant without the part degrades to "none" instead of bus-faulting
+target_compile_definitions(light_mk4_touch349 PRIVATE
+        PICO_PSRAM_CS_PIN=47
+        PICO_AUTO_DETECT_PSRAM_SIZE=1
 )
 
 #   the demo's font: the 3.49" bar's real geometry (172x640 over 23.0x85.6 mm), 16 px

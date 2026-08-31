@@ -11,6 +11,7 @@ members = [
         "crates/light-audio",
         "crates/light-power",
         "crates/light-rtc",
+        "crates/light-sd",
         "crates/light-rp2",
         "crates/light-stm32h7",
         "crates/light-stm32f4",

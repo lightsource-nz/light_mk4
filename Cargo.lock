@@ -357,6 +357,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "light-sd"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
+
+[[package]]
 name = "light-stm32f4"
 version = "0.1.0"
 dependencies = [
@@ -469,6 +476,7 @@ dependencies = [
  "light-input",
  "light-rp2",
  "light-rtc",
+ "light-sd",
  "light-ui",
 ]
 

@@ -45,6 +45,7 @@ pub mod i2s;
 pub mod pwm;
 pub mod qspi;
 pub mod spi;
+pub mod spi_bus;
 #[cfg(feature = "usb-host")]
 pub mod tinyusb_midi;
 

@@ -14,6 +14,7 @@ use light_input::imu::{self, AxisMap};
 use light_rp2::adc::Adc;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2s::PioI2sOut;
+use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::i2c::{I2c0, I2c1};
 use light_rp2::pwm::PwmOutput;
 use light_rp2::qspi::PioQspiDisplayBus;
@@ -90,7 +91,21 @@ pub const AUDIO_MCLK_HZ: u32 = AUDIO_SAMPLE_HZ * 256;
 /// The stream's ping-pong DMA pair, below the display's channel 15.
 pub const AUDIO_DMA_CH: [usize; 2] = [13, 14];
 
-// Declared so nothing reuses it; no driver yet. PSRAM hangs on the XIP CS1 pin.
+// The TF slot, wired for SDIO (CLK 26, CMD 27, D0..D3 28..31) -- which maps exactly onto
+// SPI1 (SCK/TX/RX) with D3 as the chip select: the classic SPI-mode fallback, and the mode
+// this firmware drives. D1/D2 (29/30) stay idle (D3 as CS parks the card's SDIO state
+// machine). The bus is constructed at the sub-400 kHz init rate; the SD driver raises it.
+pub const PIN_SD_SCK: usize = 26;
+pub const PIN_SD_MOSI: usize = 27;
+pub const PIN_SD_MISO: usize = 28;
+pub const PIN_SD_CS: usize = 31;
+
+// MEASURED ABSENT: GPIO 47 is the RP2350B's XIP CS1 and the vendor demo pack carries PSRAM
+// boilerplate, but the SDK's auto-detection reads no chip ID on this board and the wiki's
+// spec list carries no PSRAM either -- the library in the demo pack is shared across
+// Waveshare's RP2350 family, not evidence of fitment. The firmware keeps the SDK's
+// auto-detect wired (module CMakeLists), so a fitted variant would light up unchanged; the
+// `psram` console command reports what detection found.
 pub const PIN_PSRAM_CS: usize = 47;
 
 pub struct Peripherals {
@@ -110,6 +125,10 @@ pub struct Peripherals {
         pub i2s: PioI2sOut,
         /// The speaker amplifier enable, LOW (amp off) until audio loads.
         pub audio_pa: Output,
+        /// The TF slot's SPI-mode bus, at the init rate.
+        pub sd_spi: Spi1Bus,
+        /// The TF slot's chip select (SDIO D3), deasserted.
+        pub sd_cs: Output,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -131,6 +150,8 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                         battery: Adc::new(PIN_BAT_ADC),
                         i2s: PioI2sOut::new(PIN_AUDIO_DOUT, PIN_AUDIO_BCLK, PIN_AUDIO_LRCLK, PIN_AUDIO_MCLK, clocks.sys_hz, AUDIO_MCLK_HZ, AUDIO_DMA_CH[0], AUDIO_DMA_CH[1]),
                         audio_pa: Output::new(PIN_AUDIO_PA, false),
+                        sd_spi: Spi1Bus::new(clocks.peri_hz, PIN_SD_SCK, PIN_SD_MOSI, PIN_SD_MISO, 300_000),
+                        sd_cs: Output::new(PIN_SD_CS, true),
                         display_bus: PioQspiDisplayBus::new(PIN_LCD_SCLK, PIN_LCD_D0, PIN_LCD_CS, PIN_LCD_RST, Some(PIN_LCD_PWR_EN), DISPLAY_DMA_CH),
                         backlight: PwmOutput::new(PIN_LCD_BL, clocks.sys_hz, BACKLIGHT_CARRIER_HZ, BACKLIGHT_LEVEL_MAX),
                         touch_bus: I2c0::new(clocks.sys_hz, PIN_TOUCH_SCL, PIN_TOUCH_SDA, TOUCH_I2C_HZ),
