@@ -436,7 +436,14 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   as mk3's header insists. First flash: the CST328 answers with ZERO failed reads -- the
   16-bit protocol is right -- and the QMI8658 reports live accel. Boot-time probe lines are
   lost to the CDC connect window (a known cost); the read counters carry the same news.
-  Pending the finger: coordinates tracking, and the axis-map calibration session.
+  THEN THE PREDICTED ARTIFACT ARRIVED ON CUE: the UI came up rotated 90 degrees, because
+  the identity axis map read real-portrait as landscape -- which also verified the whole
+  IMU-to-rotation pipeline end to end. The three-observation calibration over the live
+  console settled it in minutes: up-the-screen = -chip X (upright: [-845,+422,+223]), out
+  of the screen = -chip Z (flat: [+44,+88,-1004]), device X = -chip Y by right-handedness,
+  confirmed by the on-edge pose reading LandscapeL with -1076 on device X. The measured map
+  -- the 1.69's transposition and Z inversion plus a 180-degree twist -- is in board.rs
+  with the observations recorded beside it. Still pending the finger: coordinate tracking.
 - 2026-08-31 — **the RP2040 runs, and two findings paid for the trip.** The po13 demo and
   crossfire both hardware-verified on a Pico in the po13 dock: full CLI sessions over the
   probe UART, the OLED pushing frames over DMA with 0 chunk timeouts, crossfire's host stack

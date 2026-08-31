@@ -42,11 +42,12 @@ pub const TOUCH_I2C_HZ: u32 = 300_000;
 /// QMI8658C on the same bus; INT1/INT2 (8/9) wired but unused -- the data-ready bit arrives
 /// inside the sample frame.
 pub const PIN_IMU_INT1: usize = 8;
-/// How this board mounts the QMI8658C: UNKNOWN until measured -- declared as the identity
-/// map because a wrong guess costs the same three-observation calibration session either
-/// way, and identity at least states plainly that nothing has been measured. The 1.69's map
-/// (transposed X/Y, inverted Z) is a fact about ITS layout, not a family trait.
-pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::X, imu::Y, imu::Z], sign: [1, 1, 1] };
+/// How this board mounts the QMI8658C, MEASURED 2026-08-31 with the +1g-points-up
+/// convention: upright read chip [-845, +422, +223] (up the screen = -chip X), flat face-up
+/// read [+44, +88, -1004] (out of the screen = -chip Z), and device X follows by
+/// right-handedness (= -chip Y). The same X/Y transposition and Z inversion as the 1.69,
+/// with a 180-degree twist on top -- each board's mounting is its own fact.
+pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], sign: [-1, -1, -1] };
 
 /// DMA channel for the display bus: see `Spi1Display` for why the top of the range. This is
 /// an RP2350-only board, so 15 is not the RP2040 trap the po13 wiring documents.
