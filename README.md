@@ -443,7 +443,15 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   of the screen = -chip Z (flat: [+44,+88,-1004]), device X = -chip Y by right-handedness,
   confirmed by the on-edge pose reading LandscapeL with -1076 on device X. The measured map
   -- the 1.69's transposition and Z inversion plus a 180-degree twist -- is in board.rs
-  with the observations recorded beside it. Still pending the finger: coordinate tracking.
+  with the observations recorded beside it. THE FINGER CLOSED THE CHECKLIST: 25 seconds of
+  tapping and dragging -- every tap a hit on the widget under it (Items, toggles, Dim/Bright,
+  Back), drags of up to 98 move samples scrolling the list, swipe-right returning a page --
+  with 469 frames pushed and, the number that matters most on this stack: the CST328 at
+  ZERO failed reads and zero resets through continuous rendering plus touching, the exact
+  load that wedges the 1.69's CST816T every few taps. Same bus layout, same firmware, same
+  poll architecture, different controller: strong evidence the 1.69's wedge is that board's
+  electrical fact (supply/coupling under the SPI burst), not the framework's -- precisely
+  what the still-open scope session was going to ask.
 - 2026-08-31 — **the RP2040 runs, and two findings paid for the trip.** The po13 demo and
   crossfire both hardware-verified on a Pico in the po13 dock: full CLI sessions over the
   probe UART, the OLED pushing frames over DMA with 0 chunk timeouts, crossfire's host stack
