@@ -217,13 +217,16 @@ impl DisplayMod {
                                 }
                         }
                         AppEvent::Orientation(o) => {
-                                //   suspect until the axis map is measured; the bar glass may
-                                // also simply not want landscape at 172 px tall
+                                //   portrait only, MEASURED: the bar rests near-landscape on
+                                // its long edge, so ordinary handling flapped LandscapeL/R --
+                                // a 180-degree relayout per touch, and every tap then landed
+                                // where a widget used to be. A 172 px-tall landscape canvas
+                                // was never worth having anyway; the bar rotates end-for-end
+                                // (a deliberate gesture, nowhere near the resting pose) and
+                                // otherwise holds still
                                 let rotation = match o {
                                         Orientation::Portrait => Some(Rotation::R0),
                                         Orientation::PortraitFlip => Some(Rotation::R180),
-                                        Orientation::LandscapeL => Some(Rotation::R270),
-                                        Orientation::LandscapeR => Some(Rotation::R90),
                                         _ => None,
                                 };
                                 if let Some(r) = rotation {

@@ -19,7 +19,6 @@ pub const CMD_RAMWR: u8 = 0x2C;
 /// Upper bound on one chunk: a full 172x640x2 frame at the PIO bus's 37.5 MHz QSPI clock is
 /// ~12 ms; 500 ms leaves the same headroom every other panel driver carries.
 const CHUNK_TIMEOUT_MS: u32 = 500;
-const ROW_CHUNKS_PER_POLL: u16 = 8;
 
 struct InitCmd {
         cmd: u8,
@@ -80,8 +79,24 @@ impl<B: QspiDisplayBus> Axs15231b<B> {
                 self.bus.write_register(CMD_RASET, &[(r.y0 >> 8) as u8, r.y0 as u8, (r.y1 >> 8) as u8, r.y1 as u8]);
         }
 
-        fn full_width(&self, r: &Region) -> bool {
-                r.x0 == 0 && r.x1 == self.width - 1
+        /// Every update is the FULL frame, whatever region was asked for. Two behaviours
+        /// measured on this glass forced that:
+        ///
+        /// - per-row RAMWR bursts (re-opening 0x2C with CS cycled between rows) are accepted
+        ///   once after a full-window push and then silently ignored until the next one --
+        ///   partial updates froze while full-page pushes kept landing;
+        /// - a single full-width band with an honest RASET start lands at ROW 0 regardless
+        ///   of the y offset asked for -- the chip takes the window write and ignores the
+        ///   row start.
+        ///
+        /// The one push shape this panel has ever honoured is the reference driver's
+        /// full-frame Display(): window over everything, one RAMWR, one chip-select frame.
+        /// At the PIO bus's 37.5 MHz a full 172x640x2 frame is ~12 ms -- inside the frame
+        /// budget, and the price of a panel that ignores its own windowing. Windowed
+        /// partials can return if a bench session ever finds the register incantation the
+        /// vendor never used.
+        fn band(&self) -> Region {
+                Region::full(self.width, self.height)
         }
 }
 
@@ -99,28 +114,20 @@ impl<B: QspiDisplayBus> DisplayDriver for Axs15231b<B> {
                 clock.delay_ms(20);
         }
 
-        fn chunk_count(&self, r: &Region) -> u16 {
-                if self.full_width(r) { 1 } else { r.height() }
+        fn chunk_count(&self, _r: &Region) -> u16 {
+                //   always one: see `band` -- this panel takes a full frame or nothing
+                1
         }
 
-        fn chunks_per_poll(&self, r: &Region) -> u16 {
-                if self.full_width(r) { 0 } else { ROW_CHUNKS_PER_POLL }
+        fn chunks_per_poll(&self, _r: &Region) -> u16 {
+                0
         }
 
-        fn kick(&mut self, frame: &Frame<'_>, r: &Region, index: u16) {
-                //   the window and the pixel header are armed once; RAMWR wraps row to row
-                // by itself, so every later chunk is just more data into the open frame.
-                // The pixel frame stays open (CS low) across row chunks: is_complete closes
-                // it only... no -- the bus closes CS on every completed transfer, so each
-                // row chunk re-opens the burst with RAMWR-continue semantics. Full-width
-                // pushes are one chunk and never hit that path.
-                if index == 0 {
-                        self.set_window(r);
-                        self.bus.begin_pixels(CMD_RAMWR);
-                } else {
-                        self.bus.begin_pixels(CMD_RAMWR);
-                }
-                let bytes = if self.full_width(r) { frame.rows(r) } else { frame.row(r, r.y0 + index) };
+        fn kick(&mut self, frame: &Frame<'_>, _r: &Region, _index: u16) {
+                let band = self.band();
+                self.set_window(&band);
+                self.bus.begin_pixels(CMD_RAMWR);
+                let bytes = frame.rows(&band);
                 // SAFETY: `frame` borrows the display core's buffer, which refuses mutation
                 // while an update is in flight, and stays alive for the core's lifetime
                 unsafe { self.bus.start_data(bytes) }

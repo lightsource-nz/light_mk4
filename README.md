@@ -424,6 +424,25 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 3.49's freeze hunt: the panel ignores its own windowing.** The bring-up
+  session below ended with every counter clean; real use then showed "long gaps in touch
+  response after every touch", and the hunt that followed is a lesson in symptom attribution:
+  the logs cleared the touch driver (every tap registered instantly, 18 toggles in 9 s while
+  the user was hammering a dead-looking button), cleared the runtime (console-injected
+  presses fired and drew), and finally cornered the display: PARTIAL updates froze while
+  full-page pushes kept landing. Two panel behaviours, measured on the glass, explain it.
+  First, per-row RAMWR bursts (0x2C re-opened with CS cycled between rows) are accepted once
+  after a full-window push and then silently ignored until the next one. Second, even a
+  single full-width band with an honest RASET start lands at ROW 0 -- the chip takes the
+  window write and ignores the row offset. The reference driver never uses its own partial
+  path; the one push shape this panel has ever honoured is full-frame Display(). The driver
+  now pushes the whole frame for any region (~12 ms at the PIO bus's 37.5 MHz -- inside the
+  30 fps budget), and windowed partials wait for a bench session that finds the incantation
+  the vendor never needed. Along the way the bar also lost auto-rotation into landscape:
+  its resting pose sits at the classifier's margin, so ordinary handling flapped
+  LandscapeL/R -- a 180-degree relayout per touch, with every next tap landing where a
+  widget used to be. A 172 px-tall landscape canvas was never worth that; the demo now
+  rotates only for the deliberate end-for-end flip.
 - 2026-08-31 — **the 3.49 on the glass: the QSPI stack verified, and the touch protocol's
   one surprise.** First flash lit the panel outright -- the vendor init table without
   SLPOUT/DISPON was right as copied, the PIO-QSPI path pushed the 172x640 frame with zero
