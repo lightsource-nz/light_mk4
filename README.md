@@ -433,8 +433,12 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   RP2040, STM32H743VI, STM32F411CE -- all in probe-rs 0.32's registry). The gdb path is
   unchanged and remains the way to a `monitor` command or a breakpoint. Verified to the last
   step a probe-less bench allows: the refused-combination and missing-Chip errors, and the
-  full wiring reaching `probe-rs download` with the right chip and ELF. The first live use
-  wants a board on the debugprobe; one wrinkle found on the way: a per-project wrapper
+  full wiring reaching `probe-rs download` with the right chip and ELF. HARDWARE-VERIFIED on
+  the po13 the same day: download + reset in 4.56 s (the openocd sequence spends longer than
+  that in adapter-speed retries alone), and the console's uptime immediately after read 45 s
+  with the LED toggle count corroborating -- the reset genuinely rebooted into the new image.
+  The fast path is now the recommended way to get an image running on a docked board; one
+  wrinkle found on the way: a per-project wrapper
   forwards a NAMED parameter list, so a new shared-script switch reaches nobody until each
   wrapper forwards it -- light_mk4's does, the sibling projects' will when they take Chip
   entries.
