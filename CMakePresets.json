@@ -38,6 +38,20 @@
             }
         },
         {
+            "name": "conf-light_mk4-touch28-debug",
+            "description": "The Waveshare RP2350-Touch-LCD-2.8: the touch169's demo on the 240x320 glass, and the CST328 touch controller's first bring-up. Flashed over BOOTSEL like the 1.69.",
+            "inherits": [
+                "conf-light-waveshare-touch28",
+                "conf-light-debug"
+            ],
+            "binaryDir": "${sourceDir}/build-touch28",
+            "generator": "Ninja",
+            "cacheVariables": {
+                "Rust_CARGO_TARGET": "thumbv8m.main-none-eabi",
+                "PICO_STDIO_USB_CONNECT_WAIT_TIMEOUT_MS": "3000"
+            }
+        },
+        {
             "name": "conf-light_mk4-touch169-release",
             "description": "The touch169 firmware with cargo's release profile (opt-level s, fat LTO): Corrosion takes the profile from CMAKE_BUILD_TYPE. Separate tree, so the debug one stays warm.",
             "inherits": [
@@ -173,6 +187,11 @@
         }
     ],
     "buildPresets": [
+        {
+            "name": "build-light_mk4_touch28-debug",
+            "configurePreset": "conf-light_mk4-touch28-debug",
+            "targets": ["light_mk4_touch28"]
+        },
         {
             "name": "build-light_mk4_touch169-release",
             "configurePreset": "conf-light_mk4-touch169-release",

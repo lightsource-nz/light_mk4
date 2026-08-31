@@ -218,4 +218,16 @@ impl I2cBus for I2c1 {
         fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError> {
                 self.write(addr, &[reg, value], false)
         }
+
+        /// 16-bit register addresses go out big-endian, high byte first -- the CST328's
+        /// convention, and mk3's `light_ioport_read_register16`.
+        fn read_register16(&mut self, addr: u8, reg: u16, out: &mut [u8]) -> Result<(), I2cError> {
+                self.write(addr, &[(reg >> 8) as u8, reg as u8], true)?;
+                self.read(addr, out, false)
+        }
+
+        fn write_command16(&mut self, addr: u8, reg: u16) -> Result<(), I2cError> {
+                //   the address alone, WITH a stop: the transaction is the command
+                self.write(addr, &[(reg >> 8) as u8, reg as u8], false)
+        }
 }

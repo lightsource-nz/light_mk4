@@ -79,6 +79,11 @@ pub enum I2cError {
 }
 
 /// A 7-bit-address I2C master.
+///
+/// The 16-bit-register operations exist for parts whose register addresses are two bytes
+/// (big-endian on the wire) -- the CST328 touch controller is the first. They have default
+/// implementations that answer [`I2cError::Bus`], so a bus that never meets such a part (and
+/// every test fake) implements only the two byte-register operations.
 pub trait I2cBus {
         /// Write `reg` under a held START, then read `out.len()` bytes with a STOP.
         fn read_register(&mut self, addr: u8, reg: u8, out: &mut [u8]) -> Result<(), I2cError>;
@@ -86,6 +91,20 @@ pub trait I2cBus {
         /// `[reg, value]` as one transaction: S, addr+W, reg, value, P -- no repeated START.
         /// Some parts silently store nothing when the pair is split (mk3's HUSB238 finding).
         fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError>;
+
+        /// Write the 16-bit `reg` big-endian under a held START, then read with a STOP.
+        fn read_register16(&mut self, addr: u8, reg: u16, out: &mut [u8]) -> Result<(), I2cError> {
+                let _ = (addr, reg, out);
+                Err(I2cError::Bus)
+        }
+
+        /// The 16-bit register address alone, as a complete transaction WITH a STOP and no
+        /// data byte: some parts (the CST328's mode switches) treat the bare address as a
+        /// command.
+        fn write_command16(&mut self, addr: u8, reg: u16) -> Result<(), I2cError> {
+                let _ = (addr, reg);
+                Err(I2cError::Bus)
+        }
 }
 
 /// Two drivers on one bus -- the touch169's touch controller and IMU share I2C1 -- each take a
@@ -99,5 +118,13 @@ impl<B: I2cBus> I2cBus for &core::cell::RefCell<B> {
 
         fn write_register_byte(&mut self, addr: u8, reg: u8, value: u8) -> Result<(), I2cError> {
                 self.borrow_mut().write_register_byte(addr, reg, value)
+        }
+
+        fn read_register16(&mut self, addr: u8, reg: u16, out: &mut [u8]) -> Result<(), I2cError> {
+                self.borrow_mut().read_register16(addr, reg, out)
+        }
+
+        fn write_command16(&mut self, addr: u8, reg: u16) -> Result<(), I2cError> {
+                self.borrow_mut().write_command16(addr, reg)
         }
 }

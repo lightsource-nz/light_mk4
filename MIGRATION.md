@@ -58,7 +58,7 @@ a guess, and mk4 does not inherit guesses.
 | light_ui_demo_touch169, _po13 | `light_mk4_touch169`, `light_mk4_pico2` | ported | |
 | light_ui_hw_ws_touch169, _po13 | the apps' `src/board.rs` | ported | board wiring lives with the application |
 | light_audio | — | pending | hw-verified under mk3 (PCM + tone on a PWM pin); a `light-rp2::pwm` client. Port when a rig wants sound |
-| light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | — | pending | build-verified only under mk3, never on hardware; verify in C first |
+| light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | `light-input::cst328` + `light_mk4_touch28` (+ its `board.rs`) | ported (bring-up in progress) | the hardware arrived and mk4 is running its first bring-up directly: the chip answers with zero failed reads; finger tracking and the IMU axis-map calibration pending |
 | light_ui_demo_ws15rgb, light_ui_hw_ws15rgb | — | pending | with the SSD1351 |
 
 ## light_usb

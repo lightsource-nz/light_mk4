@@ -424,6 +424,19 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the touch28 board: the CST328's first hardware.** mk3 authored this board's
+  support without hardware (schematic + two reference drivers); the board arrived and the
+  definition came across: `I2cBus` grew 16-bit register operations (default-implemented, so
+  only buses that meet such a part carry them -- mk3's `read/write_register16`, in trait
+  form), `light-input::cst328` mirrors the cst816t's entire hardened poll architecture over
+  the new wire protocol (packed 12-bit coordinates, address-only mode commands, the 0xCACA
+  probe that must ALWAYS switch back to normal mode, no gesture engine -- the software
+  tracker classifies), and `module/light_mk4_touch28` is the touch169's demo on the 240x320
+  glass: square corners, no GDDRAM offset, the IMU axis map declared IDENTITY-until-measured
+  as mk3's header insists. First flash: the CST328 answers with ZERO failed reads -- the
+  16-bit protocol is right -- and the QMI8658 reports live accel. Boot-time probe lines are
+  lost to the CDC connect window (a known cost); the read counters carry the same news.
+  Pending the finger: coordinates tracking, and the axis-map calibration session.
 - 2026-08-31 — **the RP2040 runs, and two findings paid for the trip.** The po13 demo and
   crossfire both hardware-verified on a Pico in the po13 dock: full CLI sessions over the
   probe UART, the OLED pushing frames over DMA with 0 chunk timeouts, crossfire's host stack

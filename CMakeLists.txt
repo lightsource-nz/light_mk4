@@ -57,7 +57,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
+                CRATES light_app_touch169 light_app_touch28 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -87,6 +87,8 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 corrosion_set_features(light_app_crossfire FEATURES ${_light_rp2_chip})
                 if(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_1.69")
                         add_subdirectory(module/light_mk4_touch169)
+                elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_2.8")
+                        add_subdirectory(module/light_mk4_touch28)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
                         #   two applications share the Picos: the po13 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
@@ -128,7 +130,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_touch28 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()
