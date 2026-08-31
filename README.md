@@ -452,6 +452,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   poll architecture, different controller: strong evidence the 1.69's wedge is that board's
   electrical fact (supply/coupling under the SPI burst), not the framework's -- precisely
   what the still-open scope session was going to ask.
+- 2026-08-31 — **touch28 headroom probed live: 75 MHz is the default.** The corner radius is
+  0 by eye (square glass confirmed), and the SPI question turned out to be a one-point test:
+  at a 150 MHz clk_peri the PL022's achievable rates are coarse -- 75, 37.5, 25 -- so the
+  old "40 MHz" request actually ran 37.5 and the reference driver's 62.5 rounds to trying
+  75. A `spi HZ` console command re-clocks the bus live (waiting the display out first, then
+  invalidating everything so corruption would show immediately; `St7789::bus_mut` exists for
+  exactly this kind of bring-up instrumentation). 75 MHz ran clean on the glass through full
+  repaints, 0 chunk timeouts, and the CST328 stayed at zero failed reads with the burst
+  twice as fast -- more of the 2.8's clean electrical story. Board default now 75 MHz; a
+  full-frame push is ~16 ms, and a typical redraw lands in ~20 ms end to end. (Also
+  re-checked while here: no port crate hardcodes a clock -- the shell measures
+  clock_get_hz() at boot and everything derives dividers from what it is handed.)
 - 2026-08-31 — **the RP2040 runs, and two findings paid for the trip.** The po13 demo and
   crossfire both hardware-verified on a Pico in the po13 dock: full CLI sessions over the
   probe UART, the OLED pushing frames over DMA with 0 chunk timeouts, crossfire's host stack
