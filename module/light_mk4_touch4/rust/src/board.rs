@@ -55,8 +55,14 @@ pub const I2C1_HZ: u32 = 400_000;
 pub const TOUCH_MAP: CoordMap = CoordMap { x_max: 479, y_max: 479, invert_x: false, invert_y: false, swap_xy: false };
 
 /// QMI8658C and the PCF85063A RTC share i2c1 with the touch controller.
-/// UNMEASURED identity, as every board starts -- the three-observation session replaces it.
-pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::X, imu::Y, imu::Z], sign: [1, 1, 1] };
+/// MEASURED 2026-09-01, the three-observation session: flat screen-up read raw Z = -1g
+/// (device Z = -Z), and the upright poses put gravity on raw X and raw Y (device X from
+/// Y, device Y from X). The horizontal SIGNS came from the glass, not the session: the
+/// first fit was 180 degrees off -- the poses were described in the holder's frame, which
+/// turned out to be mirrored from R0's -- and the UI rendering consistently upside down
+/// in every upright pose is exactly that signature (flip both, never one: the map's
+/// determinant must stay +1, a proper rotation, as a real mounting must be).
+pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], sign: [1, 1, -1] };
 
 // Battery: ADC channel 1 (GPIO 41), with the charger's status pins (low-active).
 pub const PIN_BAT_ADC: usize = 41;
