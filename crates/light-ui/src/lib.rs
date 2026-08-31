@@ -508,7 +508,13 @@ pub struct Ui<A: 'static, const N: usize> {
         /// Which way the outgoing image leaves: forward pushes it toward logical -x so the new
         /// page arrives from the right; a return sends it the other way.
         page_move_back: bool,
-        /// Physical unit direction, derived from the logical one at the first step.
+        /// No back buffer to capture the outgoing page into: the incoming tree slides in
+        /// OVER the old image, which survives in the live buffer wherever a step has not yet
+        /// overdrawn it. Chosen at the first step, from what the display can hold.
+        page_move_over: bool,
+        /// Physical unit direction, derived from the logical one at the first step -- or the
+        /// LOGICAL sign of the incoming page's offset in the slide-over mode, which draws
+        /// through the canvas transform and never leaves logical space.
         page_move_dx: i32,
         page_move_dy: i32,
         /// How far it travels to leave: the buffer's extent along that axis.
@@ -553,6 +559,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page_moving: false,
                         page_move_started: false,
                         page_move_back: false,
+                        page_move_over: false,
                         page_move_dx: 0,
                         page_move_dy: 0,
                         page_move_span: 0,
@@ -1357,34 +1364,47 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// One step of a page transition; the same contract as `rotation_step`.
         fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> Step {
                 if !self.page_move_started {
-                        let can_animate = display.is_double_buffered() && display.format() == light_draw::PixelFormat::Rgb565;
-                        if !can_animate {
-                                self.page_moving = false;
-                                self.invalidate_all();
-                                return Step::Finished;
+                        //   with a back buffer, the outgoing image is captured and slid off the
+                        // incoming tree; without one (a single-buffered scanned panel), the
+                        // roles swap -- the incoming tree draws OVER the old image at a
+                        // shrinking offset, and the outgoing page survives in the live buffer
+                        // wherever a step has not yet covered it. Only what the blit speaks
+                        // can capture; the slide-over works in any format
+                        self.page_move_over = !(display.is_double_buffered() && display.format() == light_draw::PixelFormat::Rgb565);
+                        if self.page_move_over {
+                                //   logical space end to end -- the canvas transform does the
+                                // physical mapping -- so direction is just the arrival side:
+                                // forward from logical +x, back from -x, like the capture mode
+                                let (w, _) = layer.logical_size();
+                                self.page_move_dx = if self.page_move_back { -1 } else { 1 };
+                                self.page_move_dy = 0;
+                                self.page_move_span = i32::from(w);
+                        } else {
+                                if !display.freeze() {
+                                        return Step::Waiting; // busy: capture next pass
+                                }
+                                //   the direction is chosen in LOGICAL terms and converted here,
+                                // because the blit works in physical space: the transform's a and
+                                // c are the physical components of logical +x, exactly one of
+                                // them non-zero for a pure rotation, so this picks the axis the
+                                // viewer calls horizontal whatever the board's orientation
+                                let m = layer.transform();
+                                let ux = m.a.signum();
+                                let uy = m.c.signum();
+                                let sign = if self.page_move_back { 1 } else { -1 };
+                                let (pw, ph) = layer.physical_size();
+                                self.page_move_dx = sign * ux;
+                                self.page_move_dy = sign * uy;
+                                self.page_move_span = if ux != 0 { i32::from(pw) } else { i32::from(ph) };
                         }
-                        if !display.freeze() {
-                                return Step::Waiting; // busy: capture next pass
-                        }
-                        //   the direction is chosen in LOGICAL terms and converted here, because
-                        // the blit works in physical space: the transform's a and c are the
-                        // physical components of logical +x, exactly one of them non-zero for a
-                        // pure rotation, so this picks the axis the viewer calls horizontal
-                        // whatever the board's orientation
-                        let m = layer.transform();
-                        let ux = m.a.signum();
-                        let uy = m.c.signum();
-                        let sign = if self.page_move_back { 1 } else { -1 };
-                        let (pw, ph) = layer.physical_size();
-                        self.page_move_dx = sign * ux;
-                        self.page_move_dy = sign * uy;
-                        self.page_move_span = if ux != 0 { i32::from(pw) } else { i32::from(ph) };
                         self.page_move_started = true;
                         self.page_move_start_us = now_us;
                 }
                 let elapsed = now_us.saturating_sub(self.page_move_start_us);
                 if elapsed >= u64::from(self.page_move_ms) * 1000 {
-                        display.thaw();
+                        if !self.page_move_over {
+                                display.thaw();
+                        }
                         self.page_moving = false;
                         self.invalidate_all();
                         //   a rotation that arrived mid-transition runs now. Taken BEFORE the
@@ -1394,16 +1414,26 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         }
                         return Step::Finished;
                 }
-                let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
-                drop(c);
-                //   the incoming page first, as an ordinary repaint of the live tree, then the
-                // outgoing image over the top: the blit leaves the band it no longer covers
-                // untouched, so what shows through is the new page already drawn beneath
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
-                if let Some((front, captured)) = display.frame_and_capture() {
-                        let mut c = layer.canvas(front);
+                if self.page_move_over {
+                        //   no clear: the outgoing image IS the ground the incoming page
+                        // slides in over
+                        let Some(mut c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
+                        c.set_offset(self.page_move_dx * (self.page_move_span - travel), 0);
                         self.paint(&mut c, font);
-                        c.blit_offset(captured, self.page_move_dx * travel, self.page_move_dy * travel);
+                        drop(c);
+                } else {
+                        let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
+                        drop(c);
+                        //   the incoming page first, as an ordinary repaint of the live tree,
+                        // then the outgoing image over the top: the blit leaves the band it no
+                        // longer covers untouched, so what shows through is the new page
+                        // already drawn beneath
+                        if let Some((front, captured)) = display.frame_and_capture() {
+                                let mut c = layer.canvas(front);
+                                self.paint(&mut c, font);
+                                c.blit_offset(captured, self.page_move_dx * travel, self.page_move_dy * travel);
+                        }
                 }
                 layer.invalidate_all();
                 layer.frame_end(display);
@@ -1823,6 +1853,18 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return;
                 }
                 let r = self.draw_rect_of(w.rect);
+                //   the window owns every pixel of its rect, so it paints its interior rather
+                // than trusting a cleared canvas: the tree is then self-sufficient, and a
+                // draw-over frame (no clear -- the single-buffered scanout, where a cleared
+                // live buffer flashes black under the beam) leaves nothing stale
+                let saved_fg = c.fg;
+                c.fg = c.bg;
+                if win.corner_radius != 0 {
+                        c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), light_draw::corner::ALL, true);
+                } else {
+                        c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), true);
+                }
+                c.fg = saved_fg;
                 if win.border {
                         if win.corner_radius != 0 {
                                 c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), light_draw::corner::ALL, false);

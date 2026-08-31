@@ -333,8 +333,21 @@ impl DisplayMod {
                 } else {
                         self.ui.dirty_bounds().and_then(|r| self.layer.to_physical(r)).map(|r| (r.y0, r.y1))
                 };
+                //   the scan is 480 active lines plus 29 of vertical blanking
+                const TOTAL_LINES: i32 = 509;
                 let safe = match span {
-                        Some((top, bottom)) if bottom - top < DISPLAY_HEIGHT - 1 => beam > bottom || beam + DRAW_LINES < top,
+                        Some((top, bottom)) if bottom - top < DISPLAY_HEIGHT - 1 => {
+                                //   "past the bottom" counts only with RUNWAY: the beam
+                                // re-enters the region's top after the wrap, and a draw longer
+                                // than that trip gets lapped -- the scroll flicker that taught
+                                // this. A region too tall for any window falls back to the
+                                // start-at-the-wrap rule rather than starving
+                                let above = beam + DRAW_LINES < top;
+                                let past = beam > bottom && TOTAL_LINES - i32::from(beam) + i32::from(top) > i32::from(DRAW_LINES);
+                                let possible = i32::from(top) > i32::from(DRAW_LINES)
+                                        || TOTAL_LINES - i32::from(bottom) - 1 + i32::from(top) > i32::from(DRAW_LINES);
+                                if possible { past || above } else { beam <= WRAP_LINES }
+                        }
                         _ => beam <= WRAP_LINES,
                 };
                 if !safe {
@@ -371,6 +384,10 @@ impl Module for DisplayMod {
                 self.display.init(&mut clock);
                 self.layer.set_frame_rate(FPS);
                 self.layer.bg = BG;
+                //   the buffer is live on the glass: a cleared frame flashes black under the
+                // beam before the repaint reaches it, so every frame draws OVER the last --
+                // the window interiors cover what the clear used to
+                self.layer.draw_over = true;
                 self.ui.fit(self.layer);
                 if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
                         warn!("the main page did not build: {e:?}");

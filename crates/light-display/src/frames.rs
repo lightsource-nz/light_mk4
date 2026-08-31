@@ -101,6 +101,11 @@ pub struct FrameLayer {
         frame_open: bool,
         /// Frames refused because the display was still busy with the last one.
         pub skipped: u32,
+        /// Never clear the canvas at `frame_begin`: every frame draws OVER the previous one.
+        /// For a single-buffered scanned panel, where a cleared live buffer flashes black
+        /// under the beam before the repaint reaches it. The paint must then cover every
+        /// pixel it owns -- the toolkit's windows fill their interiors for exactly this.
+        pub draw_over: bool,
 }
 
 impl FrameLayer {
@@ -124,6 +129,7 @@ impl FrameLayer {
                         pending: Vec::new(),
                         frame_open: false,
                         skipped: 0,
+                        draw_over: false,
                 }
         }
 
@@ -212,6 +218,18 @@ impl FrameLayer {
         /// cleared canvas to draw on. `None` means draw nothing this pass and try again: that is
         /// how a display that cannot keep up skips frames instead of tearing.
         pub fn frame_begin<'d, D: DisplayDriver>(&mut self, display: &'d mut Display<'_, D>, now_us: u64) -> Option<Canvas<'d>> {
+                self.frame_open_common(display, now_us, true)
+        }
+
+        /// As [`frame_begin`](Self::frame_begin), but the canvas is NOT cleared: drawing lands
+        /// over whatever the buffer already holds. This is how a single-buffered scanned panel
+        /// animates -- the previous image survives in the live buffer wherever the frame does
+        /// not overdraw it, standing in for the capture there is no RAM to keep.
+        pub fn frame_begin_over<'d, D: DisplayDriver>(&mut self, display: &'d mut Display<'_, D>, now_us: u64) -> Option<Canvas<'d>> {
+                self.frame_open_common(display, now_us, false)
+        }
+
+        fn frame_open_common<'d, D: DisplayDriver>(&mut self, display: &'d mut Display<'_, D>, now_us: u64, clear: bool) -> Option<Canvas<'d>> {
                 if self.frame_open {
                         return None;
                 }
@@ -236,7 +254,9 @@ impl FrameLayer {
                 self.frame_open = true;
                 let buf = display.frame_mut()?;
                 let mut c = self.canvas(buf);
-                c.clear();
+                if clear && !self.draw_over {
+                        c.clear();
+                }
                 Some(c)
         }
 

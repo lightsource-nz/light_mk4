@@ -209,6 +209,11 @@ pub struct Canvas<'a> {
         dim_y: u16,
         rotation: Rotation,
         flip: Flip,
+        /// Logical translation applied before the orientation transform -- a page
+        /// transition's slide. Non-zero offsets shrink the clip to the window that still
+        /// lands on the buffer, and set_clip/clear_clip preserve that bound.
+        off_x: i32,
+        off_y: i32,
         transform: Transform,
         /// Inclusive, logical, never larger than the canvas.
         clip: Region,
@@ -229,6 +234,8 @@ impl<'a> Canvas<'a> {
                         dim_y: height,
                         rotation: Rotation::R0,
                         flip: Flip::None,
+                        off_x: 0,
+                        off_y: 0,
                         transform: Transform::IDENTITY,
                         clip: Region::full(width, height),
                         fg: 0xFFFF,
@@ -278,18 +285,53 @@ impl<'a> Canvas<'a> {
                         self.dim_y = self.phys_h;
                 }
                 self.transform = Transform::for_canvas(self.rotation, self.flip, self.phys_w, self.phys_h);
+                if self.off_x != 0 || self.off_y != 0 {
+                        //   the translation is logical, so it goes FIRST; the orientation
+                        // transform then maps the shifted coordinates onto the buffer
+                        let translate = Transform { a: 1, b: 0, tx: self.off_x, c: 0, d: 1, ty: self.off_y };
+                        self.transform = Transform::compose(translate, self.transform);
+                }
                 //   any clip was expressed in the logical space just redefined
-                self.clip = Region::full(self.dim_x, self.dim_y);
+                self.clip = self.offset_window();
+        }
+
+        /// The logical window that still lands on the buffer under the current offset -- the
+        /// whole canvas at offset zero. Every clip is bounded by this: the primitives trust
+        /// the clip to keep `run` on the buffer, so nothing may widen past it.
+        fn offset_window(&self) -> Region {
+                let (w, h) = (i32::from(self.dim_x), i32::from(self.dim_y));
+                let x0 = (-self.off_x).max(0);
+                let x1 = (w - 1 - self.off_x).min(w - 1);
+                let y0 = (-self.off_y).max(0);
+                let y1 = (h - 1 - self.off_y).min(h - 1);
+                if x0 > x1 || y0 > y1 {
+                        //   nothing lands on the buffer: a clip no span or cell passes
+                        return Region::new(1, 1, 0, 0);
+                }
+                Region::new(x0 as u16, y0 as u16, x1 as u16, y1 as u16)
+        }
+
+        /// Translate everything drawn next by `(dx, dy)` LOGICAL pixels -- the page
+        /// transition's slide. The clip shrinks to what still lands on the buffer, and any
+        /// later `set_clip`/`clear_clip` stays inside that bound; reset with `(0, 0)`.
+        pub fn set_offset(&mut self, dx: i32, dy: i32) {
+                self.off_x = dx;
+                self.off_y = dy;
+                self.recompute();
         }
 
         /// Restrict drawing to a logical rectangle (inclusive, clamped to the canvas). Set it,
         /// draw what must not escape, then `clear_clip` -- the clip is canvas state.
         pub fn set_clip(&mut self, r: Region) {
-                self.clip = r.clamped(self.dim_x, self.dim_y);
+                let w = self.offset_window();
+                let r = r.clamped(self.dim_x, self.dim_y);
+                let (x0, y0) = (r.x0.max(w.x0), r.y0.max(w.y0));
+                let (x1, y1) = (r.x1.min(w.x1), r.y1.min(w.y1));
+                self.clip = if x0 > x1 || y0 > y1 { Region::new(1, 1, 0, 0) } else { Region::new(x0, y0, x1, y1) };
         }
 
         pub fn clear_clip(&mut self) {
-                self.clip = Region::full(self.dim_x, self.dim_y);
+                self.clip = self.offset_window();
         }
 
         pub fn clip(&self) -> Region {
@@ -403,6 +445,15 @@ impl<'a> Canvas<'a> {
                                 let [hi, lo] = color.to_be_bytes();
                                 if step == 1 {
                                         let start = i as usize * 2;
+                                        if hi == lo {
+                                                //   black, white and the greys: a fill, an
+                                                // order of magnitude over the byte-pair loop.
+                                                // Background fills live here, which is what
+                                                // lets a window paint its own interior for
+                                                // the cost of the clear it replaces
+                                                self.buf[start..start + len * 2].fill(hi);
+                                                return;
+                                        }
                                         for p in self.buf[start..start + len * 2].chunks_exact_mut(2) {
                                                 p[0] = hi;
                                                 p[1] = lo;
