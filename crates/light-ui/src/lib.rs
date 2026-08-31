@@ -1853,16 +1853,51 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return;
                 }
                 let r = self.draw_rect_of(w.rect);
-                //   the window owns every pixel of its rect, so it paints its interior rather
-                // than trusting a cleared canvas: the tree is then self-sufficient, and a
-                // draw-over frame (no clear -- the single-buffered scanout, where a cleared
-                // live buffer flashes black under the beam) leaves nothing stale
+                //   the window owns every pixel of its rect, but its CHILDREN own theirs:
+                // background goes only into the GAPS around them, so on a draw-over frame
+                // (no clear -- the single-buffered scanout, where a cleared live buffer
+                // flashes black under the beam) every pixel is written once, with its final
+                // value. Filling the whole interior first read back as flicker on the glass:
+                // the beam catching the focused button between the wash and its repaint.
+                // Stacked children are in y order and disjoint; the canvas clip crops the
+                // bands of scrolled-away children
+                //   children own only the pixels they will PAINT: a scrolling window's
+                // children clip to its viewport, so the part of a rect scrolled past it --
+                // or the rows past the viewport bottom -- is background here, not child
+                // territory. The first fit trusted raw rects, and the unowned strip below
+                // the viewport kept every earlier frame: the jumble that taught this
+                let mut owned = *clip;
+                if w.is_scrolling_window() {
+                        let mut vp = self.viewport(id);
+                        vp.y1 = vp.y1.max(self.scroll_stop_y1(id));
+                        if !rect_intersect(&mut owned, &vp) {
+                                owned = Rect::new(0, 0, -1, -1);
+                        }
+                }
                 let saved_fg = c.fg;
                 c.fg = c.bg;
-                if win.corner_radius != 0 {
-                        c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), light_draw::corner::ALL, true);
-                } else {
-                        c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), true);
+                let mut band_top = r.y0;
+                for child in self.children(id) {
+                        let mut cr = self.w(child).rect;
+                        if !rect_intersect(&mut cr, &owned) {
+                                continue;
+                        }
+                        if cr.y0 > band_top {
+                                c.rect(Point::new(r.x0, band_top), Point::new(r.x1, cr.y0 - 1), true);
+                        }
+                        let sy0 = cr.y0.max(band_top);
+                        if sy0 <= cr.y1 {
+                                if cr.x0 > r.x0 {
+                                        c.rect(Point::new(r.x0, sy0), Point::new(cr.x0 - 1, cr.y1), true);
+                                }
+                                if cr.x1 < r.x1 {
+                                        c.rect(Point::new(cr.x1 + 1, sy0), Point::new(r.x1, cr.y1), true);
+                                }
+                        }
+                        band_top = band_top.max(cr.y1 + 1);
+                }
+                if band_top <= r.y1 {
+                        c.rect(Point::new(r.x0, band_top), Point::new(r.x1, r.y1), true);
                 }
                 c.fg = saved_fg;
                 if win.border {
@@ -1902,6 +1937,18 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let r = self.draw_rect_of(w.rect);
                 let focused = self.focused == Some(id);
                 let (p0, p1) = (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1));
+                //   an unfocused button owns its rect too: the interior fills with bg so a
+                // draw-over frame leaves nothing of the previous image inside the outline
+                if !focused {
+                        let saved_fg = c.fg;
+                        c.fg = c.bg;
+                        if btn.corner_radius != 0 {
+                                c.rect_rounded(p0, p1, u16::from(btn.corner_radius), btn.corners, true);
+                        } else {
+                                c.rect(p0, p1, true);
+                        }
+                        c.fg = saved_fg;
+                }
                 if btn.corner_radius != 0 {
                         c.rect_rounded(p0, p1, u16::from(btn.corner_radius), btn.corners, focused);
                 } else {
@@ -1934,6 +1981,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if !rect_intersect(&mut visible, clip) {
                         return;
                 }
+                //   the label owns its rect: bg beneath the text, for the draw-over frames
+                // where nothing else erases what was here last frame
+                let r = self.draw_rect_of(w.rect);
+                let saved_fg = c.fg;
+                c.fg = c.bg;
+                c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), true);
+                c.fg = saved_fg;
                 self.draw_text_fitted(c, font, w.rect.x0, w.rect.y0, l.text, w.rect.x1 - w.rect.x0 + 1);
         }
 

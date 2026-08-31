@@ -424,6 +424,26 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-01 — **transitions without a capture, and the end of the clear.** Page
+  transitions needed the outgoing page's image, which lives in a back buffer this board
+  cannot afford -- so the roles swap: the incoming tree (the live one -- the outgoing tree
+  is already destroyed) draws OVER the old image at a shrinking logical offset
+  (`Canvas::set_offset`, its clip bounded to what lands on the buffer), and the old page
+  survives in the live buffer wherever a step has not yet covered it. Works in any format;
+  the capture path remains for double-buffered boards. Getting it clean on the glass
+  killed the frame clear entirely, in three measured steps. First a black bar flickered
+  atop the scrolling list: a cleared live buffer is black under the beam until the repaint
+  reaches it, and the beam-gate's past-the-bottom arm had no concept of wrap runway (both
+  fixed: `draw_over` frames, and the gate learned the trip time back to a region's top).
+  Then the focused button flickered: the window filling its WHOLE interior before its
+  children re-created the clear's race locally. Then the old menu survived inside the new
+  page's widgets: outline-only buttons and bare labels had always been leaning on the
+  clear for their backgrounds. The destination is one rule -- EVERY pixel is written once
+  per frame, with its final value: windows fill only the gaps around what their children
+  will actually paint (viewport-clipped, not raw rects -- the difference kept a jumble of
+  old frames below the viewport), buttons and labels fill their own rects, and `run()`
+  gained a grey fast path that makes those fills cost what the clear did. Hw-verified:
+  transitions, scroll and toggles clean.
 - 2026-09-01 — **tear-free single-buffering: racing the beam instead of buying a buffer.**
   The 4" board's deferred display expansion. A second 450 KB framebuffer does not exist on
   a 520 KB chip, but the scanout engine already knows what a back buffer would be standing
