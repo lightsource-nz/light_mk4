@@ -32,6 +32,13 @@ pub const OLED_HEIGHT: u16 = 128;
 pub const OLED_DISPLAY_OFFSET: u8 = 96;
 /// mk3's `SPI_BAUDRATE` for the OLED rigs; this panel was never re-clocked.
 pub const OLED_SPI_HZ: u32 = 10_000_000;
+/// The display bus's DMA channel: the top of the range, where pico-sdk's
+/// dma_claim_unused_channel (counting up from 0) will not reach -- and the top is a CHIP
+/// fact: the RP2040 has 12 channels, the RP2350 16. Channel 15 on an RP2040 panicked the
+/// pac's bounds check at first light, straight into BOOTSEL with the message in RAM.
+#[cfg(feature = "rp2040")]
+pub const OLED_DMA_CH: usize = 11;
+#[cfg(feature = "rp2350")]
 pub const OLED_DMA_CH: usize = 15;
 
 pub struct Peripherals {

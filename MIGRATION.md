@@ -20,7 +20,7 @@ a guess, and mk4 does not inherit guesses.
 | light_cli | `light-core::cli` + `console::LineReader` | ported | one grammar: the `Cli` owns echo, help, loglevel, quit and usage-on-error; an app supplies a table of commands parsing into its event type. Not mk3's 26-command tree machinery — that died with decision 3, and nothing misses it |
 | light_ioport (SPI, I2C, 3-wire, PIO-SPI) | `light-core::hal` traits + port crates | ported | SPI display bus and I2C only; PIO-SPI and 3-wire wait for a board that needs them |
 | light_core_chip_rp2350 | `light-rp2` (feature `rp2350`; ARM + Hazard3) | ported | |
-| light_core_chip_rp2040 | `light-rp2` (feature `rp2040`) | ported (build only) | one source with the RP2350 port; presets `conf-light_mk4-pico-debug`, `conf-light_mk4-crossfire-pico-debug`. Not yet flashed: no RP2040 on the bench |
+| light_core_chip_rp2040 | `light-rp2` (feature `rp2040`) | ported | one source with the RP2350 port; hw-verified in the po13 dock (demo + crossfire, DMA display, dual-core USB host). The one chip difference the port missed -- 12 DMA channels, not 16 -- was board wiring, and is chip-cfg'd there now |
 | light_core_chip_rp2_common | `light-rp2` | ported | the common code is the whole crate; the chip is three `cfg` lines |
 | light_core_chip_stm32h743 | `light-stm32h7` + CMSIS shell | ported | |
 | light_core_chip_stm32f411 | `light-stm32f4` + CMSIS shell | ported | console verified by pin state only (no VCP wiring) |
@@ -98,5 +98,5 @@ a guess, and mk4 does not inherit guesses.
 
 ## What is not on any list
 
-- Hardware verification of the RP2040 build. The port exists; crossfire's product board is a
-  stock Pico, and until one is flashed the item that gates a product is still open.
+- Nothing. The RP2040 verification closed the last product-gating item; what remains pending
+  in the tables above waits on specific hardware reaching the bench, not on the framework.

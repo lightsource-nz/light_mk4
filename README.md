@@ -424,6 +424,19 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the RP2040 runs, and two findings paid for the trip.** The po13 demo and
+  crossfire both hardware-verified on a Pico in the po13 dock: full CLI sessions over the
+  probe UART, the OLED pushing frames over DMA with 0 chunk timeouts, crossfire's host stack
+  pumping at ~600k core-1 passes/s -- the M0+ portable-atomic fallback carrying real traffic.
+  FINDING ONE: the first boot panicked straight into BOOTSEL, and the panic path proved
+  itself -- the message survived in RAM for probe-rs to read: rp2040-pac's bounds check on
+  DMA channel 15, because **the RP2040 has 12 DMA channels where the RP2350 has 16** and the
+  po13 wiring's "top of the range" was an RP2350 fact. The DMA channel in board.rs is now a
+  chip-cfg'd constant (11 / 15). FINDING TWO: probe-rs `download` on this RP2040 (w25q16jv)
+  reported success while `verify` said the flash did not match and the core sat in the
+  bootrom with nothing to boot; with `--verify` the same download programs correctly. The
+  shared script now passes `--verify` always -- a few seconds of readback against a silent
+  misprogram. With this, every chip in the ledger has run mk4 on hardware.
 - 2026-08-31 — **`debug.ps1 -ProbeRs`: the fast flash-and-run path the spike wanted.**
   `light-debug.ps1` (shared, in the framework repo) grows a probe-rs branch: download the
   ELF, reset, done -- no OpenOCD, no gdb, always batch. On the RP2350 that also sidesteps
