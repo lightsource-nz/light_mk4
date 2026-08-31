@@ -164,7 +164,10 @@ const LIST_MIN_ROW: i32 = 56;
 const FPS: u32 = 30;
 const BG: u16 = 0x0000;
 
-const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
+/// The demo's Dim: through the floor mapping this lands ~59% LED-on time, in the lower
+/// part of the panel's narrow usable band -- clearly dim, clearly lit. The original MAX/10
+/// mapped below the driver's cutoff and read as OFF.
+const BACKLIGHT_DIM: u16 = 250;
 
 const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
 const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
@@ -670,7 +673,16 @@ struct BoardMod {
 
 impl BoardMod {
         fn apply(&mut self, level: u16) {
-                let duty = if BACKLIGHT_INVERTED { BACKLIGHT_LEVEL_MAX - level.min(BACKLIGHT_LEVEL_MAX) } else { level };
+                //   the driver's usable band, MEASURED on this glass: the backlight is
+                // fully dark at or below 40% LED-on time and only dims visibly between
+                // ~45% and 100% -- an RC-filtered threshold drive, not a proportional
+                // switch. Level 0 is off; every other level maps linearly onto the band
+                // above the floor, so the console's 0..1000 scale is all usable
+                const FLOOR: u32 = 450;
+                let level = u32::from(level.min(BACKLIGHT_LEVEL_MAX));
+                let max = u32::from(BACKLIGHT_LEVEL_MAX);
+                let physical = if level == 0 { 0 } else { (FLOOR + level * (max - FLOOR) / max) as u16 };
+                let duty = if BACKLIGHT_INVERTED { BACKLIGHT_LEVEL_MAX - physical } else { physical };
                 self.backlight.set_duty(duty);
         }
 }

@@ -424,6 +424,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 3.49's backlight is a threshold drive, measured.** "Dim just blacks
+  the screen" opened a hunt that first ACQUITTED the PWM: the slice registers read back
+  correct at every level (top 1000, cc tracking, counter running, pin muxed, pad toggling)
+  -- the framework's first upper-bank PWM pin works. The panel's response is the finding:
+  a stepped duty sweep on the glass showed the backlight fully dark at or below 40% LED-on
+  time, with all visible dimming compressed between ~45% and 100% -- an RC-filtered
+  threshold drive, not a proportional switch. A gamma-2 curve (the usual perceptual fix)
+  made it WORSE, mapping most of the scale below the cutoff. The board module now maps
+  level 0 to off and every other level linearly onto the measured band above a 45% floor,
+  so the console's whole 0..1000 scale lands on visible brightness; the demo's Dim landed
+  clearly-dim-clearly-lit on the glass. The lesson for the next board: sweep the backlight
+  on bring-up -- "full and off both work" proves only that the pin wiggles.
 - 2026-08-31 — **the 3.49's last two peripherals: the TF slot reads, and the PSRAM turns
   out not to exist.** The TF slot is wired for SDIO (CLK 26, CMD 27, D0..D3 28..31), which
   maps exactly onto SPI1 with D3 as chip select -- so the classic SPI-mode fallback needed
