@@ -62,8 +62,10 @@ pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::X, imu::Y, imu::Z], si
 pub const PIN_BAT_ADC: usize = 41;
 pub const PIN_BAT_CHRG: usize = 42;
 pub const PIN_BAT_DONE: usize = 43;
-/// ASSUMED divide-by-3 like the 3.49 until the reading is sanity-checked against a meter.
-pub const BATTERY_DIVIDER: u32 = 3;
+/// MEASURED ÷2: the vendor formula says ÷3, but ÷3 read an impossible 6.6 V on the bench
+/// while ÷2 reads a plausible 4.4 V charged pack. The vendor formula fits their OWN board
+/// revision, not this one.
+pub const BATTERY_DIVIDER: u32 = 2;
 
 /// The scanout's two DMA channels: the frame streamer and its reprogram partner.
 pub const RGB_DMA_DATA_CH: usize = 15;

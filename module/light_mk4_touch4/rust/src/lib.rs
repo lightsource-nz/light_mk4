@@ -72,6 +72,7 @@ enum AppEvent {
 #[derive(Clone, Copy, Debug)]
 enum Command {
         Stats,
+        Scan,
         Backlight(u16),
         UiFocus { next: bool },
         UiActivate,
@@ -80,6 +81,7 @@ enum Command {
         RenderMode(RenderMode),
         RtcShow,
         RtcSet(Datetime),
+        Pattern,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -260,6 +262,40 @@ impl DisplayMod {
                                 info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
                         }
                         AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
+                        AppEvent::Command(Command::Pattern) => {
+                                //   bring-up: paint a known pattern straight into the live
+                                // buffer with the UI paused, so the glass decodes geometry
+                                // and data-pin order. Border, horizontal stripes (16 px),
+                                // vertical stripes (16 px), then RED | GREEN | BLUE bars
+                                self.mode = RenderMode::Paused;
+                                if let Some(buf) = self.display.frame_mut() {
+                                        let w = DISPLAY_WIDTH as usize;
+                                        let h = DISPLAY_HEIGHT as usize;
+                                        // SAFETY: the FRAME static is u16-declared, aligned
+                                        let px: &mut [u16] = unsafe { core::slice::from_raw_parts_mut(buf.as_mut_ptr() as *mut u16, w * h) };
+                                        for y in 0..h {
+                                                for x in 0..w {
+                                                        let v = if x < 4 || x >= w - 4 || y < 4 || y >= h - 4 {
+                                                                0xFFFF
+                                                        } else if y < h / 3 {
+                                                                if (y / 16) % 2 == 0 { 0xFFFF } else { 0x0000 }
+                                                        } else if y < 2 * h / 3 {
+                                                                if (x / 16) % 2 == 0 { 0xFFFF } else { 0x0000 }
+                                                        } else if x < w / 3 {
+                                                                0xF800
+                                                        } else if x < 2 * w / 3 {
+                                                                0x07E0
+                                                        } else {
+                                                                0x001F
+                                                        };
+                                                        px[y * w + x] = v;
+                                                }
+                                        }
+                                        info!("pattern painted: border, h-stripes, v-stripes, R|G|B bars; ui paused (render resume to restore)");
+                                } else {
+                                        warn!("pattern: frame busy");
+                                }
+                        }
                         AppEvent::Command(Command::Stats) => {
                                 info!("display: {} frames drawn, {} skipped; max draw {} us (scanout: refresh is hardware)", self.layer.frames(), self.layer.skipped, self.draw_us_max);
                                 self.draw_us_max = 0;
@@ -478,6 +514,8 @@ struct BoardMod {
         battery: Adc,
         charging: Input,
         charge_done: Input,
+        /// Held for the stall diagnostic; the engine otherwise needs nothing.
+        scanout: light_rp2::rgb::RgbScanout,
         events: Subscription,
 }
 
@@ -518,6 +556,33 @@ impl Module for BoardMod {
                                                 "on battery/full"
                                         };
                                         info!("battery: {mv} mV (raw {raw}), {state}");
+                                        //   the scanout's pulse over 5 ms -- SHORTER than a
+                                        // frame, because the progress counter wraps per
+                                        // frame and a longer window aliases (the bring-up's
+                                        // false "386 kpix/s"). Healthy: ~14,000 kpix/s
+                                        let a = self.scanout.frame_progress();
+                                        let t0 = light_rp2::now_us();
+                                        while light_rp2::now_us() - t0 < 5_000 {
+                                                core::hint::spin_loop();
+                                        }
+                                        let b = self.scanout.frame_progress();
+                                        let total = u32::from(DISPLAY_WIDTH) * u32::from(DISPLAY_HEIGHT);
+                                        let consumed = if a >= b { a - b } else { a + (total - b) };
+                                        info!(
+                                                "scanout: {} kpix/s; data machine {} since last stats",
+                                                consumed / 5,
+                                                if self.scanout.data_stalled() { "STARVED" } else { "kept fed" }
+                                        );
+                                        let v = self.scanout.dma_view();
+                                        info!("scanout dma: reading {:#010x}, frame base {:#010x} (ctrl word at {:#010x})", v[0], v[1], v[2]);
+                                }
+                                AppEvent::Command(Command::Scan) => {
+                                        busy = true;
+                                        let p = self.scanout.pad_state();
+                                        let d = self.scanout.debug_state();
+                                        info!("pio1 padout {:#010x} padoe {:#010x}; pio2 padout {:#010x} padoe {:#010x}", p[0], p[1], p[2], p[3]);
+                                        info!("sio gpio_in {:#010x} hi {:#010x}", p[4], p[5]);
+                                        info!("pcs: hsync {} vsync {} de {} rgb {}; fstat pio1 {:#010x} pio2 {:#010x}", d[0], d[1], d[2], d[3], d[4], d[5]);
                                 }
                                 _ => {}
                         }
@@ -639,6 +704,8 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "render", usage: "render pause|resume", parse: parse_render },
+        CliCommand { name: "pattern", usage: "pattern", parse: |_| Parsed::Event(Command::Pattern) },
+        CliCommand { name: "scan", usage: "scan", parse: |_| Parsed::Event(Command::Scan) },
 ];
 static CLI: Cli<Command> = Cli::new(COMMANDS);
 
@@ -687,7 +754,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Gt911::new(i2c1, p.touch_int, TOUCH_MAP, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c1));
 
-        let mut board_mod = BoardMod { backlight: p.backlight, battery: p.battery, charging: p.charging, charge_done: p.charge_done, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut board_mod = BoardMod { backlight: p.backlight, battery: p.battery, charging: p.charging, charge_done: p.charge_done, scanout: p.scanout, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(i2c1), events: EVENTS.subscribe().expect("subscriber slot") };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));

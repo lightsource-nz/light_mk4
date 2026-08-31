@@ -19,4 +19,16 @@ light_mk4_add_font(light_mk4_touch4_font
         CRATE light_app_touch4 ENV LIGHT_FONT_LGF
 )
 
+#   the scanout NEEDS 240 MHz, like the vendor's examples: at stock 150 the PCLK divider is
+# 150/32 = 4.6875 and the fractional stutter (+-6.7 ns on a 62.5 ns period) leaves the
+# panel a wavery, distorted picture -- measured on the glass. 240/32 = 7.5 jitters less
+# in absolute terms and the shorter cycles buy the data-to-PCLK setup margin back.
+target_compile_definitions(light_mk4_touch4 PRIVATE
+        SYS_CLK_KHZ=240000
+        # 12 MHz XOSC * 120 = 1440 MHz VCO, / 6 / 1 = 240 MHz (vcocalc's answer)
+        PLL_SYS_VCO_FREQ_HZ=1440000000
+        PLL_SYS_POSTDIV1=6
+        PLL_SYS_POSTDIV2=1
+)
+
 light_mk4_shell_configure(light_mk4_touch4)

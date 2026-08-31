@@ -424,6 +424,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 4" glass lights: a handshake race and a clock requirement.** The
+  scanout's bring-up was a lesson in perfect-looking wires: DMA verifiably walking the
+  framebuffer at 15 Mpix/s, no starvation, all four state machines running -- and a black
+  panel. The `scan` command (PIO DBG_PADOUT/PADOE plus the four program counters, now part
+  of the engine) named it: the DE machine parked at its hsync wait while the data machine
+  streamed, meaning DE had collapsed to a runt pulse per line. The race is LATENT IN THE
+  REFERENCE PROGRAMS: after `irq set 0` the data machine wraps to a level-wait on DE, and
+  the input synchronizer still shows the high its partner has not yet dropped -- it sails
+  through one line early, and from then on the partner's `wait irq` always finds the flag
+  already set, so DE never spans a burst again. The fix is an EDGE wait (`wait 0 pin`
+  then `wait 1 pin`): the falling edge always lands within cycles of the IRQ, and the
+  handshake cannot re-enter stale. Second finding: the stock-150 MHz ambition died on the
+  glass -- 150/32 = 4.6875 and the fractional divider's +-6.7 ns stutter leaves the picture
+  wavery and distorted; 240 MHz (divider 7.5, the vendor's own clock) is rock solid and is
+  now a documented board requirement, not an experiment. With both in, the panel shows the
+  test pattern and the widget demo, touch lands on target, and the battery divider is
+  measured ÷2 (the vendor's ÷3 formula read an impossible 6.6 V). Hw-verified 2026-08-31.
 - 2026-08-31 — **the RGB scanout engine: the 4" board builds.** The RP2350-Touch-LCD-4's
   ST7701S has no GDDRAM -- every pixel of every frame streams over a 16-bit DPI bus
   forever -- and `light_rp2::rgb` makes that a hardware-only loop. Four hand-assembled PIO

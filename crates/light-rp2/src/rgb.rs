@@ -55,9 +55,11 @@ const SRC_IRQ: u8 = 2;
 fn jmp(cond: u8, addr: u16) -> u16 {
         u16::from(cond) << 5 | addr
 }
-const COND_ALWAYS: u8 = 0;
+//   JMP conditions, per the datasheet's table: 000 always, 001 !X, 010 X--, 011 !Y,
+// 100 Y--. The 011/100 pair cost this module its first bring-up session: 3 is NOT-Y,
+// which turned "next line" into "only when the counter is zero" -- one line per frame
 const COND_XDEC: u8 = 2;
-const COND_YDEC: u8 = 3;
+const COND_YDEC: u8 = 4;
 fn set_x(v: u8) -> u16 {
         0xE020 | u16::from(v)
 }
@@ -97,6 +99,7 @@ pub struct RgbPins {
 pub struct RgbScanout {
         width: u16,
         height: u16,
+        dma_data: usize,
 }
 
 impl RgbScanout {
@@ -187,18 +190,29 @@ impl RgbScanout {
                         side1(wait(1, SRC_IRQ, 0), 1),
                         side1(jmp(COND_YDEC, d + 8), 0),
                 ];
-                //   rgb at origin 17 on PIO2: a pull per pixel onto the 16 data pins
+                //   rgb at origin 17 on PIO2: a pull per pixel onto the 16 data pins,
+                // changing data just after PCLK's falling edge (the panel latches on the
+                // rising edge). One DELIBERATE divergence from the reference: each line
+                // waits for a DE EDGE (low, then high), not the level. The reference's
+                // level wait races its own handshake -- after `irq set 0` the input
+                // synchronizer still shows the DE the partner has not yet dropped, the
+                // level wait sails through on that stale high, and one line later the
+                // partner's `wait 1 irq 0` finds the flag already set: DE collapses to a
+                // runt pulse per line that the panel (sampling DE on PCLK edges) never
+                // sees at all. Bring-up caught it as the DE machine parked at its hsync
+                // wait while rgb streamed -- a black panel fed by perfect-looking DMA
                 let r = 17u16;
-                let rgb_prog: [u16; 10] = [
+                let rgb_prog: [u16; 11] = [
                         PULL_BLOCK,
                         MOV_Y_OSR,
                         MOV_X_Y,
+                        wait(0, SRC_PIN, de_i),
                         wait(1, SRC_PIN, de_i),
                         PULL_BLOCK,
                         wait(0, SRC_PIN, pc_i),
                         OUT_PINS_16,
                         wait(1, SRC_PIN, pc_i),
-                        jmp(COND_XDEC, r + 4),
+                        jmp(COND_XDEC, r + 5),
                         irq_set(0),
                 ];
                 for (i, ins) in hsync_prog.iter().enumerate() {
@@ -242,10 +256,13 @@ impl RgbScanout {
                 smr.sm_pinctrl().write(|w| unsafe { w.sideset_base().bits(de_i).sideset_count().bits(2) });
                 smr.sm_instr().write(|w| unsafe { w.bits(u32::from(d)) });
 
-                //   rgb: OUT over the 16 data pins, full speed, paced by the PCLK waits
+                //   rgb: OUT over the 16 data pins, full speed, paced by the PCLK waits.
+                // TX FIFO joined to 8 words: at 16 Mpix/s a pixel is ~9 system cycles, and
+                // the deeper FIFO is the margin against DMA arbitration latency
                 let smr = data.sm(SM_RGB);
                 smr.sm_pinctrl().write(|w| unsafe { w.out_base().bits(d0_i).out_count().bits(16) });
-                smr.sm_execctrl().write(|w| unsafe { w.wrap_bottom().bits(r as u8 + 2).wrap_top().bits(r as u8 + 9) });
+                smr.sm_execctrl().write(|w| unsafe { w.wrap_bottom().bits(r as u8 + 2).wrap_top().bits(r as u8 + 10) });
+                smr.sm_shiftctrl().write(|w| w.fjoin_tx().set_bit().out_shiftdir().set_bit().in_shiftdir().set_bit());
                 smr.sm_clkdiv().write(|w| unsafe { w.int().bits(1).frac().bits(0) });
                 Self::set_pindirs_out(data, SM_RGB, d0_i, 16);
                 smr.sm_pinctrl().write(|w| unsafe { w.out_base().bits(d0_i).out_count().bits(16) });
@@ -312,7 +329,7 @@ impl RgbScanout {
                 data.ctrl().modify(|_, w| unsafe { w.sm_enable().bits((1 << SM_DE) | (1 << SM_RGB)) });
                 sync.ctrl().modify(|_, w| unsafe { w.sm_enable().bits((1 << SM_HSYNC) | (1 << SM_VSYNC)) });
 
-                Self { width, height }
+                Self { width, height, dma_data }
         }
 
         /// SET PINDIRS over `count` pins from `base` (window-relative), in the 5-pin rounds
@@ -334,6 +351,75 @@ impl RgbScanout {
         /// old address.
         pub fn set_framebuffer(&mut self, fb: *const u16) {
                 FRAME_ADDR.store(fb as u32, Ordering::Release);
+        }
+
+        /// How many transfers remain in the CURRENT frame's DMA pass -- counts down from
+        /// `width * height` and reloads per frame. Two samples a known time apart measure
+        /// the real pixel consumption rate, which is the scanout's pulse.
+        pub fn frame_progress(&self) -> u32 {
+                let dma = unsafe { &*pac::DMA::ptr() };
+                dma.ch(self.dma_data).ch_trans_count().read().bits() & 0x0FFF_FFFF
+        }
+
+        /// Where the data DMA is READING right now, what the control word says the frame
+        /// starts at, and what the reprogram channel reads from -- the live view of the
+        /// refresh loop's addressing.
+        pub fn dma_view(&self) -> [u32; 3] {
+                let dma = unsafe { &*pac::DMA::ptr() };
+                [
+                        dma.ch(self.dma_data).ch_read_addr().read().bits(),
+                        FRAME_ADDR.load(Ordering::Acquire),
+                        FRAME_ADDR.as_ptr() as u32,
+                ]
+        }
+
+        /// The four state machines' program counters -- hsync, vsync, rgb_de, rgb -- plus
+        /// both blocks' FSTAT. Where each machine is parked names the wait it is stuck on;
+        /// the origin map is in this file's program layout.
+        pub fn debug_state(&self) -> [u32; 8] {
+                let sync = unsafe { &*pac::PIO1::ptr() };
+                let data = unsafe { &*pac::PIO2::ptr() };
+                [
+                        sync.sm(SM_HSYNC).sm_addr().read().bits(),
+                        sync.sm(SM_VSYNC).sm_addr().read().bits(),
+                        data.sm(SM_DE).sm_addr().read().bits(),
+                        data.sm(SM_RGB).sm_addr().read().bits(),
+                        sync.fstat().read().bits(),
+                        data.fstat().read().bits(),
+                        //   what the sync block DRIVES (window-relative: bit N = GPIO
+                        // 16+N), and the raw pad INPUTS from the SIO (absolute GPIO bits)
+                        sync.dbg_padout().read().bits(),
+                        unsafe { &*pac::SIO::ptr() }.gpio_in().read().bits(),
+                ]
+        }
+
+        /// What each block DRIVES and OUTPUT-ENABLES at the pads (window-relative: bit N =
+        /// GPIO 16+N), plus the raw pad readbacks from the SIO (bank 0 absolute, then
+        /// GPIOs 32+ in the HI register). PADOE is the ground truth for "is this pin
+        /// actually an output": a pin the programs write but never enable floats.
+        pub fn pad_state(&self) -> [u32; 6] {
+                let sync = unsafe { &*pac::PIO1::ptr() };
+                let data = unsafe { &*pac::PIO2::ptr() };
+                let sio = unsafe { &*pac::SIO::ptr() };
+                [
+                        sync.dbg_padout().read().bits(),
+                        sync.dbg_padoe().read().bits(),
+                        data.dbg_padout().read().bits(),
+                        data.dbg_padoe().read().bits(),
+                        sio.gpio_in().read().bits(),
+                        sio.gpio_hi_in().read().bits(),
+                ]
+        }
+
+        /// Whether the data machine has STARVED (pulled on an empty FIFO) since the last
+        /// call -- the underrun detector. Reading clears the flag.
+        pub fn data_stalled(&mut self) -> bool {
+                let data = unsafe { &*pac::PIO2::ptr() };
+                let stalled = data.fdebug().read().txstall().bits() & (1 << SM_RGB) != 0;
+                if stalled {
+                        data.fdebug().write(|w| unsafe { w.bits(1 << (24 + SM_RGB)) });
+                }
+                stalled
         }
 
         pub fn size(&self) -> (u16, u16) {
