@@ -77,6 +77,14 @@ pub const BATTERY_DIVIDER: u32 = 2;
 pub const RGB_DMA_DATA_CH: usize = 15;
 pub const RGB_DMA_CTRL_CH: usize = 14;
 
+// MEASURED ABSENT (2026-09-01): GPIO 47 is the RP2350B's XIP CS1 and the vendor demo
+// carries PSRAM plumbing, but the SDK's chip-ID auto-detect reads nothing and both vendor
+// examples ship with enabled_psram = false -- family boilerplate, not fitment, exactly
+// like the 3.49. The detection stays wired (a fitted variant degrades up, not down) and
+// the `psram` console command reports what it found. Consequence: the capture-based
+// animations (push transition, rotation spin) stay off this board's menu for good.
+pub const PIN_PSRAM_CS: usize = 47;
+
 // Declared so nothing reuses them; no drivers yet.
 pub const PIN_BUZZER: usize = 1;
 

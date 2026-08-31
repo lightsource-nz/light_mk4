@@ -2,13 +2,23 @@
 # ST7701S's first bring-up, fed by the pure-hardware PIO scanout engine.
 add_executable(light_mk4_touch4
         ../light_mk4_shell/src/main.c
+        src/psram_info.c
 )
 
 target_link_libraries(light_mk4_touch4 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
+        hardware_psram
         light_app_touch4
+)
+
+#   PSRAM on the XIP CS1 pin, if this board variant carries one: the SDK's runtime init
+# probes the chip ID before main and a board without the part degrades to "none" instead
+# of bus-faulting. The `psram` console command reports what detection found.
+target_compile_definitions(light_mk4_touch4 PRIVATE
+        PICO_PSRAM_CS_PIN=47
+        PICO_AUTO_DETECT_PSRAM_SIZE=1
 )
 
 #   the demo's font: the 4" square glass (480x480 over ~71.9x71.9 mm), 16 px

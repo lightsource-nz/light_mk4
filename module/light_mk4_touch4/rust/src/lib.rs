@@ -41,6 +41,34 @@ unsafe extern "C" {
         fn light_shell_panic(msg: *const u8, len: usize) -> !;
         fn light_shell_log(msg: *const u8, len: usize);
         fn light_shell_read_byte() -> i32;
+        /// From this board's psram_info.c: what the SDK's runtime init detected on CS1.
+        fn light_board_psram_size() -> u32;
+}
+
+/// The XIP CS1 window, through the UNCACHED alias -- a memtest through the cache would
+/// largely test the cache.
+const PSRAM_UNCACHED_BASE: u32 = 0x1500_0000;
+
+/// Write-and-read three 4 KB regions (start, middle, end) with an address-derived pattern.
+/// Returns (words checked, mismatches).
+fn psram_test(size: u32) -> (u32, u32) {
+        let (mut checked, mut bad) = (0u32, 0u32);
+        for base in [0u32, size / 2, size.saturating_sub(4096)] {
+                let p = (PSRAM_UNCACHED_BASE + base) as *mut u32;
+                for i in 0..1024usize {
+                        // SAFETY: within the detected PSRAM window; nothing else lives there
+                        unsafe { core::ptr::write_volatile(p.add(i), (base ^ i as u32).wrapping_mul(0x9E37_79B9)) };
+                }
+                for i in 0..1024usize {
+                        let want = (base ^ i as u32).wrapping_mul(0x9E37_79B9);
+                        // SAFETY: as above
+                        if unsafe { core::ptr::read_volatile(p.add(i)) } != want {
+                                bad += 1;
+                        }
+                        checked += 1;
+                }
+        }
+        (checked, bad)
 }
 
 #[repr(C)]
@@ -73,6 +101,7 @@ enum AppEvent {
 enum Command {
         Stats,
         Scan,
+        Psram,
         Backlight(u16),
         UiFocus { next: bool },
         UiActivate,
@@ -644,6 +673,16 @@ impl Module for BoardMod {
                                         info!("sio gpio_in {:#010x} hi {:#010x}", p[4], p[5]);
                                         info!("pcs: hsync {} vsync {} de {} rgb {}; fstat pio1 {:#010x} pio2 {:#010x}", d[0], d[1], d[2], d[3], d[4], d[5]);
                                 }
+                                AppEvent::Command(Command::Psram) => {
+                                        busy = true;
+                                        let size = unsafe { light_board_psram_size() };
+                                        if size == 0 {
+                                                info!("psram: none detected");
+                                        } else {
+                                                let (checked, bad) = psram_test(size);
+                                                info!("psram: {} KB detected; {} words tested, {} mismatches", size / 1024, checked, bad);
+                                        }
+                                }
                                 _ => {}
                         }
                 }
@@ -766,6 +805,7 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "render", usage: "render pause|resume", parse: parse_render },
         CliCommand { name: "pattern", usage: "pattern", parse: |_| Parsed::Event(Command::Pattern) },
         CliCommand { name: "scan", usage: "scan", parse: |_| Parsed::Event(Command::Scan) },
+        CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
 ];
 static CLI: Cli<Command> = Cli::new(COMMANDS);
 
