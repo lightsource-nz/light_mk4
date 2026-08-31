@@ -26,10 +26,12 @@ pub const PIN_DISPLAY_BL: usize = 16;
 /// row offset to measure -- the frame buffer covers the controller's memory exactly.
 pub const DISPLAY_WIDTH: u16 = 240;
 pub const DISPLAY_HEIGHT: u16 = 320;
-/// Same figure and rationale as the 1.69: 40 MHz is the working ST7789 clock on short traces.
-/// One open-source driver for this exact board runs 62.5 MHz, so there may be headroom above
-/// -- TO BE CONFIRMED: too fast shows up as corrupt pixels, not a clean failure.
-pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
+/// MEASURED 2026-08-31 with the live `spi` re-clock instrument: 75 MHz -- the highest rate
+/// the PL022 can make from a 150 MHz clk_peri below 150 itself -- ran clean on the glass
+/// through full repaints, with 0 chunk timeouts and the touch controller unaffected. (The
+/// old 40 MHz request actually ran 37.5 after the divider; the achievable rates here are
+/// coarse: 75, 37.5, 25...) A full-frame push at 75 MHz is ~16 ms.
+pub const DISPLAY_SPI_HZ: u32 = 75_000_000;
 
 // CST328 touch controller -- shared I2C1 (also carrying the IMU and, unused, the RTC), with
 // its own reset net (the 2.0" sibling shares the LCD's; this one does not).

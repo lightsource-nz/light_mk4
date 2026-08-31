@@ -77,6 +77,9 @@ enum Command {
         UiPress { x: u16, y: u16 },
         UiBack,
         RenderMode(RenderMode),
+        /// Re-clock the display bus live: the SPI-headroom probe. Too fast shows up as
+        /// corrupt pixels rather than a clean failure, so the eye is the instrument.
+        SpiHz(u32),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -262,6 +265,16 @@ impl DisplayMod {
                         AppEvent::Command(Command::RenderMode(m)) => {
                                 self.mode = m;
                                 info!("render mode {m:?}");
+                        }
+                        AppEvent::Command(Command::SpiHz(hz)) => {
+                                //   never mid-push: a divider change under a DMA burst tears
+                                // the transfer
+                                let _ = self.display.wait();
+                                let actual = self.display.driver().bus_mut().set_baudrate(hz);
+                                info!("spi re-clocked: asked {hz} Hz, running {actual} Hz");
+                                //   repaint everything at the new clock, so corruption shows
+                                // immediately rather than on the next interaction
+                                self.ui.invalidate_all();
                         }
                         AppEvent::Command(Command::UiBack) => {
                                 if !self.ui.navigate_back() {
@@ -586,12 +599,22 @@ fn parse_render(w: &mut Words) -> Parsed<Command> {
         }
 }
 
+fn parse_spi(w: &mut Words) -> Parsed<Command> {
+        match w.next().and_then(|s| s.parse::<u32>().ok()) {
+                //   the achievable rates at clk_peri 150 MHz are coarse (75, 37.5, 25...);
+                // the driver reports what it actually got
+                Some(hz) if (1_000_000..=100_000_000).contains(&hz) => Parsed::Event(Command::SpiHz(hz)),
+                _ => Parsed::Usage,
+        }
+}
+
 static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "stats", usage: "stats", parse: parse_stats },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
         CliCommand { name: "render", usage: "render pause|resume|repush", parse: parse_render },
+        CliCommand { name: "spi", usage: "spi HZ (1000000..100000000; the headroom probe)", parse: parse_spi },
 ];
 static CLI: Cli<Command> = Cli::new(COMMANDS);
 

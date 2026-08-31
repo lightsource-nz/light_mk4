@@ -44,6 +44,12 @@ impl<B: SpiDisplayBus> St7789<B> {
                 self.row_offset = row;
         }
 
+        /// The bus, for bring-up instrumentation -- re-clocking a panel live to probe its
+        /// headroom. Nothing may be in flight: the caller waits the display out first.
+        pub fn bus_mut(&mut self) -> &mut B {
+                &mut self.bus
+        }
+
         fn set_window(&mut self, r: &Region) {
                 let cx0 = r.x0 + self.col_offset;
                 let cx1 = r.x1 + self.col_offset;
