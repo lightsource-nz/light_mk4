@@ -53,6 +53,7 @@ pub struct Axs15231bTouch<B: I2cBus, I: InputPin> {
         pub x: u16,
         pub y: u16,
         last_report_ms: u32,
+        last_active_ms: u32,
         last_attempt_ms: u32,
         idle_polls: u32,
         unanswered: u8,
@@ -79,6 +80,7 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
                         x: 0,
                         y: 0,
                         last_report_ms: now_ms,
+                        last_active_ms: now_ms,
                         last_attempt_ms: now_ms,
                         idle_polls: 0,
                         unanswered: 0,
@@ -105,12 +107,18 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
                 (POLL_INTERVAL_MS << self.unanswered).min(BACKOFF_MAX_MS)
         }
 
-        fn infer_release(&mut self, now_ms: u32) -> Option<Event> {
-                if !self.active || self.idle_polls < RELEASE_MIN_POLLS {
+        /// Release is INFERRED, never read: the AXS consumes a report on read, so a frame
+        /// with zero fingers means "no new report since the last one", not "released" --
+        /// measured on the glass on bring-up, where trusting it produced a down/up pair per
+        /// poll under a held finger. A zero-finger read is an affirmative silence
+        /// (`affirmed`); an idle poll that never touched the bus additionally waits out the
+        /// poll-count floor before it may conclude anything.
+        fn infer_release(&mut self, now_ms: u32, affirmed: bool) -> Option<Event> {
+                if !self.active || (!affirmed && self.idle_polls < RELEASE_MIN_POLLS) {
                         return None;
                 }
                 let timeout = if self.unanswered > 0 { STALL_RELEASE_MS } else { RELEASE_TIMEOUT_MS };
-                if now_ms.wrapping_sub(self.last_report_ms) < timeout {
+                if now_ms.wrapping_sub(self.last_active_ms) < timeout {
                         return None;
                 }
                 self.active = false;
@@ -119,7 +127,7 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
 
         fn idle(&mut self, now_ms: u32) -> Option<Event> {
                 self.idle_polls = self.idle_polls.saturating_add(1);
-                self.infer_release(now_ms)
+                self.infer_release(now_ms, false)
         }
 
         pub fn poll(&mut self, now_ms: u32) -> Option<Event> {
@@ -154,6 +162,11 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
                 self.last_report_ms = now_ms;
 
                 let fingers = frame[1];
+                if fingers == 0 || fingers > 2 {
+                        //   consume-on-read: no new report, NOT a release -- see infer_release
+                        return self.infer_release(now_ms, true);
+                }
+
                 //   the first point: 12-bit long-axis value in [2..=3], short-axis in [4..=5]
                 let mut long = (u16::from(frame[2] & 0x0F) << 8) | u16::from(frame[3]);
                 let mut short = (u16::from(frame[4] & 0x0F) << 8) | u16::from(frame[5]);
@@ -166,19 +179,17 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
                         short = self.map.short_max - short;
                 }
 
+                self.last_active_ms = now_ms;
                 let was_active = self.active;
-                self.active = fingers > 0 && fingers <= 2;
-                if self.active {
-                        //   the display is declared in portrait (short wide, long tall), so
-                        // x is the short axis and y the long
-                        self.x = short;
-                        self.y = long;
-                }
-                match (was_active, self.active) {
-                        (false, true) => Some(Event::Down { x: self.x, y: self.y }),
-                        (true, true) => Some(Event::Move { x: self.x, y: self.y }),
-                        (true, false) => Some(Event::Up),
-                        (false, false) => None,
+                self.active = true;
+                //   the display is declared in portrait (short wide, long tall), so
+                // x is the short axis and y the long
+                self.x = short;
+                self.y = long;
+                if was_active {
+                        Some(Event::Move { x: self.x, y: self.y })
+                } else {
+                        Some(Event::Down { x: self.x, y: self.y })
                 }
         }
 }
@@ -248,8 +259,51 @@ mod tests {
                 //   out-of-range raw values clamp rather than escaping the glass
                 answer.set(Some(frame(1, 0xFFF, 0xFFF)));
                 assert_eq!(t.poll(POLL_INTERVAL_MS + INT_READ_FLOOR_MS), Some(Event::Move { x: 172, y: 640 }));
+                //   a zero-finger frame is silence, not a release (consume-on-read); the Up
+                // is inferred only after RELEASE_TIMEOUT_MS of report silence
+                let mut now = POLL_INTERVAL_MS + INT_READ_FLOOR_MS;
                 answer.set(Some(frame(0, 0, 0)));
-                assert_eq!(t.poll(POLL_INTERVAL_MS + INT_READ_FLOOR_MS + POLL_INTERVAL_MS), Some(Event::Up));
+                let mut up_at = None;
+                for _ in 0..40 {
+                        now += INT_READ_FLOOR_MS;
+                        match t.poll(now) {
+                                Some(Event::Up) => {
+                                        up_at = Some(now);
+                                        break;
+                                }
+                                Some(other) => panic!("only an inferred Up may follow silence, got {other:?}"),
+                                None => {}
+                        }
+                }
+                let up_at = up_at.expect("silence eventually infers the release");
+                assert!(up_at - (POLL_INTERVAL_MS + INT_READ_FLOOR_MS) >= RELEASE_TIMEOUT_MS, "released at {up_at}, before the timeout");
+        }
+
+        #[test]
+        fn a_held_finger_survives_the_empty_frames_between_reports() {
+                //   measured on the glass: the AXS answers zero fingers between reports while
+                // the finger is still down. Alternating 1/0 frames must read as one
+                // continuous touch, not a down/up pair per poll.
+                let answer = Rc::new(Cell::new(None));
+                let int = Rc::new(Cell::new(true));
+                let writes = Rc::new(RefCell::new(Vec::new()));
+                let map = CoordMap { long_max: 640, short_max: 172, invert_long: false, invert_short: false };
+                let mut t = Axs15231bTouch::new(MockBus { answer: answer.clone(), writes }, MockInt(int), map, 0);
+                let mut now = 0u32;
+                let mut downs = 0;
+                let mut ups = 0;
+                for i in 0..20 {
+                        now += INT_READ_FLOOR_MS;
+                        answer.set(Some(if i % 2 == 0 { frame(1, 300, 80) } else { frame(0, 0, 0) }));
+                        match t.poll(now) {
+                                Some(Event::Down { .. }) => downs += 1,
+                                Some(Event::Up) => ups += 1,
+                                _ => {}
+                        }
+                }
+                assert_eq!(downs, 1, "one touch, one Down");
+                assert_eq!(ups, 0, "no release while reports keep arriving");
+                assert!(t.active);
         }
 
         #[test]

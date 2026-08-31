@@ -424,6 +424,24 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-08-31 — **the 3.49 on the glass: the QSPI stack verified, and the touch protocol's
+  one surprise.** First flash lit the panel outright -- the vendor init table without
+  SLPOUT/DISPON was right as copied, the PIO-QSPI path pushed the 172x640 frame with zero
+  chunk timeouts, and the AXS's touch half answered with zero failed reads. The surprise:
+  the touch protocol is CONSUME-ON-READ. A report is handed over once; the next read answers
+  zero fingers while the finger is still on the glass, so trusting that zero produced a
+  down/up pair per poll (a tap became sixteen taps; a drag would have shredded). The driver
+  now treats a zero-finger frame as silence and infers release from 60 ms without a report
+  -- the CST drivers' quiet-path discipline, arrived at from the opposite direction -- and a
+  measured swipe is one Down, 380 Moves, one Up. Axes measured on the glass: raw long runs
+  from the USB end but row 0 is at the far end, so the long axis inverts (the reference's
+  `640 - pointX` said so all along); the short axis matches the pixels. The IMU
+  three-observation session gave display x = -raw_y, y = +raw_x, z = +raw_z, and the UI now
+  follows the bar through every pose. Labelled-widget taps, list scrolling and swipe-back
+  all land; every counter is zero after the full session. The bring-up also re-ran the
+  predicted identity-map artifact on cue: before calibration the resting tilt read as
+  landscape and rotated the UI, which is what made corner taps hit "wrong" widgets --
+  consistent wrongness, exactly what an unmeasured map owes.
 - 2026-08-31 — **two more Waveshare boards surveyed; the 3.49 built, the 4 scoped.** The
   RP2350-Touch-LCD-3.49 (AXS15231B, 172x640) and -4 (ST7701S RGB, 480x480, GT911) are both
   RP2350B parts, which grew `light-rp2` its upper-bank GPIO support (SIO GPIO_HI_*), a

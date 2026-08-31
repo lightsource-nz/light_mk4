@@ -1,7 +1,8 @@
 //! Board wiring for the Waveshare RP2350-Touch-LCD-3.49: pins from the board's reference
 //! demo (`DEV_Config.h` + `qspi_pio.h`), which is the closest thing to a schematic
-//! transcription on hand -- the same provenance discipline as the 2.8's wiring, and every
-//! figure below is UNVERIFIED on this bench until its bring-up ticks it off.
+//! transcription on hand -- the same provenance discipline as the 2.8's wiring.
+//! HARDWARE-VERIFIED 2026-08-31: panel, touch (axes measured on the glass), backlight
+//! inversion, IMU axis map -- the bring-up checklist is complete.
 //!
 //! An RP2350B: 48 GPIOs, and this board actually uses the upper bank -- the touch bus, the
 //! backlight and the battery pins all live above 31, which is what grew `light-rp2`'s
@@ -40,17 +41,21 @@ pub const PIN_TOUCH_SDA: usize = 32;
 pub const PIN_TOUCH_SCL: usize = 33;
 pub const PIN_TOUCH_INT: usize = 11;
 pub const TOUCH_I2C_HZ: u32 = 300_000;
-/// Raw axes: 0..=640 along the bar, 0..=172 across it. Which way each runs on the glass is
-/// bring-up's to measure; both start uninverted.
-pub const TOUCH_MAP: CoordMap = CoordMap { long_max: 640, short_max: 172, invert_long: false, invert_short: false };
+/// Raw axes: 0..=640 along the bar, 0..=172 across it. MEASURED on the glass 2026-08-31:
+/// raw long runs 0 at the USB end, but the panel's row 0 is at the far end, so the long
+/// axis inverts (the reference's `640 - pointX` agrees); the short axis matches the pixels
+/// uninverted. Verified by labelled-widget taps after the flip.
+pub const TOUCH_MAP: CoordMap = CoordMap { long_max: 640, short_max: 172, invert_long: true, invert_short: false };
 
 /// QMI8658C on I2C1 (the reference's DEV bus), INT1 on 8, unused.
 pub const PIN_IMU_SDA: usize = 6;
 pub const PIN_IMU_SCL: usize = 7;
 pub const PIN_IMU_INT1: usize = 8;
 pub const IMU_I2C_HZ: u32 = 300_000;
-/// UNMEASURED identity, as every board starts -- the three-observation session replaces it.
-pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::X, imu::Y, imu::Z], sign: [1, 1, 1] };
+/// MEASURED 2026-08-31, three observations: flat/screen-up read raw +Z (out of the glass),
+/// title-end-up read raw +X (the raw X axis runs along the bar toward row 0), left-edge-down
+/// read raw -Y. So display x = -raw_y, y = +raw_x, z = +raw_z -- determinant +1.
+pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], sign: [-1, 1, 1] };
 
 /// DMA channel for the display: the top of the range, the RP2350 convention.
 pub const DISPLAY_DMA_CH: usize = 15;
