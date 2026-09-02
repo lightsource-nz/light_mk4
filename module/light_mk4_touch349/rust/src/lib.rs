@@ -141,6 +141,36 @@ fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) 
                                 Err(e) => info!("fs: write failed: {e:?}"),
                         }
                 }
+                FsOp::Rm => {
+                        //   files and (empty) directories both; the entry decides
+                        let r = match fs.stat(path) {
+                                Ok(e) if e.is_dir => fs.rmdir(path),
+                                Ok(_) => fs.remove(path),
+                                Err(e) => Err(e),
+                        };
+                        match r {
+                                Ok(()) => info!("fs: removed {}", path),
+                                Err(e) => info!("fs: rm failed: {e:?}"),
+                        }
+                }
+                FsOp::Mv => match fs.rename(path, arg) {
+                        Ok(()) => info!("fs: {} -> {}", path, arg),
+                        Err(e) => info!("fs: mv failed: {e:?}"),
+                },
+                FsOp::Mkdir => match fs.mkdir(path) {
+                        Ok(()) => info!("fs: created {}/", path),
+                        Err(e) => info!("fs: mkdir failed: {e:?}"),
+                },
+                FsOp::Trunc => match arg.parse::<u32>() {
+                        Ok(len) => match fs.open(path) {
+                                Ok(mut f) => match f.truncate(&mut fs, len) {
+                                        Ok(()) => info!("fs: {} is now {} B", path, f.size()),
+                                        Err(e) => info!("fs: trunc failed: {e:?}"),
+                                },
+                                Err(e) => info!("fs: open failed: {e:?}"),
+                        },
+                        Err(_) => info!("fs: trunc needs a byte count"),
+                },
                 FsOp::Cat => match fs.open(path) {
                         Ok(mut f) => {
                                 //   a peek, not a pager: the first 120 bytes, as text
@@ -210,6 +240,10 @@ enum FsOp {
         Ls,
         Cat,
         Write,
+        Rm,
+        Mv,
+        Mkdir,
+        Trunc,
 }
 
 /// A path argument small enough to ride the event bus by value.
@@ -921,14 +955,18 @@ fn parse_fs(w: &mut Words) -> Parsed<Command> {
                 Some("ls") => FsOp::Ls,
                 Some("cat") => FsOp::Cat,
                 Some("write") => FsOp::Write,
+                Some("rm") => FsOp::Rm,
+                Some("mv") => FsOp::Mv,
+                Some("mkdir") => FsOp::Mkdir,
+                Some("trunc") => FsOp::Trunc,
                 _ => return Parsed::Usage,
         };
         let path = w.next().unwrap_or("");
         let arg = w.next().unwrap_or("");
-        if matches!(op, FsOp::Cat | FsOp::Write) && path.is_empty() {
+        if !matches!(op, FsOp::Info | FsOp::Ls) && path.is_empty() {
                 return Parsed::Usage;
         }
-        if op == FsOp::Write && arg.is_empty() {
+        if matches!(op, FsOp::Write | FsOp::Mv | FsOp::Trunc) && arg.is_empty() {
                 return Parsed::Usage;
         }
         match (FsPath::new(path), FsPath::new(arg)) {
@@ -1066,7 +1104,7 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Command::Sd) },
-        CliCommand { name: "fs", usage: "fs info | fs ls [PATH] | fs cat PATH | fs write PATH TEXT", parse: parse_fs },
+        CliCommand { name: "fs", usage: "fs info|ls [P]|cat P|write P TEXT|rm P|mv A B|mkdir P|trunc P N", parse: parse_fs },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },

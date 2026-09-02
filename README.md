@@ -424,6 +424,20 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-03 — **light-fs rounds out: remove, truncate, rename, mkdir.** The directory
+  operations, under the same write-through discipline. `remove` deletes the entry FIRST
+  -- the commit point -- then frees the chain, treating a broken link as the end of the
+  walk (a leaked tail is a checker's lint, not corruption; the LFN slots left behind are
+  the orphans the read side's checksum gate already ignores). `truncate` frees the tail
+  and re-marks the new last cluster end-of-chain. `rename` moves the raw 32-byte entry
+  whole -- attributes and all -- across directories too, pointing a moved directory's
+  ".." at its new parent, and refuses a move into the mover's own subtree. `mkdir` lays
+  "." and ".." into one zeroed cluster; `rmdir` takes only empty directories (NotEmpty
+  otherwise). create/mkdir/rename now share one insert_entry that owns the end-marker
+  bookkeeping. Twenty host tests -- including "a moved directory's .. resolves to its new
+  parent" exercised through a real `NEST/SUB2/..` path -- and a full console round trip
+  on the Pi card: mkdir MK4, mv LIGHT.LOG into it, cat through the new path, trunc back
+  to one line, rm the file, rm the directory, and the final ls answering NotFound.
 - 2026-09-03 — **light-fs learns to write, seek, and read long names.** The staged second
   half. Writes are WRITE-THROUGH end to end: every mutated sector reaches the medium
   before the call returns, every FAT copy is kept in step (the fixture grew a second FAT

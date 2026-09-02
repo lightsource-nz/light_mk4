@@ -47,8 +47,11 @@ pub enum FsError {
         NoSpace,
         /// A FAT16 root directory with no free slot cannot grow.
         DirFull,
-        /// Not a legal 8.3 name (creation is 8.3-only).
+        /// Not a legal 8.3 name (creation is 8.3-only) -- or an operation aimed at ".",
+        /// "..", or a directory's own subtree.
         BadName,
+        /// `rmdir` on a directory that still holds entries.
+        NotEmpty,
 }
 
 impl From<BlockError> for FsError {
@@ -440,6 +443,66 @@ impl<D: BlockDevice> Fat<D> {
                 Ok(())
         }
 
+        /// Mark a directory slot deleted. Any LFN slots that preceded it become orphans,
+        /// which the read side's checksum gate already ignores -- the same lint every FAT
+        /// implementation accumulates.
+        fn delete_slot(&mut self, slot: EntrySlot) -> Result<(), FsError> {
+                self.load(slot.lba)?;
+                self.buf[usize::from(slot.off)] = 0xE5;
+                self.dev.write_block(slot.lba, &self.buf)?;
+                Ok(())
+        }
+
+        /// Free a chain, first cluster to end. A broken link ends the walk: by the time
+        /// this runs the entry is already gone, and a leaked tail is a checker's lint,
+        /// not corruption.
+        fn free_chain(&mut self, first: u32) -> Result<(), FsError> {
+                let mut cluster = first;
+                let mut hops = 0u32;
+                loop {
+                        let next = self.next_cluster(cluster).unwrap_or(None);
+                        self.set_fat(cluster, 0)?;
+                        match next {
+                                Some(n) => {
+                                        hops += 1;
+                                        if hops > self.cluster_count {
+                                                break;
+                                        }
+                                        cluster = n;
+                                }
+                                None => break,
+                        }
+                }
+                Ok(())
+        }
+
+        /// Place a raw 32-byte entry into a free slot of `loc`, maintaining the
+        /// end-of-directory marker. What `create`, `mkdir` and a cross-directory
+        /// `rename` all share.
+        fn insert_entry(&mut self, loc: DirLoc, raw: &[u8; 32]) -> Result<EntrySlot, FsError> {
+                let (slot, was_end, next_lba) = self.free_slot(loc)?;
+                self.load(slot.lba)?;
+                let off = usize::from(slot.off);
+                self.buf[off..off + 32].copy_from_slice(raw);
+                //   consuming the end marker moves it to the following slot -- in this
+                // sector now, in the next one below, or nowhere when the directory ends
+                // exactly here
+                if was_end && off + 32 < 512 {
+                        self.buf[off + 32..off + 64].fill(0);
+                }
+                let lba = slot.lba;
+                self.buf_lba = lba;
+                self.dev.write_block(lba, &self.buf)?;
+                if was_end && off + 32 == 512 {
+                        if let Some(nlba) = next_lba {
+                                self.load(nlba)?;
+                                self.buf[..32].fill(0);
+                                self.dev.write_block(nlba, &self.buf)?;
+                        }
+                }
+                Ok(slot)
+        }
+
         /// Rewrite a directory entry's first cluster and size in place.
         fn update_entry(&mut self, slot: EntrySlot, first_cluster: u32, size: u32) -> Result<(), FsError> {
                 self.load(slot.lba)?;
@@ -661,28 +724,7 @@ impl<D: BlockDevice> Fat<D> {
                 if self.find_in(loc, name).is_ok() {
                         return Err(FsError::Exists);
                 }
-                let (slot, was_end, next_lba) = self.free_slot(loc)?;
-                self.load(slot.lba)?;
-                let off = usize::from(slot.off);
-                self.buf[off..off + 32].fill(0);
-                self.buf[off..off + 11].copy_from_slice(&name11);
-                self.buf[off + 11] = 0x20; // an ordinary archive file
-                //   consuming the end marker moves it to the following slot -- in this
-                // sector now, in the next one below, or nowhere when the directory ends
-                // exactly here
-                if was_end && off + 32 < 512 {
-                        self.buf[off + 32..off + 64].fill(0);
-                }
-                let lba = slot.lba;
-                self.buf_lba = lba;
-                self.dev.write_block(lba, &self.buf)?;
-                if was_end && off + 32 == 512 {
-                        if let Some(nlba) = next_lba {
-                                self.load(nlba)?;
-                                self.buf[..32].fill(0);
-                                self.dev.write_block(nlba, &self.buf)?;
-                        }
-                }
+                let slot = self.insert_entry(loc, &new_entry_bytes(&name11, 0x20, 0))?;
                 Ok(File { size: 0, pos: 0, cluster: 0, cluster_byte: 0, start: 0, slot })
         }
 
@@ -693,6 +735,118 @@ impl<D: BlockDevice> Fat<D> {
                 f.seek(self, size)?;
                 Ok(f)
         }
+
+        /// Delete the file at `path`: entry first (the commit point), then its chain.
+        pub fn remove(&mut self, path: &str) -> Result<(), FsError> {
+                let (dir, name) = split_path(path);
+                let name = plain_name(name)?;
+                let loc = self.resolve_dir(dir)?;
+                let (entry, slot) = self.find_in(loc, name)?;
+                if entry.is_dir {
+                        return Err(FsError::IsADirectory);
+                }
+                self.delete_slot(slot)?;
+                if entry.first_cluster >= 2 {
+                        self.free_chain(entry.first_cluster)?;
+                }
+                Ok(())
+        }
+
+        /// Delete the EMPTY directory at `path` ("." and ".." do not count as content).
+        pub fn rmdir(&mut self, path: &str) -> Result<(), FsError> {
+                let (dir, name) = split_path(path);
+                let name = plain_name(name)?;
+                let loc = self.resolve_dir(dir)?;
+                let (entry, slot) = self.find_in(loc, name)?;
+                if !entry.is_dir {
+                        return Err(FsError::NotADirectory);
+                }
+                if entry.first_cluster < 2 {
+                        return Err(FsError::BadChain);
+                }
+                let mut occupied = false;
+                self.for_each_entry(DirLoc::Chain { first: entry.first_cluster }, &mut |e, _| {
+                        if e.name() != "." && e.name() != ".." {
+                                occupied = true;
+                                true
+                        } else {
+                                false
+                        }
+                })?;
+                if occupied {
+                        return Err(FsError::NotEmpty);
+                }
+                self.delete_slot(slot)?;
+                self.free_chain(entry.first_cluster)?;
+                Ok(())
+        }
+
+        /// Create the directory at `path`: one zeroed cluster holding "." and "..", and
+        /// an entry in the (existing) parent.
+        pub fn mkdir(&mut self, path: &str) -> Result<(), FsError> {
+                let (dir, name) = split_path(path);
+                let name11 = format83(name)?;
+                let loc = self.resolve_dir(dir)?;
+                if self.find_in(loc, name).is_ok() {
+                        return Err(FsError::Exists);
+                }
+                //   ".." holds the parent's first cluster; 0 means the root, per the spec
+                // -- which is also what the FAT16 root's fixed region gets
+                let parent_first = match loc {
+                        DirLoc::Chain { first } => first,
+                        DirLoc::Fixed { .. } => 0,
+                };
+                let c = self.alloc_cluster(None)?;
+                self.zero_cluster(c)?;
+                let lba = self.cluster_lba(c);
+                self.load(lba)?;
+                self.buf[0..32].copy_from_slice(&new_entry_bytes(b".          ", 0x10, c));
+                self.buf[32..64].copy_from_slice(&new_entry_bytes(b"..         ", 0x10, parent_first));
+                self.dev.write_block(lba, &self.buf)?;
+                self.insert_entry(loc, &new_entry_bytes(&name11, 0x10, c))?;
+                Ok(())
+        }
+
+        /// Move and/or rename `from` to `to` -- across directories too. The entry's raw
+        /// bytes travel whole (attributes and all); only the name changes. A moved
+        /// directory's ".." is pointed at its new parent.
+        pub fn rename(&mut self, from: &str, to: &str) -> Result<(), FsError> {
+                //   into its own subtree would orphan the moved directory in a cycle
+                let (from_t, to_t) = (from.trim_matches('/'), to.trim_matches('/'));
+                if to_t.len() > from_t.len() && to_t[..from_t.len()].eq_ignore_ascii_case(from_t) && to_t.as_bytes()[from_t.len()] == b'/' {
+                        return Err(FsError::BadName);
+                }
+                let (fdir, fname) = split_path(from);
+                let fname = plain_name(fname)?;
+                let (tdir, tname) = split_path(to);
+                let tname11 = format83(tname)?;
+                let floc = self.resolve_dir(fdir)?;
+                let tloc = self.resolve_dir(tdir)?;
+                let (entry, fslot) = self.find_in(floc, fname)?;
+                if self.find_in(tloc, tname).is_ok() {
+                        return Err(FsError::Exists);
+                }
+                self.load(fslot.lba)?;
+                let mut raw = [0u8; 32];
+                raw.copy_from_slice(&self.buf[usize::from(fslot.off)..usize::from(fslot.off) + 32]);
+                raw[..11].copy_from_slice(&tname11);
+                self.insert_entry(tloc, &raw)?;
+                self.delete_slot(fslot)?;
+                if entry.is_dir && entry.first_cluster >= 2 {
+                        let parent_first = match tloc {
+                                DirLoc::Chain { first } => first,
+                                DirLoc::Fixed { .. } => 0,
+                        };
+                        let lba = self.cluster_lba(entry.first_cluster);
+                        self.load(lba)?;
+                        if &self.buf[32..34] == b".." {
+                                self.buf[32 + 20..32 + 22].copy_from_slice(&((parent_first >> 16) as u16).to_le_bytes());
+                                self.buf[32 + 26..32 + 28].copy_from_slice(&(parent_first as u16).to_le_bytes());
+                                self.dev.write_block(lba, &self.buf)?;
+                        }
+                }
+                Ok(())
+        }
 }
 
 /// "A/B/C.TXT" -> ("A/B", "C.TXT").
@@ -702,6 +856,27 @@ fn split_path(path: &str) -> (&str, &str) {
                 Some(i) => (&path[..i], &path[i + 1..]),
                 None => ("", path),
         }
+}
+
+/// A name an operation may act on: nonempty, and neither of the dot entries.
+fn plain_name(name: &str) -> Result<&str, FsError> {
+        if name.is_empty() {
+                return Err(FsError::NotFound);
+        }
+        if name == "." || name == ".." {
+                return Err(FsError::BadName);
+        }
+        Ok(name)
+}
+
+/// A fresh raw directory entry: name, attributes, first cluster; zero size and times.
+fn new_entry_bytes(name11: &[u8; 11], attr: u8, cluster: u32) -> [u8; 32] {
+        let mut e = [0u8; 32];
+        e[..11].copy_from_slice(name11);
+        e[11] = attr;
+        e[20..22].copy_from_slice(&((cluster >> 16) as u16).to_le_bytes());
+        e[26..28].copy_from_slice(&(cluster as u16).to_le_bytes());
+        e
 }
 
 /// An 8.3 name field from "NAME.EXT", uppercased, or [`FsError::BadName`].
@@ -872,6 +1047,46 @@ impl File {
                 }
                 fs.update_entry(self.slot, self.start, self.size)?;
                 Ok(done)
+        }
+
+        /// Shrink the file to `len` bytes (growing is what `write` does): the tail of the
+        /// chain is freed, the new last cluster re-marked end-of-chain, and the entry
+        /// rewritten. A cursor past the new end moves to it.
+        pub fn truncate<D: BlockDevice>(&mut self, fs: &mut Fat<D>, len: u32) -> Result<(), FsError> {
+                if len >= self.size {
+                        return Ok(());
+                }
+                if len == 0 {
+                        if self.start >= 2 {
+                                fs.free_chain(self.start)?;
+                        }
+                        self.start = 0;
+                        self.size = 0;
+                        self.pos = 0;
+                        self.cluster = 0;
+                        self.cluster_byte = 0;
+                        return fs.update_entry(self.slot, 0, 0);
+                }
+                let cluster_bytes = fs.sectors_per_cluster * 512;
+                //   the last kept cluster is the one holding byte len-1
+                let keep = len.div_ceil(cluster_bytes);
+                let mut cluster = self.start;
+                for _ in 0..keep - 1 {
+                        match fs.next_cluster(cluster)? {
+                                Some(next) => cluster = next,
+                                None => break,
+                        }
+                }
+                if let Ok(Some(tail)) = fs.next_cluster(cluster) {
+                        fs.free_chain(tail)?;
+                }
+                let eoc = fs.eoc();
+                fs.set_fat(cluster, eoc)?;
+                self.size = len;
+                if self.pos > len {
+                        self.seek(fs, len)?;
+                }
+                fs.update_entry(self.slot, self.start, len)
         }
 
         /// Move the cursor; past-the-end clamps to the end. Costs a chain walk from the
@@ -1317,5 +1532,112 @@ mod tests {
                 let mut fs = Fat::mount(&mut dev).unwrap();
                 let mut f = fs.append("HELLO.TXT").unwrap();
                 assert!(matches!(f.write(&mut fs, &[0u8; 600]), Err(FsError::NoSpace)));
+        }
+
+        #[test]
+        fn remove_frees_the_chain_and_the_name() {
+                let mut dev = fat16_superfloppy();
+                {
+                        let mut fs = Fat::mount(&mut dev).unwrap();
+                        fs.remove("HELLO.TXT").unwrap();
+                        assert!(matches!(fs.open("HELLO.TXT"), Err(FsError::NotFound)));
+                        assert!(matches!(fs.remove("SUB"), Err(FsError::IsADirectory)));
+                        assert!(matches!(fs.remove("SUB/."), Err(FsError::BadName)));
+                }
+                //   clusters 2 and 3 free again, in BOTH FAT copies
+                for fat in [1usize, 18] {
+                        assert_eq!(&dev.0[fat * 512 + 4..fat * 512 + 8], &[0, 0, 0, 0], "FAT at sector {fat}");
+                }
+                //   and the space is reusable
+                let mut fs = Fat::mount(&mut dev).unwrap();
+                let mut f = fs.create("HELLO.TXT").unwrap();
+                f.write(&mut fs, b"again").unwrap();
+                let mut f = fs.open("HELLO.TXT").unwrap();
+                let mut buf = [0u8; 8];
+                assert_eq!(f.read(&mut fs, &mut buf).unwrap(), 5);
+                assert_eq!(&buf[..5], b"again");
+        }
+
+        #[test]
+        fn truncate_frees_the_tail_and_survives_a_remount() {
+                let mut dev = fat16_superfloppy();
+                {
+                        let mut fs = Fat::mount(&mut dev).unwrap();
+                        let mut f = fs.open("HELLO.TXT").unwrap();
+                        f.truncate(&mut fs, 300).unwrap();
+                        assert_eq!(f.size(), 300);
+                }
+                //   cluster 3 freed, cluster 2 re-marked end-of-chain, in both copies
+                for fat in [1usize, 18] {
+                        assert_eq!(u16::from_le_bytes([dev.0[fat * 512 + 4], dev.0[fat * 512 + 5]]), 0xFFFF);
+                        assert_eq!(u16::from_le_bytes([dev.0[fat * 512 + 6], dev.0[fat * 512 + 7]]), 0);
+                }
+                let mut fs = Fat::mount(&mut dev).unwrap();
+                let mut f = fs.open("HELLO.TXT").unwrap();
+                assert_eq!(f.size(), 300);
+                let mut buf = [0u8; 512];
+                assert_eq!(f.read(&mut fs, &mut buf).unwrap(), 300);
+                assert!(buf[..300].iter().all(|b| *b == b'A'));
+                //   and to zero: the first cluster goes too
+                let mut f = fs.open("HELLO.TXT").unwrap();
+                f.truncate(&mut fs, 0).unwrap();
+                let f = fs.open("HELLO.TXT").unwrap();
+                assert_eq!(f.size(), 0);
+        }
+
+        #[test]
+        fn rename_moves_within_and_across_directories() {
+                let mut dev = fat16_superfloppy();
+                {
+                        let mut fs = Fat::mount(&mut dev).unwrap();
+                        fs.rename("HELLO.TXT", "HI.TXT").unwrap();
+                        assert!(matches!(fs.open("HELLO.TXT"), Err(FsError::NotFound)));
+                        fs.rename("HI.TXT", "SUB/MOVED.TXT").unwrap();
+                }
+                let mut fs = Fat::mount(&mut dev).unwrap();
+                let mut f = fs.open("SUB/MOVED.TXT").unwrap();
+                assert_eq!(f.size(), 700);
+                let mut buf = [0u8; 4];
+                f.read(&mut fs, &mut buf).unwrap();
+                assert_eq!(&buf, b"AAAA");
+                //   collisions and cycles are refused
+                assert!(matches!(fs.rename("SUB/MOVED.TXT", "SUB/DEEP.BIN"), Err(FsError::Exists)));
+                assert!(matches!(fs.rename("SUB", "SUB/INSIDE"), Err(FsError::BadName)));
+        }
+
+        #[test]
+        fn mkdir_nests_and_a_moved_directory_updates_its_dotdot() {
+                let mut dev = fat16_superfloppy();
+                {
+                        let mut fs = Fat::mount(&mut dev).unwrap();
+                        fs.mkdir("NEST").unwrap();
+                        assert!(matches!(fs.mkdir("NEST"), Err(FsError::Exists)));
+                        let mut f = fs.create("NEST/NOTE.TXT").unwrap();
+                        f.write(&mut fs, b"nested").unwrap();
+                        //   move SUB under NEST: its ".." must follow
+                        fs.rename("SUB", "NEST/SUB2").unwrap();
+                }
+                let mut fs = Fat::mount(&mut dev).unwrap();
+                let mut f = fs.open("NEST/NOTE.TXT").unwrap();
+                let mut buf = [0u8; 8];
+                assert_eq!(f.read(&mut fs, &mut buf).unwrap(), 6);
+                assert_eq!(&buf[..6], b"nested");
+                let mut f = fs.open("NEST/SUB2/DEEP.BIN").unwrap();
+                assert_eq!(f.read(&mut fs, &mut buf).unwrap(), 5);
+                //   ".." resolves to NEST now: listing through it finds NOTE.TXT
+                let mut names: Vec<std::string::String> = Vec::new();
+                fs.list_dir("NEST/SUB2/..", |e| names.push(e.name().into())).unwrap();
+                assert!(names.contains(&"NOTE.TXT".into()), "listed: {names:?}");
+        }
+
+        #[test]
+        fn rmdir_refuses_content_then_removes() {
+                let mut dev = fat16_superfloppy();
+                let mut fs = Fat::mount(&mut dev).unwrap();
+                assert!(matches!(fs.rmdir("SUB"), Err(FsError::NotEmpty)));
+                assert!(matches!(fs.rmdir("HELLO.TXT"), Err(FsError::NotADirectory)));
+                fs.remove("SUB/DEEP.BIN").unwrap();
+                fs.rmdir("SUB").unwrap();
+                assert!(matches!(fs.stat("SUB"), Err(FsError::NotFound)));
         }
 }
