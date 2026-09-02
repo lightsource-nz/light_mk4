@@ -424,6 +424,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-03 — **light-fs learns to write, seek, and read long names.** The staged second
+  half. Writes are WRITE-THROUGH end to end: every mutated sector reaches the medium
+  before the call returns, every FAT copy is kept in step (the fixture grew a second FAT
+  to prove the mirroring), and the directory entry's size and first cluster are rewritten
+  at the end of each `write` -- a pulled card loses at most the call in flight. `create`
+  claims a directory slot (reusing deleted slots, walking the end marker forward, growing
+  a chain directory by a zeroed cluster -- and answering DirFull for the FAT16 root,
+  which cannot grow); the first cluster is claimed lazily by the first write; `append` is
+  open-plus-seek; `seek` walks the chain, with the boundary subtlety that a position on a
+  cluster edge belongs to the END of the previous cluster. Free clusters come from a
+  rolling-hint scan that wraps once and answers NoSpace honestly. Long names are now READ
+  (up to 64 ASCII chars): LFN chains are accumulated across sector and cluster edges,
+  checksum-verified against their 8.3 entry -- orphaned slots attach to nothing -- and
+  usable in listings and path lookup both; creation stays 8.3. Fifteen host tests, and
+  the hardware pass wrote LIGHT.LOG onto the Pi boot card: create 15 B, append to 27 B,
+  read both lines back. One fixture lesson: the test's hand-laid LFN split the name at
+  the wrong character and blamed the decoder -- the failure named the fixture.
 - 2026-09-03 — **the filesystem layer: FAT over anything block-shaped.** The framework's
   portable FS story lands in two seams and a crate. `light_core::hal::BlockDevice` is the
   bottom seam -- 512-byte LBA reads and writes plus a count, with a blanket impl for

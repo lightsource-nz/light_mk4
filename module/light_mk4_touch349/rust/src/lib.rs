@@ -74,7 +74,7 @@ fn psram_test(size: u32) -> (u32, u32) {
 /// One `fs` console command against the TF slot: init the card if this is the first
 /// touch since insertion, mount the volume OVER a borrow of the device (the blanket
 /// `BlockDevice for &mut T` -- the board keeps the card), act, unmount by drop.
-fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str) {
+fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) {
         if sd.card.is_none() {
                 let mut clock = SysClock;
                 if let Err(e) = sd.init(&mut clock) {
@@ -103,15 +103,42 @@ fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str) {
                         let mut count = 0u32;
                         let r = fs.list_dir(path, |e| {
                                 count += 1;
-                                if e.is_dir {
-                                        info!("  {}/", e.name());
-                                } else {
-                                        info!("  {}  {} B", e.name(), e.size);
+                                match (e.is_dir, e.long_name()) {
+                                        (true, Some(l)) => info!("  {}/  <{}>", e.name(), l),
+                                        (true, None) => info!("  {}/", e.name()),
+                                        (false, Some(l)) => info!("  {}  {} B  <{}>", e.name(), e.size, l),
+                                        (false, None) => info!("  {}  {} B", e.name(), e.size),
                                 }
                         });
                         match r {
                                 Ok(()) => info!("fs: {count} entries"),
                                 Err(e) => info!("fs: ls failed: {e:?}"),
+                        }
+                }
+                FsOp::Write => {
+                        //   create, or append when it already exists: `fs write LOG.TXT hello`
+                        // twice is a two-line file
+                        let mut f = match fs.create(path) {
+                                Ok(f) => f,
+                                Err(FsError::Exists) => match fs.append(path) {
+                                        Ok(f) => f,
+                                        Err(e) => {
+                                                info!("fs: append failed: {e:?}");
+                                                return;
+                                        }
+                                },
+                                Err(e) => {
+                                        info!("fs: create failed: {e:?}");
+                                        return;
+                                }
+                        };
+                        let mut data = [0u8; 49];
+                        let n = arg.len().min(48);
+                        data[..n].copy_from_slice(&arg.as_bytes()[..n]);
+                        data[n] = b'\n';
+                        match f.write(&mut fs, &data[..n + 1]) {
+                                Ok(w) => info!("fs: wrote {} B; {} is now {} B", w, path, f.size()),
+                                Err(e) => info!("fs: write failed: {e:?}"),
                         }
                 }
                 FsOp::Cat => match fs.open(path) {
@@ -174,7 +201,7 @@ enum Command {
         Volume(u8),
         Psram,
         Sd,
-        Fs { op: FsOp, path: FsPath },
+        Fs { op: FsOp, path: FsPath, arg: FsPath },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,6 +209,7 @@ enum FsOp {
         Info,
         Ls,
         Cat,
+        Write,
 }
 
 /// A path argument small enough to ride the event bus by value.
@@ -830,9 +858,9 @@ impl Module for BoardMod {
                                                 Err(e) => info!("sd: {e:?}"),
                                         }
                                 }
-                                AppEvent::Command(Command::Fs { op, path }) => {
+                                AppEvent::Command(Command::Fs { op, path, arg }) => {
                                         busy = true;
-                                        fs_command(&mut self.sd, op, path.as_str());
+                                        fs_command(&mut self.sd, op, path.as_str(), arg.as_str());
                                 }
                                 _ => {}
                         }
@@ -892,15 +920,20 @@ fn parse_fs(w: &mut Words) -> Parsed<Command> {
                 Some("info") | None => FsOp::Info,
                 Some("ls") => FsOp::Ls,
                 Some("cat") => FsOp::Cat,
+                Some("write") => FsOp::Write,
                 _ => return Parsed::Usage,
         };
         let path = w.next().unwrap_or("");
-        if op == FsOp::Cat && path.is_empty() {
+        let arg = w.next().unwrap_or("");
+        if matches!(op, FsOp::Cat | FsOp::Write) && path.is_empty() {
                 return Parsed::Usage;
         }
-        match FsPath::new(path) {
-                Some(path) => Parsed::Event(Command::Fs { op, path }),
-                None => Parsed::Usage,
+        if op == FsOp::Write && arg.is_empty() {
+                return Parsed::Usage;
+        }
+        match (FsPath::new(path), FsPath::new(arg)) {
+                (Some(path), Some(arg)) => Parsed::Event(Command::Fs { op, path, arg }),
+                _ => Parsed::Usage,
         }
 }
 
@@ -1033,7 +1066,7 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Command::Sd) },
-        CliCommand { name: "fs", usage: "fs info | fs ls [PATH] | fs cat PATH", parse: parse_fs },
+        CliCommand { name: "fs", usage: "fs info | fs ls [PATH] | fs cat PATH | fs write PATH TEXT", parse: parse_fs },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
