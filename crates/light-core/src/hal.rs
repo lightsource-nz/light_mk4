@@ -177,6 +177,46 @@ pub trait SpiBus {
         fn set_hz(&mut self, hz: u32);
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BlockError {
+        /// The medium answered wrongly, or not at all.
+        Io,
+        /// The operation did not complete within its deadline.
+        Timeout,
+        /// The block index is beyond the medium.
+        OutOfRange,
+}
+
+/// Block-addressed storage in 512-byte blocks -- the seam between a medium (an SD card,
+/// a raw flash region, a test vector) and a filesystem. LBA addressing always; a medium
+/// with other native addressing translates internally, the way the SD driver does for
+/// byte-addressed cards.
+pub trait BlockDevice {
+        /// How many 512-byte blocks the medium holds.
+        fn block_count(&self) -> u32;
+
+        fn read_block(&mut self, lba: u32, out: &mut [u8; 512]) -> Result<(), BlockError>;
+
+        fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), BlockError>;
+}
+
+//   a mutable borrow is a block device too, so a filesystem can be mounted OVER a device
+// something else owns -- a board module mounting its card slot per command, say -- without
+// giving the device up
+impl<T: BlockDevice + ?Sized> BlockDevice for &mut T {
+        fn block_count(&self) -> u32 {
+                (**self).block_count()
+        }
+
+        fn read_block(&mut self, lba: u32, out: &mut [u8; 512]) -> Result<(), BlockError> {
+                (**self).read_block(lba, out)
+        }
+
+        fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), BlockError> {
+                (**self).write_block(lba, data)
+        }
+}
+
 /// A QSPI display bus: four data lines, a clock, chip select -- and no D/C wire, so a
 /// register write is ONE chip-select frame carrying a serial command header and its data,
 /// which is why this is not [`SpiDisplayBus`] with more pins. The AXS15231B is the first

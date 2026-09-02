@@ -1,0 +1,9 @@
+[package]
+name = "light-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Filesystems for the light framework: FAT16/FAT32 over any BlockDevice"
+
+[dependencies]
+light-core = { path = "../light-core" }

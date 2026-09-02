@@ -424,6 +424,24 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-03 — **the filesystem layer: FAT over anything block-shaped.** The framework's
+  portable FS story lands in two seams and a crate. `light_core::hal::BlockDevice` is the
+  bottom seam -- 512-byte LBA reads and writes plus a count, with a blanket impl for
+  `&mut T` so a filesystem mounts OVER a borrowed device and the board keeps its card.
+  `light-sd` implements it (and grew the CMD24 single-block write with its data-response
+  and busy-wait). Above them, `light-fs` is our own FAT16/FAT32 -- no_std, no alloc, one
+  owned 512-byte buffer -- read-side first: mount (superfloppy or through an MBR's first
+  FAT partition), directory listing, case-insensitive 8.3 path descent, sequential file
+  read through cluster chains, with a [`File`] that borrows nothing so any number
+  interleave. The type decision follows the spec's one true rule (cluster COUNT, never
+  the BPB's label string, which lies on real cards), and the two formats a card might
+  actually carry but this crate does not speak -- exFAT, the SDXC factory format, and
+  FAT12 -- are detected and NAMED in the error instead of misparsed. Seven host tests
+  mount hand-laid FAT16/FAT32/MBR images; the hardware verification was better than any
+  fixture: a Raspberry Pi boot SD in the 3.49's TF slot -- `fs ls` walked its root and
+  overlays/, `fs cat overlays/README` read 274 KB through a path, and the log queue's
+  drop-with-counter policy absorbed a 300-entry listing without blocking, exactly as
+  designed. Writes are the staged next step; the trait already carries them.
 - 2026-09-01 — **transitions without a capture, and the end of the clear.** Page
   transitions needed the outgoing page's image, which lives in a back buffer this board
   cannot afford -- so the roles swap: the incoming tree (the live one -- the outgoing tree

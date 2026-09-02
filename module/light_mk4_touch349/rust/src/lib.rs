@@ -25,6 +25,7 @@ use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
+use light_fs::{Fat, FsError};
 use light_sd::SpiSd;
 mod board;
 use board::*;
@@ -70,6 +71,66 @@ fn psram_test(size: u32) -> (u32, u32) {
         (checked, bad)
 }
 
+/// One `fs` console command against the TF slot: init the card if this is the first
+/// touch since insertion, mount the volume OVER a borrow of the device (the blanket
+/// `BlockDevice for &mut T` -- the board keeps the card), act, unmount by drop.
+fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str) {
+        if sd.card.is_none() {
+                let mut clock = SysClock;
+                if let Err(e) = sd.init(&mut clock) {
+                        info!("fs: no card ({e:?})");
+                        return;
+                }
+        }
+        let mut fs = match Fat::mount(&mut *sd) {
+                Ok(fs) => fs,
+                Err(e) => {
+                        info!("fs: mount failed: {e:?}");
+                        //   an I/O failure may be a pulled or swapped card: forget the
+                        // init so the next command starts from CMD0
+                        if matches!(e, FsError::Io(_)) {
+                                sd.card = None;
+                        }
+                        return;
+                }
+        };
+        match op {
+                FsOp::Info => {
+                        let v = fs.volume_info();
+                        info!("fs: {}, {} clusters of {} bytes", if v.fat32 { "FAT32" } else { "FAT16" }, v.cluster_count, v.bytes_per_cluster);
+                }
+                FsOp::Ls => {
+                        let mut count = 0u32;
+                        let r = fs.list_dir(path, |e| {
+                                count += 1;
+                                if e.is_dir {
+                                        info!("  {}/", e.name());
+                                } else {
+                                        info!("  {}  {} B", e.name(), e.size);
+                                }
+                        });
+                        match r {
+                                Ok(()) => info!("fs: {count} entries"),
+                                Err(e) => info!("fs: ls failed: {e:?}"),
+                        }
+                }
+                FsOp::Cat => match fs.open(path) {
+                        Ok(mut f) => {
+                                //   a peek, not a pager: the first 120 bytes, as text
+                                let mut buf = [0u8; 120];
+                                match f.read(&mut fs, &mut buf) {
+                                        Ok(n) => {
+                                                let text = core::str::from_utf8(&buf[..n]).unwrap_or("<binary>");
+                                                info!("fs: {} ({} B): {}", path, f.size(), text);
+                                        }
+                                        Err(e) => info!("fs: read failed: {e:?}"),
+                                }
+                        }
+                        Err(e) => info!("fs: open failed: {e:?}"),
+                },
+        }
+}
+
 #[repr(C)]
 pub struct ShellInfo {
         clk_sys_hz: u32,
@@ -113,6 +174,36 @@ enum Command {
         Volume(u8),
         Psram,
         Sd,
+        Fs { op: FsOp, path: FsPath },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FsOp {
+        Info,
+        Ls,
+        Cat,
+}
+
+/// A path argument small enough to ride the event bus by value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FsPath {
+        buf: [u8; 48],
+        len: u8,
+}
+
+impl FsPath {
+        fn new(s: &str) -> Option<Self> {
+                if s.len() > 48 {
+                        return None;
+                }
+                let mut buf = [0u8; 48];
+                buf[..s.len()].copy_from_slice(s.as_bytes());
+                Some(Self { buf, len: s.len() as u8 })
+        }
+
+        fn as_str(&self) -> &str {
+                core::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
+        }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -739,6 +830,10 @@ impl Module for BoardMod {
                                                 Err(e) => info!("sd: {e:?}"),
                                         }
                                 }
+                                AppEvent::Command(Command::Fs { op, path }) => {
+                                        busy = true;
+                                        fs_command(&mut self.sd, op, path.as_str());
+                                }
                                 _ => {}
                         }
                 }
@@ -790,6 +885,23 @@ impl ConsoleMod {
 
 fn parse_stats(_w: &mut Words) -> Parsed<Command> {
         Parsed::Event(Command::Stats)
+}
+
+fn parse_fs(w: &mut Words) -> Parsed<Command> {
+        let op = match w.next() {
+                Some("info") | None => FsOp::Info,
+                Some("ls") => FsOp::Ls,
+                Some("cat") => FsOp::Cat,
+                _ => return Parsed::Usage,
+        };
+        let path = w.next().unwrap_or("");
+        if op == FsOp::Cat && path.is_empty() {
+                return Parsed::Usage;
+        }
+        match FsPath::new(path) {
+                Some(path) => Parsed::Event(Command::Fs { op, path }),
+                None => Parsed::Usage,
+        }
 }
 
 fn parse_backlight(w: &mut Words) -> Parsed<Command> {
@@ -921,6 +1033,7 @@ static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
         CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
         CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Command::Sd) },
+        CliCommand { name: "fs", usage: "fs info | fs ls [PATH] | fs cat PATH", parse: parse_fs },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },

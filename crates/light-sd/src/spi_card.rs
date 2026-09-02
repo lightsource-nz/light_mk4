@@ -17,6 +17,7 @@ const CMD8_SEND_IF_COND: u8 = 8;
 const CMD9_SEND_CSD: u8 = 9;
 const CMD16_SET_BLOCKLEN: u8 = 16;
 const CMD17_READ_SINGLE: u8 = 17;
+const CMD24_WRITE_SINGLE: u8 = 24;
 const CMD55_APP_CMD: u8 = 55;
 const CMD58_READ_OCR: u8 = 58;
 const ACMD41_SD_SEND_OP_COND: u8 = 41;
@@ -245,6 +246,68 @@ impl<B: SpiBus, O: OutputPin> SpiSd<B, O> {
                 self.cs.set(true);
                 self.bus.transfer(0xFF);
                 result
+        }
+
+        /// Write one 512-byte block: CMD24, the 0xFE token and payload, then the card's
+        /// data-response token (xxx0_sss1, sss=010 accepted) and its busy period -- MISO
+        /// held low until the internal program completes.
+        pub fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), SdError> {
+                let Some(card) = self.card else { return Err(SdError::Unusable) };
+                let addr = if card.high_capacity { lba } else { lba * 512 };
+                self.cs.set(false);
+                let result = (|| {
+                        let r = self.command(CMD24_WRITE_SINGLE, addr, 0x01)?;
+                        if r != 0 {
+                                return Err(SdError::Response(r));
+                        }
+                        // a gap byte, then the token and payload
+                        self.bus.transfer(0xFF);
+                        self.bus.transfer(DATA_TOKEN);
+                        for b in data {
+                                self.bus.transfer(*b);
+                        }
+                        //   dummy CRC (CRC is off in SPI mode)
+                        self.bus.transfer(0xFF);
+                        self.bus.transfer(0xFF);
+                        let resp = self.bus.transfer(0xFF);
+                        if resp & 0x1F != 0x05 {
+                                return Err(SdError::Response(resp));
+                        }
+                        //   busy: worst-case program times run hundreds of ms on worn cards;
+                        // the loop bound is byte-times, generous at any clock
+                        for _ in 0..2_000_000u32 {
+                                if self.bus.transfer(0xFF) == 0xFF {
+                                        return Ok(());
+                                }
+                        }
+                        Err(SdError::Timeout)
+                })();
+                self.cs.set(true);
+                self.bus.transfer(0xFF);
+                result
+        }
+}
+
+fn block_error(e: SdError) -> light_core::hal::BlockError {
+        match e {
+                SdError::Timeout => light_core::hal::BlockError::Timeout,
+                _ => light_core::hal::BlockError::Io,
+        }
+}
+
+/// The [`light_core::hal::BlockDevice`] every filesystem consumes, over an initialized
+/// card. Before `init` succeeds the device answers Io and a zero block count.
+impl<B: SpiBus, O: OutputPin> light_core::hal::BlockDevice for SpiSd<B, O> {
+        fn block_count(&self) -> u32 {
+                self.card.map(|c| c.blocks).unwrap_or(0)
+        }
+
+        fn read_block(&mut self, lba: u32, out: &mut [u8; 512]) -> Result<(), light_core::hal::BlockError> {
+                SpiSd::read_block(self, lba, out).map_err(block_error)
+        }
+
+        fn write_block(&mut self, lba: u32, data: &[u8; 512]) -> Result<(), light_core::hal::BlockError> {
+                SpiSd::write_block(self, lba, data).map_err(block_error)
         }
 }
 
