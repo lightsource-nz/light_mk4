@@ -223,6 +223,42 @@ fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) 
                         },
                         Err(_) => info!("fs: trunc needs a byte count"),
                 },
+                FsOp::Peak => match fs.open(path) {
+                        //   the whole take's level in one line: peak and RMS of the PCM,
+                        // what gain tuning actually needs (16-sample hex windows sample
+                        // 0.1% of a take and miss every real peak)
+                        Ok(mut f) => {
+                                let r = f.seek(&mut fs, 44);
+                                let mut buf = [0u8; 512];
+                                let (mut peak, mut sum, mut n) = (0i32, 0u64, 0u64);
+                                let mut err = r.err();
+                                while err.is_none() {
+                                        match f.read(&mut fs, &mut buf) {
+                                                Ok(0) => break,
+                                                Ok(got) => {
+                                                        for i in 0..got / 2 {
+                                                                let s = i32::from(i16::from_le_bytes([buf[i * 2], buf[i * 2 + 1]]));
+                                                                peak = peak.max(s.abs());
+                                                                sum += (s * s) as u64;
+                                                                n += 1;
+                                                        }
+                                                }
+                                                Err(e) => err = Some(e),
+                                        }
+                                }
+                                if let Some(e) = err {
+                                        info!("fs: peak failed: {e:?}");
+                                } else {
+                                        let mean = if n > 0 { sum / n } else { 0 };
+                                        let mut rms = 0u64;
+                                        while (rms + 1) * (rms + 1) <= mean {
+                                                rms += 1;
+                                        }
+                                        info!("fs: {} peak {} rms {} over {} samples", path, peak, rms, n);
+                                }
+                        }
+                        Err(e) => info!("fs: open failed: {e:?}"),
+                },
                 FsOp::Cat => match fs.open(path) {
                         Ok(mut f) => {
                                 //   a peek, not a pager: the first 120 bytes, as text
@@ -323,6 +359,7 @@ enum FsOp {
         Mkdir,
         Trunc,
         Hex,
+        Peak,
 }
 
 /// A path argument small enough to ride the event bus by value.
@@ -1291,7 +1328,10 @@ impl Module for AudioMod {
                         warn!("es8311 init failed: {e:?}");
                         return Ok(());
                 }
-                let _ = self.codec.set_volume(73);
+                //   tuned with the mic gain above: 85 audibly overdrove the little
+                // speaker on healthy-level takes, 70 was near-inaudible (the register is
+                // ~0.5 dB per step of this 0..100 scale -- the knob is steep)
+                let _ = self.codec.set_volume(78);
                 //   belt and suspenders against the ADC->DAC monitor's feedback loop: the
                 // codec reset in init() already clears REG44, but assert it off explicitly
                 // so no prior micmon state can ever survive into a running speaker
@@ -1761,6 +1801,7 @@ fn parse_fs(w: &mut Words) -> Parsed<Command> {
                 Some("mkdir") => FsOp::Mkdir,
                 Some("trunc") => FsOp::Trunc,
                 Some("hex") => FsOp::Hex,
+                Some("peak") => FsOp::Peak,
                 _ => return Parsed::Usage,
         };
         let path = w.next().unwrap_or("");
@@ -2005,8 +2046,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         LIST.take()
                 },
                 last_status: AudioStatus::Idle,
+                //   tuned on the glass 2026-09-04: PGA code 7 with +18 dB digital puts
+                // normal speech peaks ~45% of full scale -- and a DELIBERATELY loud take
+                // measured at +2 dB more gain pinned full scale, so this is as hot as a
+                // recorder without a limiter should default. The analog field is
+                // treacherous -- 0x17 -> 0x18 COLLAPSED the gain ~20 dB (the encoding is
+                // not linear); retune digitally, in REG17, only
                 mic14: 0x17,
-                mic17: 0xDF,
+                mic17: 0xE3,
                 stage_filled: 0,
                 stage_used: 0,
         };

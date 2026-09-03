@@ -135,7 +135,10 @@ impl<B: I2cBus> Es8311<B> {
         /// the ADC clocks were already set by [`init`](Self::init); after this the codec's
         /// SDOUT carries live samples.
         pub fn mic_enable(&mut self) -> Result<(), I2cError> {
-                self.mic_config(0x17, 0xDF)
+                //   tuned by ear and by measured peaks on the 3.49 (2026-09-04): speech at
+                // arm's length peaks ~45% of full scale, and +2 dB more was measured
+                // clipping a deliberately loud take -- this is the hot edge of safe
+                self.mic_config(0x17, 0xE3)
         }
 
         /// The two gain registers of the mic path, raw: `reg14` is SYSTEM14 (mic select +
