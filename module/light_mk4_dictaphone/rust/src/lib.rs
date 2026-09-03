@@ -482,8 +482,6 @@ const BG: u16 = 0x0000;
 const TAG_STATUS: u8 = 1;
 const TAG_REC: u8 = 2;
 const TAG_PLAY: u8 = 3;
-/// The bring-up diagnostics row: core 1's pulse and core 0's stack margin.
-const TAG_DIAG: u8 = 4;
 /// The recordings list's rows carry `TAG_ROW_BASE + row`.
 const TAG_ROW_BASE: u8 = 0x10;
 
@@ -492,11 +490,10 @@ const TAG_ROW_BASE: u8 = 0x10;
 const LIST_ROWS: usize = 8;
 
 static LBL_STATUS: Desc<AppEvent> = Desc::label("ready").tag(TAG_STATUS).min_size(0, 40);
-static LBL_DIAG: Desc<AppEvent> = Desc::label("").tag(TAG_DIAG).min_size(0, 24);
 static BTN_REC: Desc<AppEvent> = Desc::button("* Record").emit(AppEvent::Ui(UiAction::RecToggle)).tag(TAG_REC).min_size(0, 88);
 static BTN_PLAY: Desc<AppEvent> = Desc::button("Play last").emit(AppEvent::Ui(UiAction::PlayToggle)).tag(TAG_PLAY).min_size(0, LIST_MIN_ROW);
 static BTN_FILES: Desc<AppEvent> = Desc::button("Recordings >").emit(AppEvent::Ui(UiAction::FilesOpen)).navigate(&PAGE_FILES).min_size(0, LIST_MIN_ROW);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("Dictaphone").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_STATUS, &LBL_DIAG, &BTN_REC, &BTN_PLAY, &BTN_FILES]);
+static MAIN_WINDOW: Desc<AppEvent> = Desc::window("Dictaphone").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_STATUS, &BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
 static ROW_0: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::PlayRow(0))).tag(TAG_ROW_BASE).min_size(0, LIST_MIN_ROW);
 static ROW_1: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::PlayRow(1))).tag(TAG_ROW_BASE + 1).min_size(0, LIST_MIN_ROW);
@@ -527,9 +524,8 @@ struct DisplayMod {
         ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
         events: Subscription,
         mode: RenderMode,
-        /// What the status line shows, kept so the core-1 heartbeat can re-render it.
+        /// What the status line shows.
         status: AudioStatus,
-        hb_ms: u32,
         drag_reported: bool,
         draw_us_max: u64,
         push_us_max: u64,
@@ -658,6 +654,9 @@ impl DisplayMod {
                                         self.draw_us_max,
                                         self.push_us_max
                                 );
+                                //   the instruments that convicted the core-1 stack kill,
+                                // off the glass and onto the (now trustworthy) console
+                                info!("cores: core1 ticks {}, core0 stack low-water {} B above the runway base", CORE1_TICKS.load(core::sync::atomic::Ordering::Relaxed), stack_free());
                                 self.draw_us_max = 0;
                                 self.push_us_max = 0;
                         }
@@ -684,14 +683,6 @@ impl DisplayMod {
                 }
                 if let Some(id) = self.ui.find(TAG_STATUS) {
                         self.ui.set_text(id, line.as_str());
-                }
-                //   the diagnostics row, fitting the bar's ~13 glyphs: core 1's pulse and
-                // core 0's remaining painted stack margin
-                let ticks = CORE1_TICKS.load(core::sync::atomic::Ordering::Relaxed);
-                let mut diag = StackString::<{ TextSlot::CAP }>::new();
-                let _ = write!(diag, "c{} s{}", ticks % 10000, stack_free());
-                if let Some(id) = self.ui.find(TAG_DIAG) {
-                        self.ui.set_text(id, diag.as_str());
                 }
         }
 
@@ -749,13 +740,6 @@ impl Module for DisplayMod {
                 }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         self.handle(ev);
-                }
-                //   the heartbeat: once a second, the status line re-renders with core 1's
-                // current tick count
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                if now_ms.wrapping_sub(self.hb_ms) >= 1000 {
-                        self.hb_ms = now_ms;
-                        self.render_status();
                 }
                 self.render();
                 let busy = self.layer.busy(&self.display);
@@ -970,7 +954,7 @@ struct AudioMod {
         /// filled from RAM, not per-sample off the card (which starved it: 33 underruns in
         /// a bench playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
         /// word each -- * 2 bytes). In .bss, like everything the card touches.
-        play_stage: &'static mut [u8; 2560],
+        play_stage: &'static mut [u8; 4096],
         /// Whether the capture buffers were already handed to the transport.
         cap_handed: bool,
         /// The `rec null` bisect: capture runs, everything drains to nowhere.
@@ -992,6 +976,10 @@ struct AudioMod {
         /// period of slack instead of racing the ring's deadline.
         stage_filled: usize,
         stage_used: usize,
+        /// The worst gap between this module's polls while audio was in flight -- the
+        /// number the stream buffer's duration has to beat. `stats` prints and resets it.
+        poll_us_last: u64,
+        poll_gap_max_us: u32,
 }
 
 /// `REC_NNNN.WAV` -> `NNNN`; anything else is not one of ours.
@@ -1344,6 +1332,17 @@ impl Module for AudioMod {
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
+                //   the worst poll-to-poll gap while audio is in flight: measured, not
+                // guessed, because the stream buffer's 53 ms is a budget this gap spends
+                let now = light_rp2::now_us();
+                if self.rec.is_some() || self.play.is_some() || self.rec_null || self.remaining > 0 {
+                        if self.poll_us_last != 0 {
+                                self.poll_gap_max_us = self.poll_gap_max_us.max((now - self.poll_us_last) as u32);
+                        }
+                        self.poll_us_last = now;
+                } else {
+                        self.poll_us_last = 0;
+                }
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
                                 AppEvent::Command(Command::Tone { hz, ms }) => {
@@ -1515,7 +1514,13 @@ impl Module for AudioMod {
                                         };
                                 }
                                 AppEvent::Command(Command::Stats) => {
-                                        info!("audio: {} stream underruns, {} capture overruns", self.i2s.underruns, self.i2s.cap_overruns);
+                                        //   reset on read, so each reading covers the interval
+                                        // since the last -- a cumulative count here spent a
+                                        // debugging session being misread as per-playback
+                                        info!("audio: {} stream underruns, {} capture overruns; max poll gap {} us", self.i2s.underruns, self.i2s.cap_overruns, self.poll_gap_max_us);
+                                        self.i2s.underruns = 0;
+                                        self.i2s.cap_overruns = 0;
+                                        self.poll_gap_max_us = 0;
                                 }
                                 _ => {}
                         }
@@ -2034,7 +2039,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 rec: unsafe { &mut *REC_SLOT.0.get() },
                 play: unsafe { &mut *PLAY_SLOT.0.get() },
                 play_stage: {
-                        static STAGE: ConstStaticCell<[u8; 2560]> = ConstStaticCell::new([0; 2560]);
+                        static STAGE: ConstStaticCell<[u8; 4096]> = ConstStaticCell::new([0; 4096]);
                         STAGE.take()
                 },
                 cap_handed: false,
@@ -2056,6 +2061,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 mic17: 0xE3,
                 stage_filled: 0,
                 stage_used: 0,
+                poll_us_last: 0,
+                poll_gap_max_us: 0,
         };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
@@ -2072,7 +2079,6 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 events: EVENTS.subscribe().expect("subscriber slot"),
                 mode: RenderMode::Normal,
                 status: AudioStatus::Idle,
-                hb_ms: 0,
                 drag_reported: false,
                 draw_us_max: 0,
                 push_us_max: 0,

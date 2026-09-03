@@ -55,12 +55,13 @@ const DREQ_PIO1_TX0: u8 = 8;
 const DREQ_PIO1_RX0: u8 = 12;
 
 /// Words per stream buffer: ONE word per frame (top 16 bits = left slot, low 16 = right --
-/// see the dout program above), so 1280 words is 1280 frames, ~53 ms at 24 kHz. Sized to
-/// ride out the WORST poll-to-poll gap, not the typical one: a full-frame display push is
-/// 39 ms and a file-playback refill adds an SD read, and 21 ms buffers glitched audibly
-/// under both. 53 ms clears the 39 ms push with margin while still fitting the 3.49's RAM
-/// beside its dual framebuffers.
-pub const STREAM_WORDS: usize = 1280;
+/// see the dout program above), so 2048 words is 2048 frames, ~85 ms at 24 kHz. Sized to
+/// ride out the WORST poll-to-poll gap, MEASURED, not guessed: with rendering paused a
+/// playback still hit a 64.8 ms gap -- an SD card's occasional internal read stall, the
+/// same medium behaviour the capture buffers are sized for -- and 53 ms buffers restarted
+/// the ring mid-play. 85 ms covers the measured stall with margin and still links beside
+/// the 3.49's dual framebuffers and core 1's relocated stack.
+pub const STREAM_WORDS: usize = 2048;
 
 /// Samples per CAPTURE buffer: mono 16-bit, 200 ms at 24 kHz per buffer. Sized against
 /// the medium, not the poll: an SD card's occasional garbage-collection stall runs
@@ -452,7 +453,12 @@ impl PioI2sOut {
                 }
                 if !busy[0] && !busy[1] {
                         //   the whole ring drained before this poll: restart it rather than
-                        // leave the codec clocking silence out of a stalled FIFO forever
+                        // leave the codec clocking silence out of a stalled FIFO forever.
+                        // Logged with a timestamp because the COUNT alone misled a tuning
+                        // session: poll gaps measured ~18 ms against 53 ms buffers cannot
+                        // drain the ring, so a lone increment is a transition-boundary
+                        // artifact -- the log line says WHEN, which says which
+                        light_core::warn!("i2s: stream ring drained; restarted");
                         self.underruns = self.underruns.wrapping_add(1);
                         self.last_busy = [true, false];
                         dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
