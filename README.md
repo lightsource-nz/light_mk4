@@ -424,6 +424,41 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-04 — **the silent console was core 1 dying under core 0's stack, and the screen
+  had to deliver the diagnosis.** For days, "the device wedged" during card-heavy commands:
+  the console echoed one last line and went silent, later host writes timed out, and only a
+  hard reset recovered it. Every layer was suspected in turn -- the dying SD card, the
+  filesystem's chain walks, the SPI and I2C drivers, blocking stdout -- and each audit came
+  back clean, until the glass broke the case: with the app running its own UI, the "wedged"
+  device was FULLY RESPONSIVE to touch while the console was dead. The console is core 1.
+  A core-1 heartbeat counter rendered by core 0 froze at the moment of death; a painted
+  stack watermark hit zero at the same instant. Core 0's stack (SCRATCH_Y) sits directly
+  above core 1's (SCRATCH_X), and a deep filesystem call chain -- a mounted `Fat` with its
+  512-byte sector buffer stacked over another inside `open`'s directory walk, plus the
+  formatting machinery of one log line -- dipped past core 0's floor and trampled core 1's
+  live frames. Core 0 sailed on; core 1 died; the messenger was the casualty, which is why
+  nothing could report it. FIX, in the shell for every device-role board: core 1's stack
+  moves to ordinary RAM (`multicore_launch_core1_with_stack`), leaving SCRATCH_X as vacant
+  runway a core-0 excursion overwrites harmlessly. Verified same day: the deterministic
+  killer sequence (synth + play, 4/4 kills before) ran end to end with the console alive.
+  Lessons carved in: when the console dies, CHECK THE GLASS before declaring a freeze; a
+  diagnosis channel must not share fate with the failure it reports (the heartbeat + stack
+  watermark now ride the dictaphone's diag row); and the two scratch banks are one bad
+  frame away from being a shared fate machine -- separate them.
+- 2026-09-04 — **the dictaphone: a second application on the 3.49, with its own interface.**
+  `light_mk4_dictaphone` builds in the touch349 tree beside the demo -- two executables,
+  two UF2s, one board and shell -- and replaces the widget pages with a recorder's: a live
+  status line (elapsed time ticking through a take or playback), one big record/stop
+  button, play-last, and a recordings list of the newest eight `REC_NNNN.WAV` takes, tap to
+  play. Auto-numbered 8.3 names, ordinary WAV. For the dynamic text (elapsed seconds, file
+  names) light-ui grew `set_text`: a small owned per-widget buffer shown in place of the
+  static label, which descriptors alone could never carry. Playback stages its card reads
+  OUTSIDE the DAC refill so a slow read gets a whole buffer period of slack, and `micgain`
+  retunes the mic's two gain registers live over the console -- no reflash per step.
+  light-fs also learned to refuse corruption: a directory entry's first cluster is
+  validated before it reaches cluster arithmetic (a churned card's garbage entry was an
+  arithmetic panic straight into the bootloader; now it is `BadChain`), with the dying-card
+  scenario as a host test.
 - 2026-09-04 — **all playback ever done on the 3.49 ran at half speed; the log timestamps
   convicted it.** Recorded speech played back "pitched down several octaves" from data that
   hex-dumped as a pristine normal-pitch waveform -- and "pitch is preserved by construction"

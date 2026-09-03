@@ -40,6 +40,8 @@
                 'light_mk4_touch169' = @{ Preset = 'conf-light_mk4-touch169-debug'; Flash = 'uf2' }
                 'light_mk4_touch28'  = @{ Preset = 'conf-light_mk4-touch28-debug'; Flash = 'uf2' }
                 'light_mk4_touch349' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
+                # the dictaphone: a second application on the 3.49, same board and tree
+                'light_mk4_dictaphone' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
                 'light_mk4_touch4'   = @{ Preset = 'conf-light_mk4-touch4-debug'; Flash = 'uf2' }
                 # the po13 rig flashes over SWD; Flash='swd' records that light-flash.ps1's
                 # BOOTSEL path is not how an image reaches it

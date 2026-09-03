@@ -57,7 +57,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169 light_app_touch28 light_app_touch349 light_app_touch4 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
+                CRATES light_app_touch169 light_app_touch28 light_app_touch349 light_app_dictaphone light_app_touch4 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -90,7 +90,10 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_2.8")
                         add_subdirectory(module/light_mk4_touch28)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_3.49")
+                        #   two applications, one tree: same board, same shell configuration,
+                        # each its own executable and UF2 -- flash the one you mean
                         add_subdirectory(module/light_mk4_touch349)
+                        add_subdirectory(module/light_mk4_dictaphone)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_4")
                         add_subdirectory(module/light_mk4_touch4)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
@@ -134,7 +137,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_touch28 --exclude light_app_touch349 --exclude light_app_touch4 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_touch28 --exclude light_app_touch349 --exclude light_app_dictaphone --exclude light_app_touch4 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()
