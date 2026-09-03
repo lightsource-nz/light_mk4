@@ -147,9 +147,39 @@ pub enum Kind<A: 'static> {
         Label(Label),
 }
 
+/// Owned widget text: a small copy the application rewrites at runtime
+/// ([`Ui::set_text`]) where the descriptor's `&'static str` cannot carry a formatted
+/// value -- an elapsed time, a file name. Empty means unset: the static label shows.
+#[derive(Clone, Copy, Debug)]
+pub struct TextSlot {
+        buf: [u8; Self::CAP],
+        len: u8,
+}
+
+impl TextSlot {
+        /// Sized for a row on a small panel; longer text truncates at a char boundary.
+        pub const CAP: usize = 31;
+        const EMPTY: Self = Self { buf: [0; Self::CAP], len: 0 };
+
+        fn set(&mut self, s: &str) {
+                let mut take = s.len().min(Self::CAP);
+                while !s.is_char_boundary(take) {
+                        take -= 1;
+                }
+                self.buf[..take].copy_from_slice(&s.as_bytes()[..take]);
+                self.len = take as u8;
+        }
+
+        fn as_str(&self) -> &str {
+                core::str::from_utf8(&self.buf[..usize::from(self.len)]).unwrap_or("")
+        }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct Widget<A: 'static> {
         pub kind: Kind<A>,
+        /// Runtime text override -- see [`Ui::set_text`].
+        text: TextSlot,
         pub rect: Rect,
         pub visible: bool,
         pub focusable: bool,
@@ -663,7 +693,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         fn add(&mut self, parent: Option<WidgetId>, kind: Kind<A>, rect: Rect, focusable: bool) -> Result<WidgetId, Error> {
-                let id = self.alloc(Widget { kind, rect, visible: true, focusable, enabled: true, hit_slop_y1: 0, min_w: 0, min_h: 0, max_w: 0, max_h: 0, tag: 0, parent, next_sibling: None, first_child: None })?;
+                let id = self.alloc(Widget { kind, text: TextSlot::EMPTY, rect, visible: true, focusable, enabled: true, hit_slop_y1: 0, min_w: 0, min_h: 0, max_w: 0, max_h: 0, tag: 0, parent, next_sibling: None, first_child: None })?;
                 match parent {
                         None => {
                                 if let Some(old) = self.root {
@@ -1807,6 +1837,19 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         Kind::Label(l) => l.text = label,
                         Kind::Window(w) => w.title = Some(label),
                 }
+                //   a static label supersedes any runtime text
+                self.w_mut(id).text = TextSlot::EMPTY;
+                self.invalidate_widget(id);
+        }
+
+        /// Runtime text for a widget: copied into the widget (up to [`TextSlot::CAP`] bytes,
+        /// truncated at a char boundary), shown in place of the static label until
+        /// [`set_label`](Self::set_label) or an empty string clears it. This is how a label
+        /// carries a formatted value -- an elapsed time, a file name -- which a
+        /// `&'static str` cannot. On a window it replaces the TITLE, and only on a window
+        /// built with one: an untitled frame reserves no header band to draw into.
+        pub fn set_text(&mut self, id: WidgetId, text: &str) {
+                self.w_mut(id).text.set(text);
                 self.invalidate_widget(id);
         }
 
@@ -1908,6 +1951,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         }
                 }
                 let Some(title) = win.title else { return };
+                let title = if w.text.len > 0 { w.text.as_str() } else { title };
                 // the header band the stack layout reserves: title at the very top, separator
                 // under it; the two must agree on its height (cell_h + 2). A rounded corner is
                 // cleared SIDEWAYS here, not downward: the title is one short string, and the
@@ -1960,15 +2004,16 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if focused {
                         c.fg = c.bg;
                 }
-                if !btn.label.is_empty() {
+                let label = if w.text.len > 0 { w.text.as_str() } else { btn.label };
+                if !label.is_empty() {
                         // positioned from the TRUE rect, never the clamped one: centring against
                         // the clamp made a label creep as its row crossed the canvas edge
                         let f = &w.rect;
                         let (inner_x0, inner_x1) = (f.x0 + 1, f.x1 - 1);
                         let inner_h = f.y1 - f.y0 - 1;
-                        let tx = self.centre_x(inner_x0, inner_x1, btn.label.len());
+                        let tx = self.centre_x(inner_x0, inner_x1, label.len());
                         let ty = (f.y0 + 1 + (inner_h - self.cell_h) / 2).max(f.y0 + 1);
-                        self.draw_text_fitted(c, font, tx, ty, btn.label, inner_x1 - inner_x0 + 1);
+                        self.draw_text_fitted(c, font, tx, ty, label, inner_x1 - inner_x0 + 1);
                 }
                 c.fg = saved_fg;
                 // TODO a distinct look for disabled buttons wants a colour model 1 bpp lacks
@@ -1988,7 +2033,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 c.fg = c.bg;
                 c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), true);
                 c.fg = saved_fg;
-                self.draw_text_fitted(c, font, w.rect.x0, w.rect.y0, l.text, w.rect.x1 - w.rect.x0 + 1);
+                let text = if w.text.len > 0 { w.text.as_str() } else { l.text };
+                self.draw_text_fitted(c, font, w.rect.x0, w.rect.y0, text, w.rect.x1 - w.rect.x0 + 1);
         }
 
         /// `clip` is by value so each subtree narrows its own copy: a scrolling window's children
