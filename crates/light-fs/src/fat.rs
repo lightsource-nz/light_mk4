@@ -351,6 +351,20 @@ impl<D: BlockDevice> Fat<D> {
                 self.data_start + (cluster - 2) * self.sectors_per_cluster
         }
 
+        /// A cluster number fit to be dereferenced: inside the data area. A corrupt volume
+        /// hands out anything -- a garbage first-cluster in a directory entry walked into
+        /// [`cluster_lba`](Self::cluster_lba) is an arithmetic panic in a debug build and a
+        /// wild read in a release one (found on a dying card whose churned directory
+        /// panicked playback into the bootloader). Every cluster that enters from on-disk
+        /// DATA passes here first; what the FAT itself hands over is already checked by
+        /// [`next_cluster`](Self::next_cluster).
+        fn check_cluster(&self, c: u32) -> Result<u32, FsError> {
+                if c < 2 || c - 2 >= self.cluster_count {
+                        return Err(FsError::BadChain);
+                }
+                Ok(c)
+        }
+
         fn eoc(&self) -> u32 {
                 match self.kind {
                         Kind::Fat16 { .. } => 0xFFFF,
@@ -457,7 +471,8 @@ impl<D: BlockDevice> Fat<D> {
         /// this runs the entry is already gone, and a leaked tail is a checker's lint,
         /// not corruption.
         fn free_chain(&mut self, first: u32) -> Result<(), FsError> {
-                let mut cluster = first;
+                //   a corrupt first cluster would index FAT sectors off the volume
+                let mut cluster = self.check_cluster(first)?;
                 let mut hops = 0u32;
                 loop {
                         let next = self.next_cluster(cluster).unwrap_or(None);
@@ -535,7 +550,7 @@ impl<D: BlockDevice> Fat<D> {
                                 }
                         }
                         DirLoc::Chain { first } => {
-                                let mut cluster = first;
+                                let mut cluster = self.check_cluster(first)?;
                                 let mut hops = 0u32;
                                 loop {
                                         for s in 0..self.sectors_per_cluster {
@@ -608,7 +623,7 @@ impl<D: BlockDevice> Fat<D> {
                                 return Err(FsError::NotADirectory);
                         }
                         //   cluster 0 in a ".." entry means the root, per the spec
-                        loc = if entry.first_cluster == 0 { self.root() } else { DirLoc::Chain { first: entry.first_cluster } };
+                        loc = if entry.first_cluster == 0 { self.root() } else { DirLoc::Chain { first: self.check_cluster(entry.first_cluster)? } };
                 }
                 Ok(loc)
         }
@@ -712,7 +727,10 @@ impl<D: BlockDevice> Fat<D> {
                 if entry.is_dir {
                         return Err(FsError::IsADirectory);
                 }
-                Ok(File { size: entry.size, pos: 0, cluster: entry.first_cluster, cluster_byte: 0, start: entry.first_cluster, slot })
+                //   a chainless entry is legal only while the file is empty; anything else
+                // is validated before a read walks it into cluster arithmetic
+                let first = if entry.first_cluster == 0 && entry.size == 0 { 0 } else { self.check_cluster(entry.first_cluster)? };
+                Ok(File { size: entry.size, pos: 0, cluster: first, cluster_byte: 0, start: first, slot })
         }
 
         /// Create an empty file at `path` (its directory must exist; the name is 8.3).
@@ -1265,6 +1283,28 @@ mod tests {
                 let mut names: Vec<std::string::String> = Vec::new();
                 fs.list_dir("", |e| names.push(e.name().into())).unwrap();
                 assert_eq!(names, ["HELLO.TXT", "SUB"]);
+        }
+
+        #[test]
+        fn corrupt_first_clusters_are_bad_chains_not_panics() {
+                //   the dying-card scenario: directory entries whose first cluster points
+                // outside the data area. Cluster 1 UNDERFLOWS the LBA arithmetic (a panic
+                // in a debug build before the guard -- the failure that dropped a live
+                // dictaphone into the bootloader); a huge cluster flies off the volume.
+                // Every operation answers BadChain, never panics.
+                let mut dev = fat16_superfloppy();
+                let root = 35 * 512;
+                dev.0[root + 96..root + 128].copy_from_slice(&dirent(b"HELLO   TXT", 0x20, 1, 700));
+                dev.0[root + 128..root + 160].copy_from_slice(&dirent(b"SUB        ", 0x10, 1, 0));
+                let mut fs = Fat::mount(dev).unwrap();
+                assert!(matches!(fs.open("HELLO.TXT"), Err(FsError::BadChain)), "cluster 1 underflow on open");
+                assert!(matches!(fs.list_dir("SUB", |_| {}), Err(FsError::BadChain)), "cluster 1 underflow on descend");
+
+                let mut dev = fat16_superfloppy();
+                dev.0[root + 96..root + 128].copy_from_slice(&dirent(b"HELLO   TXT", 0x20, 60_000, 700));
+                let mut fs = Fat::mount(dev).unwrap();
+                assert!(matches!(fs.open("HELLO.TXT"), Err(FsError::BadChain)), "off-volume cluster on open");
+                assert!(matches!(fs.remove("HELLO.TXT"), Err(FsError::BadChain)), "off-volume cluster on remove");
         }
 
         #[test]
