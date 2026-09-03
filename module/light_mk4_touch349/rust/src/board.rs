@@ -79,7 +79,8 @@ pub const POWER_OFF_HOLD_MS: u32 = 1500;
 // from a PIO-generated 256-Fs MCLK, and its data line is served by the PIO1 slave writer.
 // PA_CTRL gates the speaker amplifier. ⚠ PA_CTRL and DOUT sit on GPIO 0 and 1 -- the
 // chip's default UART -- so claiming audio RETIRES THE UART CONSOLE on this board; the CDC
-// console is unaffected. DIN (the microphone) is declared, no driver yet.
+// console is unaffected. DIN carries the codec's ADC output (the microphone) into the
+// PIO1 capture machine.
 pub const PIN_AUDIO_PA: usize = 0;
 pub const PIN_AUDIO_DOUT: usize = 1;
 pub const PIN_AUDIO_DIN: usize = 2;
@@ -90,6 +91,8 @@ pub const AUDIO_SAMPLE_HZ: u32 = 24_000;
 pub const AUDIO_MCLK_HZ: u32 = AUDIO_SAMPLE_HZ * 256;
 /// The stream's ping-pong DMA pair, below the display's channel 15.
 pub const AUDIO_DMA_CH: [usize; 2] = [13, 14];
+/// The microphone capture's ping-pong pair, below the stream's.
+pub const AUDIO_CAP_DMA_CH: [usize; 2] = [11, 12];
 
 // The TF slot, wired for SDIO (CLK 26, CMD 27, D0..D3 28..31) -- which maps exactly onto
 // SPI1 (SCK/TX/RX) with D3 as the chip select: the classic SPI-mode fallback, and the mode
@@ -148,7 +151,11 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                         sys_en,
                         power_button: Input::new_pull_up(PIN_SYS_OUT),
                         battery: Adc::new(PIN_BAT_ADC),
-                        i2s: PioI2sOut::new(PIN_AUDIO_DOUT, PIN_AUDIO_BCLK, PIN_AUDIO_LRCLK, PIN_AUDIO_MCLK, clocks.sys_hz, AUDIO_MCLK_HZ, AUDIO_DMA_CH[0], AUDIO_DMA_CH[1]),
+                        i2s: {
+                                let mut i2s = PioI2sOut::new(PIN_AUDIO_DOUT, PIN_AUDIO_BCLK, PIN_AUDIO_LRCLK, PIN_AUDIO_MCLK, clocks.sys_hz, AUDIO_MCLK_HZ, AUDIO_DMA_CH[0], AUDIO_DMA_CH[1]);
+                                i2s.attach_capture(PIN_AUDIO_DIN, AUDIO_CAP_DMA_CH[0], AUDIO_CAP_DMA_CH[1]);
+                                i2s
+                        },
                         audio_pa: Output::new(PIN_AUDIO_PA, false),
                         sd_spi: Spi1Bus::new(clocks.peri_hz, PIN_SD_SCK, PIN_SD_MOSI, PIN_SD_MISO, 300_000),
                         sd_cs: Output::new(PIN_SD_CS, true),

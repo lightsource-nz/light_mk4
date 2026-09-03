@@ -135,13 +135,14 @@ impl<B: I2cBus> Es8311<B> {
         /// the ADC clocks were already set by [`init`](Self::init); after this the codec's
         /// SDOUT carries live samples.
         pub fn mic_enable(&mut self) -> Result<(), I2cError> {
-                //   the vendor's mic recipe VERBATIM: REG17 = 0xFF is the max ADC digital
-                // volume -- 0xBF (what this used before) is ~32 dB quieter, which made
-                // recordings too faint to hear over the speaker. REG14 = 0x1A selects the
-                // analog mic at max PGA gain. REG16 is left at its default (the vendor
-                // never writes it in mic config).
-                self.write(REG_ADC17, 0xFF)?;
-                self.write(REG_SYS14, 0x1A)
+                //   gain is a measured middle, not either extreme: the vendor's max analog
+                // PGA (REG14 = 0x1A) + max ADC digital volume (REG17 = 0xFF) amplified
+                // ambient noise and clipped close speech into a growly, octaves-down
+                // distortion; the earlier 0xBF was inaudibly faint. REG14 = 0x14 selects
+                // the analog mic at a mid PGA (less noise, headroom before clipping),
+                // REG17 = 0xD0 sets a moderate digital volume. Tune on the glass if needed.
+                self.write(REG_ADC17, 0xD0)?;
+                self.write(REG_SYS14, 0x14)
         }
 
         /// Internal ADC-to-DAC monitor (REG44 bit 7): the digitized microphone is routed

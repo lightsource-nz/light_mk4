@@ -314,6 +314,13 @@ name = "light-font"
 version = "0.1.0"
 
 [[package]]
+name = "light-fs"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+]
+
+[[package]]
 name = "light-input"
 version = "0.1.0"
 dependencies = [
@@ -473,6 +480,7 @@ dependencies = [
  "light-display",
  "light-draw",
  "light-font",
+ "light-fs",
  "light-input",
  "light-rp2",
  "light-rtc",
