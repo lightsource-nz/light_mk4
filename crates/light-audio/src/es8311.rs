@@ -29,10 +29,14 @@ const REG_SYS0D: u8 = 0x0D;
 const REG_SYS0E: u8 = 0x0E;
 const REG_SYS12: u8 = 0x12;
 const REG_SYS13: u8 = 0x13;
+const REG_SYS14: u8 = 0x14;
+const REG_ADC16: u8 = 0x16;
+const REG_ADC17: u8 = 0x17;
 const REG_ADC1C: u8 = 0x1C;
 const REG_DAC_MUTE: u8 = 0x31;
 const REG_DAC_VOLUME: u8 = 0x32;
 const REG_DAC37: u8 = 0x37;
+const REG_GPIO44: u8 = 0x44;
 const REG_ID_LO: u8 = 0xFD;
 const REG_ID_HI: u8 = 0xFE;
 
@@ -123,6 +127,29 @@ impl<B: I2cBus> Es8311<B> {
                 self.write(REG_SYS13, 0x10)?;
                 self.write(REG_ADC1C, 0x6A)?;
                 self.write(REG_DAC37, 0x08)
+        }
+
+        /// Power and route the analog microphone into the ADC -- the encoder half. The
+        /// reference driver's mic-path bytes: MIC1 selected with maximum analog PGA gain,
+        /// the reference's ADC scale, digital volume at 0 dB. The serial-out format and
+        /// the ADC clocks were already set by [`init`](Self::init); after this the codec's
+        /// SDOUT carries live samples.
+        pub fn mic_enable(&mut self) -> Result<(), I2cError> {
+                //   the vendor's mic recipe VERBATIM: REG17 = 0xFF is the max ADC digital
+                // volume -- 0xBF (what this used before) is ~32 dB quieter, which made
+                // recordings too faint to hear over the speaker. REG14 = 0x1A selects the
+                // analog mic at max PGA gain. REG16 is left at its default (the vendor
+                // never writes it in mic config).
+                self.write(REG_ADC17, 0xFF)?;
+                self.write(REG_SYS14, 0x1A)
+        }
+
+        /// Internal ADC-to-DAC monitor (REG44 bit 7): the digitized microphone is routed
+        /// straight to the DAC, so it plays out the speaker with no serial-port, DMA or
+        /// filesystem in the path. A bring-up bisect -- if the mic is audible this way, the
+        /// analog front end works and any silence in a recording is downstream.
+        pub fn set_adc_to_dac(&mut self, on: bool) -> Result<(), I2cError> {
+                self.write(REG_GPIO44, if on { 0x80 } else { 0x00 })
         }
 
         /// 0..=100, the reference's mapping onto the DAC volume register.

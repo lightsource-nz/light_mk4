@@ -424,6 +424,27 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-03 — **the dictaphone: the codec's encoder, and record/play through the
+  filesystem.** The ES8311's capture half plus a recorder and player on the 3.49. New in
+  `light-rp2::i2s`: a PIO capture machine (SM2 on PIO1) that samples the codec's SDOUT
+  against its mastered BCLK/LRCLK, fed by its own ping-pong DMA into 200 ms buffers, with
+  `attach_capture`/`capture_start`/`capture_take` mirroring the playback side. `light-audio`
+  gained `mic_enable` (the vendor's analog-mic recipe verbatim) and an ADC->DAC monitor for
+  bring-up. The app records mono 16-bit WAV straight to the card through `light-fs`
+  (write-through, header patched on stop) and plays WAV back out the DAC, parsing the RIFF
+  chunk walk and validating format. The bring-up was a five-bug gauntlet, each caught by a
+  built-in diagnostic rather than a guess: (1) a ~1.2 KB `Recording` inline on core 0's
+  4 KB SCRATCH_Y stack spilled into core 1's stack and wedged BOTH cores -- moved to .bss;
+  (2) a hard reset mid-I2C left a codec driving SDA low and, on a battery-backed board, no
+  reboot freed it -- every `I2c::new` now bus-clears with nine SCL pulses first; (3) the
+  DIN pad was an SIO input, not routed to the PIO; (4) the capture SM shifted RIGHT, landing
+  the 16-bit sample in the high half while the halfword DMA read the low half -- exact-zero
+  captures from a live signal, found by draining the raw RX FIFO (0xa0000000 = real audio in
+  the wrong half); (5) file playback glitched because 21 ms stream buffers could not ride
+  out the 39 ms full-frame display push -- 53 ms buffers gave zero underruns. Also: the
+  speaker amp is muted during capture (it clicked into the mic), and the ADC digital volume
+  is the vendor's 0xFF (0xBF was ~32 dB too quiet). Capture verified by dumping real
+  waveforms off the card; playback verified clean on a synthesized sine.
 - 2026-09-03 — **light-fs rounds out: remove, truncate, rename, mkdir.** The directory
   operations, under the same write-through discipline. `remove` deletes the entry FIRST
   -- the commit point -- then frees the chain, treating a broken link as the end of the

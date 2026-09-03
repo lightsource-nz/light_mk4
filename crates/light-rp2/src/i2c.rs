@@ -45,6 +45,39 @@ macro_rules! i2c_instance {
                         /// Takes the instance, which nothing else may use while this lives.
                         /// Construct once.
                         pub unsafe fn new(clk_sys_hz: u32, scl: usize, sda: usize, hz: u32) -> Self {
+                                //   THE BUS-CLEAR, before the peripheral touches the pins: a
+                                // reset that lands mid-transaction leaves a slave driving SDA
+                                // low, and on a battery-backed board no later reboot releases
+                                // it -- the rail never drops. Found as a whole i2c1 (codec,
+                                // IMU, RTC) dead across reflashes on the 3.49 after a hard
+                                // reset during the IMU's polling. Nine SCL pulses let the
+                                // slave finish the byte it thinks it is sending; the manual
+                                // STOP resets its state machine.
+                                {
+                                        //   SDA stays RELEASED (an input) while clocking: the
+                                        // stuck slave owns it until it finishes its byte
+                                        let _sda_in = gpio::Input::new_pull_up(sda);
+                                        let mut scl_out = gpio::Output::new(scl, true);
+                                        //   ~5 us half-periods from a crude spin: exactness is
+                                        // irrelevant, slower is fine
+                                        let half = clk_sys_hz / 400_000;
+                                        let spin = |n: u32| {
+                                                for _ in 0..n {
+                                                        core::hint::spin_loop();
+                                                }
+                                        };
+                                        for _ in 0..9 {
+                                                scl_out.set(false);
+                                                spin(half);
+                                                scl_out.set(true);
+                                                spin(half);
+                                        }
+                                        // STOP: SDA low with SCL high, then SDA rises
+                                        let mut sda_out = gpio::Output::new(sda, false);
+                                        spin(half);
+                                        sda_out.set(true);
+                                        spin(half);
+                                }
                                 gpio::set_function(scl, gpio::FUNC_I2C);
                                 gpio::set_function(sda, gpio::FUNC_I2C);
                                 // internal pull-ups, for breakouts that carry none; harmless where

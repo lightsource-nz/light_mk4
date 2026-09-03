@@ -42,14 +42,26 @@ use crate::pac;
 
 const SM_MCLK: usize = 0;
 const SM_DOUT: usize = 1;
+const SM_DIN: usize = 2;
 const MCLK_ORIGIN: u16 = 0;
 const DOUT_ORIGIN: u16 = 5;
-/// DREQ for PIO1's TX FIFOs starts at 8 on both chips.
+const DIN_ORIGIN: u16 = 23;
+/// DREQ for PIO1's TX FIFOs starts at 8 on both chips; RX follows at 12.
 const DREQ_PIO1_TX0: u8 = 8;
+const DREQ_PIO1_RX0: u8 = 12;
 
-/// Words per stream buffer: 512 frames (each frame is two words, left then right), ~21 ms
-/// at 24 kHz -- comfortably past the longest poll-to-poll gap a frame draw causes.
-pub const STREAM_WORDS: usize = 1024;
+/// Words per stream buffer: 1280 frames (each frame is two words, left then right), ~53 ms
+/// at 24 kHz. Sized to ride out the WORST poll-to-poll gap, not the typical one: a
+/// full-frame display push is 39 ms and a file-playback refill adds an SD read, and 21 ms
+/// buffers glitched audibly under both. 53 ms clears the 39 ms push with margin while
+/// still fitting the 3.49's RAM beside its dual framebuffers.
+pub const STREAM_WORDS: usize = 2560;
+
+/// Samples per CAPTURE buffer: mono 16-bit, 200 ms at 24 kHz per buffer. Sized against
+/// the medium, not the poll: an SD card's occasional garbage-collection stall runs
+/// 100-250 ms, and with only 100 ms buffers those stalls cost audio (7 overruns in a
+/// 5 s bench take); 200 ms each rides them out.
+pub const CAP_WORDS: usize = 4800;
 
 /// The MCLK generator and the slave data-out, on PIO1 state machines 0 and 1, with the
 /// stream's two DMA channels.
@@ -58,11 +70,22 @@ pub struct PioI2sOut {
         // are irrelevant against the codec's push-pull drivers
         _bclk: Input,
         _lrclk: Input,
+        pin_bclk: usize,
+        pin_lrclk: usize,
         ch: [usize; 2],
         bufs: Option<[&'static mut [u32; STREAM_WORDS]; 2]>,
         last_busy: [bool; 2],
         /// Times the whole stream starved (both buffers drained before a refill).
         pub underruns: u32,
+        //   the capture (microphone) side, present after `attach_capture`
+        _din: Option<Input>,
+        pin_din: usize,
+        cap_ch: [usize; 2],
+        cap_bufs: Option<[&'static mut [u16; CAP_WORDS]; 2]>,
+        cap_last_busy: [bool; 2],
+        cap_running: bool,
+        /// Times both capture buffers filled before a take -- audio LOST, not guessed at.
+        pub cap_overruns: u32,
 }
 
 impl PioI2sOut {
@@ -73,7 +96,8 @@ impl PioI2sOut {
         /// # Safety
         ///
         /// Construct once; see above for what it claims.
-        pub unsafe fn new(dout: usize, bclk: usize, lrclk: usize, mclk: usize, sys_hz: u32, mclk_hz: u32, dma_a: usize, dma_b: usize) -> Self {
+        pub unsafe fn new(dout: usize, bclk_pin: usize, lrclk_pin: usize, mclk: usize, sys_hz: u32, mclk_hz: u32, dma_a: usize, dma_b: usize) -> Self {
+                let (bclk, lrclk) = (bclk_pin, lrclk_pin);
                 let pio = unsafe { &*pac::PIO1::ptr() };
                 let resets = unsafe { &*pac::RESETS::ptr() };
                 resets.reset().modify(|_, w| w.pio1().clear_bit());
@@ -139,7 +163,231 @@ impl PioI2sOut {
 
                 pio.ctrl().modify(|_, w| unsafe { w.sm_enable().bits((1 << SM_MCLK) | (1 << SM_DOUT)) });
 
-                Self { _bclk: bclk, _lrclk: lrclk, ch: [dma_a, dma_b], bufs: None, last_busy: [false; 2], underruns: 0 }
+                Self {
+                        _bclk: bclk,
+                        _lrclk: lrclk,
+                        pin_bclk: bclk_pin,
+                        pin_lrclk: lrclk_pin,
+                        ch: [dma_a, dma_b],
+                        bufs: None,
+                        last_busy: [false; 2],
+                        underruns: 0,
+                        _din: None,
+                        pin_din: 0,
+                        cap_ch: [0; 2],
+                        cap_bufs: None,
+                        cap_last_busy: [false; 2],
+                        cap_running: false,
+                        cap_overruns: 0,
+                }
+        }
+
+        /// Add the capture (microphone) machine: PIO1 state machine 2 samples the codec's
+        /// ADC output on `din` against the same BCLK/LRCLK the codec masters -- the LEFT
+        /// half-frame, 16 bits MSB-first on rising edges, after the I2S one-bit delay.
+        /// Claims the state machine and DMA channels `dma_a`/`dma_b`; the machine sits
+        /// disabled until [`capture_start`](Self::capture_start).
+        ///
+        /// # Safety
+        ///
+        /// Call once, after `new`; nothing else may use what it claims.
+        pub unsafe fn attach_capture(&mut self, din: usize, dma_a: usize, dma_b: usize) {
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let w1 = |pin: usize| 0x2080 | pin as u16;
+                let w0 = |pin: usize| 0x2000 | pin as u16;
+                let o = DIN_ORIGIN;
+                //   sample the RIGHT slot: the ES8311's mono ADC lands there, and reading
+                // the LEFT slot returned exact zeros (the whole cause of silent captures --
+                // ADC and analog mic both proven live by the ADC->DAC monitor). Full
+                // per-frame resync (wrap to the top) so each grab catches a clean edge
+                let din_prog: [u16; 9] = [
+                        w0(self.pin_lrclk), // wait for the left half / idle
+                        w1(self.pin_lrclk), // the right half begins on this rising edge
+                        w1(self.pin_bclk),  // the I2S delay bit's rising edge
+                        0xE02F,             // set x, 15
+                        w0(self.pin_bclk),
+                        w1(self.pin_bclk), // data valid on the rising edge
+                        0x4001,            // in pins, 1
+                        0x0040 | (o + 4),  // jmp x--
+                        0x8020,            // push block; the wrap returns to the top
+                ];
+                for (i, ins) in din_prog.iter().enumerate() {
+                        pio.instr_mem(usize::from(DIN_ORIGIN) + i).write(|w| unsafe { w.bits(u32::from(*ins)) });
+                }
+                let smr = pio.sm(SM_DIN);
+                smr.sm_pinctrl().write(|w| unsafe { w.in_base().bits(din as u8) });
+                //   wrap to the very top (instr 0) so every frame re-waits for a clean
+                // LRCLK low->high edge before grabbing the right slot
+                smr.sm_execctrl().write(|w| unsafe { w.wrap_bottom().bits(DIN_ORIGIN as u8).wrap_top().bits(DIN_ORIGIN as u8 + 8) });
+                //   shift LEFT explicitly: the default here is shift-RIGHT, which lands the
+                // 16-bit sample in the HIGH half of the pushed word ([31:16]) while the
+                // halfword DMA reads the LOW half -- exact-zero captures despite a live SM
+                // (the raw-FIFO probe read 0xa0000000, real audio in the wrong half). Left
+                // puts the sample in [15:0] where the halfword read grabs it. RX joined to
+                // 8 words of margin.
+                smr.sm_shiftctrl().write(|w| w.fjoin_rx().set_bit().in_shiftdir().clear_bit());
+                smr.sm_clkdiv().write(|w| unsafe { w.int().bits(1).frac().bits(0) });
+                //   DIN routed to the PIO, exactly as the vendor's pio_gpio_init does --
+                // NOT an SIO input. On RP2350 a state machine's `in pins` reads the pad
+                // through the input path that funcsel selects, and an SIO-function pad read
+                // back constant zero here (the whole cause of silent captures); a pull-up
+                // is wrong besides, fighting the codec's push-pull SDOUT. set_function
+                // enables the input and clears the pad isolation, which is all PIO needs.
+                gpio::set_function(din, gpio::FUNC_PIO1);
+                self._din = None;
+                self.pin_din = din;
+                self.cap_ch = [dma_a, dma_b];
+        }
+
+        fn configure_cap_channel(&self, ch: usize, other: usize, buf: &[u16; CAP_WORDS]) {
+                let dma = unsafe { &*pac::DMA::ptr() };
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let c = dma.ch(ch);
+                c.ch_read_addr().write(|w| unsafe { w.bits(pio.rxf(SM_DIN).as_ptr() as u32) });
+                c.ch_write_addr().write(|w| unsafe { w.bits(buf.as_ptr() as u32) });
+                c.ch_trans_count().write(|w| unsafe { w.bits(CAP_WORDS as u32) });
+                //   halfword transfers: the sample sits in the RX register's low 16 bits,
+                // and a narrow FIFO read still pops
+                c.ch_al1_ctrl().write(|w| unsafe {
+                        w.data_size()
+                                .size_halfword()
+                                .incr_read()
+                                .clear_bit()
+                                .incr_write()
+                                .set_bit()
+                                .treq_sel()
+                                .bits(DREQ_PIO1_RX0 + SM_DIN as u8)
+                                .chain_to()
+                                .bits(other as u8)
+                                .en()
+                                .set_bit()
+                });
+        }
+
+        /// Start capturing. The first call hands over the two buffers; later restarts pass
+        /// `None` and reuse them. Stale FIFO content is flushed, the machine restarts at
+        /// its origin, and the ring runs until [`capture_stop`](Self::capture_stop).
+        pub fn capture_start(&mut self, bufs: Option<[&'static mut [u16; CAP_WORDS]; 2]>) {
+                if let Some(b) = bufs {
+                        self.cap_bufs = Some(b);
+                }
+                let Some(cap) = self.cap_bufs.as_ref() else { return };
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let dma = unsafe { &*pac::DMA::ptr() };
+                while pio.fstat().read().rxempty().bits() & (1 << SM_DIN) as u8 == 0 {
+                        let _ = pio.rxf(SM_DIN).read();
+                }
+                self.configure_cap_channel(self.cap_ch[0], self.cap_ch[1], cap[0]);
+                self.configure_cap_channel(self.cap_ch[1], self.cap_ch[0], cap[1]);
+                self.cap_last_busy = [true, false];
+                self.cap_running = true;
+                pio.sm(SM_DIN).sm_instr().write(|w| unsafe { w.bits(u32::from(DIN_ORIGIN)) });
+                pio.ctrl().modify(|r, w| unsafe { w.sm_enable().bits(r.sm_enable().bits() | (1 << SM_DIN)) });
+                dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.cap_ch[0]) });
+        }
+
+        /// Stop capturing: the machine disabled, both channels disarmed and aborted.
+        /// Buffers stay for the next start.
+        pub fn capture_stop(&mut self) {
+                if !self.cap_running {
+                        return;
+                }
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let dma = unsafe { &*pac::DMA::ptr() };
+                pio.ctrl().modify(|r, w| unsafe { w.sm_enable().bits(r.sm_enable().bits() & !(1 << SM_DIN)) });
+                //   EN off BEFORE the abort, and the wait BOUNDED: aborting a channel that
+                // is stalled on a DREQ which will now never arrive can hold the abort bit
+                // up -- an unbounded spin here wedged core 0 with the console unpolled,
+                // the CDC RX filling, and the host blocking on its next write
+                for ch in self.cap_ch {
+                        dma.ch(ch).ch_al1_ctrl().modify(|_, w| w.en().clear_bit());
+                }
+                dma.chan_abort().write(|w| unsafe { w.bits((1 << self.cap_ch[0]) | (1 << self.cap_ch[1])) });
+                for _ in 0..1_000_000u32 {
+                        if dma.chan_abort().read().bits() == 0 {
+                                break;
+                        }
+                }
+                self.cap_running = false;
+        }
+
+        /// Probe the raw DIN pad: sample GPIO input `n` times and count highs, alongside
+        /// the DIN state machine's program counter. A bring-up bisect for silent capture --
+        /// a healthy mix of highs and lows means the codec's SDOUT is toggling (so the
+        /// fault is in the PIO framing), all-low or all-high means the serial line is dead.
+        pub fn din_probe(&self, n: u32) -> (u32, u32) {
+                let sio = unsafe { &*pac::SIO::ptr() };
+                let bit = 1u32 << (self.pin_din & 31);
+                let mut highs = 0u32;
+                for _ in 0..n {
+                        if sio.gpio_in().read().bits() & bit != 0 {
+                                highs += 1;
+                        }
+                }
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let pc = pio.sm(SM_DIN).sm_addr().read().bits();
+                (highs, pc)
+        }
+
+        /// Enable the DIN state machine alone -- no DMA armed -- so its RX FIFO fills for
+        /// [`din_fifo_probe`](Self::din_fifo_probe). Flushes stale words and restarts the
+        /// program at its origin.
+        pub fn capture_sm_only(&mut self) {
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                pio.ctrl().modify(|r, w| unsafe { w.sm_enable().bits(r.sm_enable().bits() & !(1 << SM_DIN)) });
+                while pio.fstat().read().rxempty().bits() & (1 << SM_DIN) as u8 == 0 {
+                        let _ = pio.rxf(SM_DIN).read();
+                }
+                pio.sm(SM_DIN).sm_instr().write(|w| unsafe { w.bits(u32::from(DIN_ORIGIN)) });
+                pio.ctrl().modify(|r, w| unsafe { w.sm_enable().bits(r.sm_enable().bits() | (1 << SM_DIN)) });
+        }
+
+        /// Drain up to four raw words the DIN machine has pushed into its RX FIFO -- what
+        /// the state machine captured, BEFORE any DMA. Non-zero here with a silent file
+        /// convicts the DMA/write path; zero convicts the SM framing. The state machine
+        /// must be enabled (a capture in progress) for the FIFO to fill.
+        pub fn din_fifo_probe(&self) -> [u32; 4] {
+                let pio = unsafe { &*pac::PIO1::ptr() };
+                let mut out = [0u32; 4];
+                for slot in out.iter_mut() {
+                        //   wait briefly for a word, then take it
+                        let mut spin = 0u32;
+                        while pio.fstat().read().rxempty().bits() & (1 << SM_DIN) as u8 != 0 {
+                                spin += 1;
+                                if spin > 2_000_000 {
+                                        return out;
+                                }
+                        }
+                        *slot = pio.rxf(SM_DIN).read().bits();
+                }
+                out
+        }
+
+        /// Hand each freshly FILLED capture buffer to `take`, then re-arm it for the ring.
+        /// Both channels idle means audio was lost while nobody collected -- counted, and
+        /// the ring restarted.
+        pub fn capture_take(&mut self, mut take: impl FnMut(&[u16; CAP_WORDS])) {
+                if !self.cap_running {
+                        return;
+                }
+                let Some(bufs) = self.cap_bufs.as_mut() else { return };
+                let dma = unsafe { &*pac::DMA::ptr() };
+                let mut busy = [false; 2];
+                for i in 0..2 {
+                        busy[i] = dma.ch(self.cap_ch[i]).ch_ctrl_trig().read().busy().bit_is_set();
+                        if self.cap_last_busy[i] && !busy[i] {
+                                take(bufs[i]);
+                                let c = dma.ch(self.cap_ch[i]);
+                                c.ch_write_addr().write(|w| unsafe { w.bits(bufs[i].as_ptr() as u32) });
+                                c.ch_trans_count().write(|w| unsafe { w.bits(CAP_WORDS as u32) });
+                        }
+                        self.cap_last_busy[i] = busy[i];
+                }
+                if !busy[0] && !busy[1] {
+                        self.cap_overruns = self.cap_overruns.wrapping_add(1);
+                        self.cap_last_busy = [true, false];
+                        dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.cap_ch[0]) });
+                }
         }
 
         fn configure_channel(&self, ch: usize, other: usize, buf: &[u32; STREAM_WORDS]) {
