@@ -835,11 +835,14 @@ struct AudioMod {
         play: &'static mut Option<Playback>,
         /// One stream-buffer's worth of file bytes, bulk-read per refill so the DAC ring is
         /// filled from RAM, not per-sample off the card (which starved it: 33 underruns in
-        /// a bench playback). Sized for a full mono buffer (STREAM_WORDS/2 frames * 2
-        /// bytes). In .bss, like everything the card touches.
+        /// a bench playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
+        /// word each -- * 2 bytes). In .bss, like everything the card touches.
         play_stage: &'static mut [u8; 2560],
         /// Whether the capture buffers were already handed to the transport.
         cap_handed: bool,
+        /// The `rec null` bisect: capture runs, everything drains to nowhere.
+        rec_null: bool,
+        null_bytes: u32,
 }
 
 /// One open recording: the volume stays mounted (over [`SdRef`] borrows) and every filled
@@ -861,8 +864,24 @@ struct Playback {
 
 impl AudioMod {
         fn rec_start(&mut self, path: &str) {
-                if self.rec.is_some() {
+                if self.rec.is_some() || self.rec_null {
                         info!("rec: already recording");
+                        return;
+                }
+                if path == "null" {
+                        //   the freeze bisect: the WHOLE capture pipeline -- mic, PIO, DMA,
+                        // buffer hand-off -- with the SD card and filesystem entirely out of
+                        // the path. Stable here + frozen with a file convicts the card leg
+                        for _ in 0..3 {
+                                if self.codec.mic_enable().is_ok() {
+                                        break;
+                                }
+                        }
+                        self.pa.set(false);
+                        self.start_capture();
+                        self.rec_null = true;
+                        self.null_bytes = 0;
+                        info!("rec: null sink -- capturing and discarding");
                         return;
                 }
                 {
@@ -910,6 +929,16 @@ impl AudioMod {
                 if let Err(e) = mic {
                         warn!("rec: mic enable failed after retries: {e:?}");
                 }
+                //   speaker amp OFF for the take: live, it clicks with every SD write
+                // burst and the microphone records its own speaker
+                self.pa.set(false);
+                self.start_capture();
+                info!("rec: capture started, speaker muted");
+                *self.rec = Some(Recording { fs, file });
+                info!("rec: recording {} -- mono 16-bit at {} Hz", path, AUDIO_SAMPLE_HZ);
+        }
+
+        fn start_capture(&mut self) {
                 static CAP_A: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
                 static CAP_B: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
                 let bufs = if self.cap_handed {
@@ -918,18 +947,17 @@ impl AudioMod {
                         self.cap_handed = true;
                         Some([CAP_A.take(), CAP_B.take()])
                 };
-                //   speaker amp OFF for the take: live, it clicks with every SD write
-                // burst and the microphone records its own speaker
-                self.pa.set(false);
                 self.i2s.capture_start(bufs);
-                info!("rec: capture started, speaker muted");
-                *self.rec = Some(Recording { fs, file });
-                info!("rec: recording {} -- mono 16-bit at {} Hz", path, AUDIO_SAMPLE_HZ);
         }
 
         fn rec_stop(&mut self) {
                 self.i2s.capture_stop();
                 self.pa.set(true);
+                if self.rec_null {
+                        self.rec_null = false;
+                        info!("rec: null sink stopped -- {} B captured and discarded", self.null_bytes);
+                        return;
+                }
                 let Some(mut rec) = self.rec.take() else {
                         info!("rec: not recording");
                         return;
@@ -1204,11 +1232,15 @@ impl Module for AudioMod {
                                 warn!("rec: write failed ({e:?}); stopping");
                                 failed = true;
                         }
+                } else if self.rec_null {
+                        //   the bisect sink: drain and discard, no card in the path
+                        let n = &mut self.null_bytes;
+                        self.i2s.capture_take(|buf| *n += (buf.len() * 2) as u32);
                 }
                 if failed {
                         self.rec_stop();
                 }
-                let playing = self.remaining > 0 || self.rec.is_some() || self.play.is_some();
+                let playing = self.remaining > 0 || self.rec.is_some() || self.rec_null || self.play.is_some();
                 if let Some(play) = self.play.as_mut() {
                         //   a file plays: ONE bulk read per DAC buffer into the .bss staging
                         // buffer, then the ring is filled from RAM. Per-sample card reads in
@@ -1221,7 +1253,9 @@ impl Module for AudioMod {
                         let mut finished = false;
                         let mut failed = false;
                         self.i2s.refill(|buf| {
-                                let frames = buf.len() / 2;
+                                //   one WORD per frame: the sample in both halves plays it
+                                // on both slots (two words per sample here halved the pitch)
+                                let frames = buf.len();
                                 let want = (frames * ch * 2).min(stage.len());
                                 let remaining = data_end.saturating_sub(file.pos()) as usize;
                                 let want = want.min(remaining);
@@ -1240,12 +1274,11 @@ impl Module for AudioMod {
                                         finished = true;
                                 }
                                 let mut si = 0usize;
-                                for i in (0..buf.len()).step_by(2) {
+                                for slot in buf.iter_mut() {
                                         //   the left channel of each frame; mono steps 2 bytes, stereo 4
                                         let sample = if si + 1 < got { i16::from_le_bytes([stage[si], stage[si + 1]]) } else { 0 };
-                                        let w = (sample as u16 as u32) << 16;
-                                        buf[i] = w;
-                                        buf[i + 1] = w;
+                                        let s = u32::from(sample as u16);
+                                        *slot = s << 16 | s;
                                         si += ch * 2;
                                 }
                         });
@@ -1262,17 +1295,15 @@ impl Module for AudioMod {
                         let inc = self.phase_inc;
                         let remaining = &mut self.remaining;
                         self.i2s.refill(|buf| {
-                                let mut i = 0;
-                                while i + 1 < buf.len() {
+                                for slot in buf.iter_mut() {
+                                        //   one word per frame, the sample on both slots
                                         let s = if *remaining > 0 { SINE[(*phase >> 27) as usize] } else { 0 };
-                                        let w = (s as u16 as u32) << 16;
-                                        buf[i] = w;
-                                        buf[i + 1] = w;
+                                        let s = u32::from(s as u16);
+                                        *slot = s << 16 | s;
                                         if *remaining > 0 {
                                                 *phase = phase.wrapping_add(inc);
                                                 *remaining -= 1;
                                         }
-                                        i += 2;
                                 }
                         });
                 }
@@ -1688,6 +1719,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         STAGE.take()
                 },
                 cap_handed: false,
+                rec_null: false,
+                null_bytes: 0,
         };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());

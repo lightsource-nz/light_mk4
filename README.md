@@ -424,6 +424,28 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-04 — **all playback ever done on the 3.49 ran at half speed; the log timestamps
+  convicted it.** Recorded speech played back "pitched down several octaves" from data that
+  hex-dumped as a pristine normal-pitch waveform -- and "pitch is preserved by construction"
+  (capture and playback share the codec's one LRCLK) said that was impossible. The device's
+  own timestamps settled it: a 2.000 s sine file took 4.031 s from `play` to `play:
+  finished`. Exactly 2x. The dout PIO program's header comment claims one `pull` per channel
+  HALF-frame, but the program's steady-state loop (the wrap returns past the entry pull)
+  consumes ONE 32-bit word per FRAME -- top 16 bits out the left half, low 16 the right --
+  and both stream producers were written against the comment, pushing two words per sample:
+  every sample played for two frames. Nobody could hear it in a bare tone (440 Hz at 220 is
+  still "a clean tone" without a reference); a voice made it obvious. Fix: one word per
+  sample with the sample in both halves, STREAM_WORDS halved to keep the same 53 ms of
+  buffer (returning 10 KB of RAM), the comment corrected, and the rate now VERIFIED by
+  timestamp: 2.000 s of sine in 1.975 s wall clock, a 3.8 s voice take in 3.79 s. Capture
+  was independently re-verified at 47.9 KB/s over a 32 s soak. End-to-end voice loop
+  confirmed on the glass at true pitch. Two lessons worth the price: comments describing
+  hand-assembled PIO belong NEXT to the instruction words they describe, and when ears and
+  theory disagree, measure with timestamps -- every earlier "distortion" verdict (and a
+  gain retune based on one) was judged through this half-speed lens. Also new: `rec null`,
+  a capture soak that drains the whole mic pipeline with the SD card out of the path -- it
+  cleared the firmware when the bench's much-abused card (which no PC will mount any more)
+  froze the device during sustained writes.
 - 2026-09-03 — **the console must never block: non-blocking stdout.** Recording wedged the
   CDC console, and the cause was a blocking write, not the SD load: a `rec` emits ~7 log
   lines at start, and with the host not reading mid-capture they fill the CDC TX, whereupon

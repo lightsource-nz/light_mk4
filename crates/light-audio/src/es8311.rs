@@ -135,14 +135,19 @@ impl<B: I2cBus> Es8311<B> {
         /// the ADC clocks were already set by [`init`](Self::init); after this the codec's
         /// SDOUT carries live samples.
         pub fn mic_enable(&mut self) -> Result<(), I2cError> {
-                //   gain is a measured middle, not either extreme: the vendor's max analog
-                // PGA (REG14 = 0x1A) + max ADC digital volume (REG17 = 0xFF) amplified
-                // ambient noise and clipped close speech into a growly, octaves-down
-                // distortion; the earlier 0xBF was inaudibly faint. REG14 = 0x14 selects
-                // the analog mic at a mid PGA (less noise, headroom before clipping),
-                // REG17 = 0xD0 sets a moderate digital volume. Tune on the glass if needed.
-                self.write(REG_ADC17, 0xD0)?;
-                self.write(REG_SYS14, 0x14)
+                self.mic_config(0x17, 0xDF)
+        }
+
+        /// The two gain registers of the mic path, raw: `reg14` is SYSTEM14 (mic select +
+        /// analog PGA gain in the low bits), `reg17` is the ADC digital volume (0xBF = 0 dB,
+        /// 0.5 dB per step). Split out from [`mic_enable`](Self::mic_enable) so a bench can
+        /// tune the pair live -- both extremes measured wrong on the 3.49: the vendor's max
+        /// (0x1A/0xFF, about +62 dB total) clipped close speech in the analog PGA and
+        /// amplified room noise into a loud growl, while a −40 dB overcorrection left
+        /// speech at 0.5% of full scale under the amplified hiss.
+        pub fn mic_config(&mut self, reg14: u8, reg17: u8) -> Result<(), I2cError> {
+                self.write(REG_ADC17, reg17)?;
+                self.write(REG_SYS14, reg14)
         }
 
         /// Internal ADC-to-DAC monitor (REG44 bit 7): the digitized microphone is routed

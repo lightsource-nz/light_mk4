@@ -19,10 +19,14 @@
 //!     nop
 //!     jmp 0
 //!
-//! ; dout: Waveshare's reference I2S slave writer. One `pull block` per CHANNEL HALF-FRAME,
-//! ; 16 bits shifted out MSB-first on the codec's falling BCLK edges; the sample sits in
-//! ; the TOP 16 bits of the pushed word. The wait pins are baked into the instructions
-//! ; (PIO wait-on-gpio addresses an absolute pin), assembled here from the board's wiring.
+//! ; dout: Waveshare's reference I2S slave writer. One `pull block` per FRAME -- the wrap
+//! ; returns to the second pull, so the steady-state loop consumes ONE 32-bit word per
+//! ; LRCLK period: its TOP 16 bits shift out MSB-first during the left half, its LOW 16
+//! ; during the right half. (A fill that wrote two words per sample here played every
+//! ; sample twice -- speech an octave down, measured as a 2.00 s file taking 4.03 s.)
+//! ; The first pull + wait is entry alignment only; that word is discarded. The wait pins
+//! ; are baked into the instructions (PIO wait-on-gpio addresses an absolute pin),
+//! ; assembled here from the board's wiring.
 //!     pull block
 //!     wait 1 gpio LRCLK
 //!     pull block
@@ -50,12 +54,13 @@ const DIN_ORIGIN: u16 = 23;
 const DREQ_PIO1_TX0: u8 = 8;
 const DREQ_PIO1_RX0: u8 = 12;
 
-/// Words per stream buffer: 1280 frames (each frame is two words, left then right), ~53 ms
-/// at 24 kHz. Sized to ride out the WORST poll-to-poll gap, not the typical one: a
-/// full-frame display push is 39 ms and a file-playback refill adds an SD read, and 21 ms
-/// buffers glitched audibly under both. 53 ms clears the 39 ms push with margin while
-/// still fitting the 3.49's RAM beside its dual framebuffers.
-pub const STREAM_WORDS: usize = 2560;
+/// Words per stream buffer: ONE word per frame (top 16 bits = left slot, low 16 = right --
+/// see the dout program above), so 1280 words is 1280 frames, ~53 ms at 24 kHz. Sized to
+/// ride out the WORST poll-to-poll gap, not the typical one: a full-frame display push is
+/// 39 ms and a file-playback refill adds an SD read, and 21 ms buffers glitched audibly
+/// under both. 53 ms clears the 39 ms push with margin while still fitting the 3.49's RAM
+/// beside its dual framebuffers.
+pub const STREAM_WORDS: usize = 1280;
 
 /// Samples per CAPTURE buffer: mono 16-bit, 200 ms at 24 kHz per buffer. Sized against
 /// the medium, not the poll: an SD card's occasional garbage-collection stall runs
