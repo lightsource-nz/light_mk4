@@ -31,9 +31,11 @@ use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, 
 use light_display::{Display, FrameLayer, UpdateError};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
+use light_audio::pwm::{pcm_to_duty, Encoding, VOLUME_MAX as AUDIO_VOLUME_MAX};
 mod board;
 use board::*;
 use light_rp2::gpio::{Input, Output};
+use light_rp2::pwm_audio::PwmAudio;
 use light_rp2::i2c::I2c1;
 use light_rp2::spi::Spi1Display;
 use light_rp2::{Breathe, Clocks, SysClock};
@@ -101,6 +103,16 @@ enum Command {
         /// the glass -- which separates electrical coupling from the LCD itself disturbing the
         /// touch sensor.
         RenderMode(RenderMode),
+        /// A square wave at `hz` on the piezo, for `ms` (0 = until `tone off`).
+        Tone { hz: u16, ms: u16 },
+        ToneOff,
+        /// A synthesized sine at `hz` through the SAMPLE path: DMA-paced duty out of a
+        /// .bss buffer, the half of the provider a resonant tone does not exercise. The
+        /// acoustic check runs it AT the piezo's resonance -- a piezo renders anything far
+        /// from resonance near-silently however correct the stream is.
+        Beep(u16),
+        /// The sample path's volume, `0..=1000` per-mille (the PWM provider's scale).
+        Volume(u16),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -121,8 +133,8 @@ enum UiAction {
         DragConsumed,
 }
 
-/// 16 events deep, 5 subscribers: display, touch, imu, board, and one spare.
-static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
+/// 16 events deep, 6 subscribers: display, touch, imu, board, audio, and one spare.
+static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 /// Raw console bytes, core 1 → core 0. Sized for a burst of pasted text.
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 /// The display module says whether a panel push is in flight; the touch module reads it. One
@@ -578,6 +590,112 @@ impl Module for BoardMod {
 
 /// The console: bytes from core 1 into lines, lines into commands, commands onto the bus. The
 /// string front-end of the event bus; `help`, `loglevel` and `quit` are its own.
+/// One period of sine at 20000 amplitude, 32 steps -- plenty for a bring-up beeper.
+static SINE: [i16; 32] = [
+        0, 3902, 7654, 11111, 14142, 16629, 18478, 19616, 20000, 19616, 18478, 16629, 14142, 11111, 7654, 3902, 0, -3902, -7654, -11111, -14142, -16629, -18478, -19616, -20000, -19616, -18478, -16629,
+        -14142, -11111, -7654, -3902,
+];
+
+/// The beep asset: 300 ms at this rate, synthesized into .bss on demand.
+const BEEP_RATE: u32 = 22_050;
+const BEEP_SAMPLES: usize = (BEEP_RATE as usize * 300) / 1000;
+
+/// The piezo -- mk3's PWM audio provider, both of its paths: resonant square-wave tones
+/// (what a piezo is actually good at) and the DMA-paced duty sample stream.
+struct AudioMod {
+        buzzer: PwmAudio,
+        events: Subscription,
+        /// Sample-path volume, per-mille -- applied at synthesis, mk3's contract.
+        volume: u16,
+        /// A timed tone's end, `now_ms`-relative; `None` while silent or untimed.
+        tone_end_ms: Option<u32>,
+        /// The duty buffer the beep synthesizes into -- channel-positioned CC words, the
+        /// transport's word-wide format; in .bss, taken once.
+        beep: &'static mut [u32; BEEP_SAMPLES],
+        playing: bool,
+}
+
+impl Module for AudioMod {
+        fn name(&self) -> &'static str {
+                "audio"
+        }
+        fn load(&mut self) -> Result<(), ()> {
+                info!("audio up: pwm provider on GPIO {} (dma ch {}, pacing timer {})", PIN_BUZZER, AUDIO_DMA_CH, AUDIO_DMA_TIMER);
+                Ok(())
+        }
+        fn poll(&mut self) -> Poll {
+                let now_ms = (light_rp2::now_us() / 1000) as u32;
+                let mut busy = false;
+                while let Some(ev) = EVENTS.poll(&self.events) {
+                        match ev {
+                                AppEvent::Command(Command::Tone { hz, ms }) => {
+                                        busy = true;
+                                        self.buzzer.tone(u32::from(hz));
+                                        self.tone_end_ms = (ms > 0).then(|| now_ms.wrapping_add(u32::from(ms)));
+                                        info!("tone {hz} Hz{}", if ms > 0 { " (timed)" } else { "" });
+                                }
+                                AppEvent::Command(Command::ToneOff) => {
+                                        self.buzzer.tone_off();
+                                        self.tone_end_ms = None;
+                                        info!("tone off");
+                                }
+                                AppEvent::Command(Command::Beep(hz)) => {
+                                        if self.buzzer.busy() {
+                                                info!("beep: already playing");
+                                                continue;
+                                        }
+                                        //   synthesized at the CURRENT volume: the sample path
+                                        // converts once, up front, mk3's contract
+                                        let inc = ((u64::from(hz) << 32) / u64::from(BEEP_RATE)) as u32;
+                                        let mut phase = 0u32;
+                                        for b in self.beep.iter_mut() {
+                                                *b = self.buzzer.duty_word(pcm_to_duty(i32::from(SINE[(phase >> 27) as usize]), Encoding::PcmS16, self.volume));
+                                                phase = phase.wrapping_add(inc);
+                                        }
+                                        // SAFETY: a .bss static taken once; between here and
+                                        // the transfer's end it is shared only with the DMA
+                                        // reader, and the busy() gate above keeps this the one
+                                        // writer between plays
+                                        let duty: &'static [u32] = unsafe { core::slice::from_raw_parts(self.beep.as_ptr(), self.beep.len()) };
+                                        if self.buzzer.play(duty, BEEP_RATE) {
+                                                self.playing = true;
+                                                busy = true;
+                                                info!("beep: {} Hz sine, {} duty samples at {} Hz", hz, BEEP_SAMPLES, BEEP_RATE);
+                                        } else {
+                                                warn!("beep: play refused");
+                                        }
+                                }
+                                AppEvent::Command(Command::Volume(v)) => {
+                                        self.volume = v.min(AUDIO_VOLUME_MAX);
+                                        info!("volume {} (applies at the next beep)", self.volume);
+                                }
+                                AppEvent::Command(Command::Stats) => {
+                                        info!("audio: {}, volume {}", if self.buzzer.busy() { "playing" } else if self.tone_end_ms.is_some() { "toning" } else { "idle" }, self.volume);
+                                }
+                                _ => {}
+                        }
+                }
+                if let Some(end) = self.tone_end_ms {
+                        if now_ms.wrapping_sub(end) < 0x8000_0000 {
+                                self.buzzer.tone_off();
+                                self.tone_end_ms = None;
+                                info!("tone done");
+                        } else {
+                                busy = true;
+                        }
+                }
+                if self.playing && !self.buzzer.busy() {
+                        self.playing = false;
+                        info!("beep done");
+                }
+                if busy || self.playing { Poll::Busy } else { Poll::Idle }
+        }
+        fn unload(&mut self) {
+                self.buzzer.stop();
+                self.buzzer.tone_off();
+        }
+}
+
 struct ConsoleMod {
         reader: LineReader<96>,
 }
@@ -658,8 +776,45 @@ fn parse_render(w: &mut Words) -> Parsed<Command> {
         }
 }
 
+fn parse_tone(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                Some("off") => Parsed::Event(Command::ToneOff),
+                Some(hz) => {
+                        let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
+                        if !(20..=10_000).contains(&hz) {
+                                return Parsed::Usage;
+                        }
+                        let ms = match w.next() {
+                                None => 500,
+                                Some(ms) => match ms.parse::<u16>() {
+                                        Ok(ms) => ms,
+                                        _ => return Parsed::Usage,
+                                },
+                        };
+                        Parsed::Event(Command::Tone { hz, ms })
+                }
+                None => Parsed::Usage,
+        }
+}
+
+fn parse_volume(w: &mut Words) -> Parsed<Command> {
+        match w.next().and_then(|s| s.parse::<u16>().ok()) {
+                Some(v) if v <= AUDIO_VOLUME_MAX => Parsed::Event(Command::Volume(v)),
+                _ => Parsed::Usage,
+        }
+}
+
 static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+        CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
+        CliCommand { name: "beep", usage: "beep [HZ]", parse: |w| match w.next() {
+                None => Parsed::Event(Command::Beep(880)),
+                Some(hz) => match hz.parse::<u16>() {
+                        Ok(hz) if (20..=10_000).contains(&hz) => Parsed::Event(Command::Beep(hz)),
+                        _ => Parsed::Usage,
+                },
+        } },
+        CliCommand { name: "volume", usage: "volume 0..1000", parse: parse_volume },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
@@ -712,6 +867,17 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut audio_mod = AudioMod {
+                buzzer: p.buzzer,
+                events: EVENTS.subscribe().expect("subscriber slot"),
+                volume: AUDIO_VOLUME_MAX,
+                tone_end_ms: None,
+                beep: {
+                        static BEEP: ConstStaticCell<[u32; BEEP_SAMPLES]> = ConstStaticCell::new([0; BEEP_SAMPLES]);
+                        BEEP.take()
+                },
+                playing: false,
+        };
         //   built in place in .bss -- see DisplayMod -- and taken once
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
@@ -739,11 +905,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
         let mut console_mod = ConsoleMod { reader: LineReader::new() };
 
-        let mut rt: Runtime<5> = Runtime::new();
+        let mut rt: Runtime<6> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");
         rt.add(display_mod).expect("capacity");
         rt.add(touch_mod).expect("capacity");
         rt.add(&mut imu_mod).expect("capacity");
+        rt.add(&mut audio_mod).expect("capacity");
         rt.add(&mut console_mod).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; type 'help' on the console");

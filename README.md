@@ -424,6 +424,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-04 — **PWM audio: the second provider, and the byte that never reached the
+  compare register.** mk3's `light_audio` ports as `light-audio::pwm` (the PCM-to-duty
+  conversion -- silence at MID-scale, volume attenuating toward it, because a piezo
+  renders a DC step as a click -- with mk3's six mutation-hardened test groups) plus
+  `light-rp2::pwm_audio` (the transport: a ~586 kHz DAC-mode carrier, a DMA pacing
+  timer's DREQ delivering any sample rate for zero CPU, and the tone mode where the
+  carrier IS the note, which is what a piezo is actually good at). Consumed by the
+  touch169 app -- `tone`, `beep [HZ]`, `volume` -- on the piezo mk3's bench verified.
+  The porting caught a real bug the original never knew it had: mk3 streamed single
+  BYTES into the PWM compare register at the channel's byte offset, and the APB bridge
+  upgrades narrow writes to word width by REPLICATING the byte across the lanes -- duty
+  D arrived as D*257, past the 255 wrap, pinning the output at constant high. The DMA
+  paced perfectly, moved every byte on time, and made no sound: the transfer-complete
+  logs against total silence were the tell. mk4 streams channel-positioned WORDS.
+  Verification honest to the transducer: the sample path is judged at the piezo's
+  resonance (`beep 4000` beside `tone 4000`), because a piezo plays anything else
+  near-silently however correct the stream is.
 - 2026-09-04 — **the silent console was core 1 dying under core 0's stack, and the screen
   had to deliver the diagnosis.** For days, "the device wedged" during card-heavy commands:
   the console echoed one last line and went silent, later host writes timed out, and only a

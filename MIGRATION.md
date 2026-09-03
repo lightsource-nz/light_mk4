@@ -57,7 +57,7 @@ a guess, and mk4 does not inherit guesses.
 | light_imu, light_imu_qmi8658 | `light-input::imu`, `qmi8658` | ported | |
 | light_ui_demo_touch169, _po13 | `light_mk4_touch169`, `light_mk4_pico2` | ported | |
 | light_ui_hw_ws_touch169, _po13 | the apps' `src/board.rs` | ported | board wiring lives with the application |
-| light_audio | — | pending | hw-verified under mk3 (PCM + tone on a PWM pin); a `light-rp2::pwm` client. Port when a rig wants sound |
+| light_audio | `light-audio::pwm` + `light-rp2::pwm_audio` | ported | The framework's second audio provider, hw-verified on the 1.69's piezo (GPIO 2) 2026-09-04: the resonant tone path and the DMA-paced duty sample stream, both audible -- the sample path judged AT the piezo's resonance, where a piezo can actually render it. The conversion (`pcm_to_duty`: silence at mid-scale, volume attenuates toward it) ported with mk3's six mutation-hardened test groups. One real bug fixed in the porting: mk3 streamed single BYTES into the PWM compare register, and the APB bridge replicates narrow writes across the word -- duty D landed as D*257, pinning the output high; mk4 streams channel-positioned WORDS. The pacing: a DMA pacing timer's DREQ at the sample rate, zero CPU |
 | light_touch_cst328, light_ui_demo_touch28, light_ui_hw_ws_touch28 | `light-input::cst328` + `light_mk4_touch28` (+ its `board.rs`) | ported | hw-verified 2026-08-31: taps hit, drags scroll, swipe-back works, IMU axis map measured -- and zero CST328 read failures under the load that wedges the 1.69's CST816T |
 | light_ui_demo_ws15rgb, light_ui_hw_ws15rgb | — | pending | with the SSD1351 |
 

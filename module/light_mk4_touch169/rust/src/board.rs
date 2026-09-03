@@ -11,6 +11,7 @@ use light_core::atomic::{AtomicBool, Ordering};
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::I2c1;
 use light_rp2::pwm::PwmOutput;
+use light_rp2::pwm_audio::PwmAudio;
 use light_rp2::spi::Spi1Display;
 use light_rp2::Clocks;
 
@@ -48,6 +49,13 @@ pub const IMU_AXIS_MAP: light_input::imu::AxisMap = light_input::imu::AxisMap { 
 /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
 pub const DISPLAY_DMA_CH: usize = 15;
 
+/// The piezo, on the pin mk3's bench wired it to (`ST_AUDIO_PIN_BUZZER`) and verified
+/// audible: GPIO 2 is free of every on-board function on this board.
+pub const PIN_BUZZER: usize = 2;
+/// The sample stream's DMA channel and pacing timer, below the display's channel.
+pub const AUDIO_DMA_CH: usize = 13;
+pub const AUDIO_DMA_TIMER: usize = 0;
+
 /// Backlight levels run `0..=BACKLIGHT_LEVEL_MAX`, mk3's scale.
 pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 pub const BACKLIGHT_CARRIER_HZ: u32 = 30_000;
@@ -59,6 +67,8 @@ pub struct Peripherals {
         pub touch_bus: I2c1,
         pub touch_int: Input,
         pub touch_reset: Output,
+        /// The piezo: tones and paced-DMA duty streams. Parked silent.
+        pub buzzer: PwmAudio,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -86,6 +96,7 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                         touch_bus: I2c1::new(clocks.sys_hz, PIN_TOUCH_SCL, PIN_TOUCH_SDA, TOUCH_I2C_HZ),
                         touch_int: Input::new_pull_up(PIN_TOUCH_INT),
                         touch_reset: Output::new(PIN_TOUCH_RST, true),
+                        buzzer: PwmAudio::new(PIN_BUZZER, clocks.sys_hz, AUDIO_DMA_CH, AUDIO_DMA_TIMER),
                 })
         }
 }

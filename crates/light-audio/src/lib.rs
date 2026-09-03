@@ -1,8 +1,10 @@
-//! Audio codecs behind [`light_core::hal::I2cBus`]. One part so far: the ES8311, the
-//! mono DAC/ADC on the Waveshare RP2350-Touch-LCD-3.49. The I2S transport is a port
-//! crate's business; this crate only configures the codec's registers.
+//! The framework's audio providers, transport-independent halves. Two so far: the ES8311
+//! codec (register configuration behind [`light_core::hal::I2cBus`]; the I2S transport is
+//! a port crate's business) and PWM audio for a passive piezo or buzzer ([`pwm`]: the
+//! PCM-to-duty conversion; the carrier, pacing DMA and tone mode live in the port crate).
 
 #![no_std]
 
 pub mod es8311;
+pub mod pwm;
 pub use es8311::Es8311;

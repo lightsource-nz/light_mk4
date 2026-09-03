@@ -43,6 +43,7 @@ pub mod gpio;
 pub mod i2c;
 pub mod i2s;
 pub mod pwm;
+pub mod pwm_audio;
 pub mod qspi;
 #[cfg(feature = "rp2350")]
 pub mod rgb;
