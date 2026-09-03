@@ -17,10 +17,17 @@ function(light_mk4_shell_configure TARGET)
                 #   the SDK's own panics go through the same hand-off as Rust's
                 PICO_PANIC_FUNCTION=light_shell_panic_sdk
                 PICO_PANIC_FUNCTION_DOES_NOT_RETURN=1
-                #   long lines intact; and a 5 ms per-write bound rather than the SDK's 500 ms,
-                # which only core 1's drain ever pays now
+                #   long lines intact; and stdout NON-BLOCKING (timeout 0): a console write
+                # drops when the host is not reading rather than stalling core 1's drain. A
+                # blocking write here is a latent deadlock -- while core 1 sits in the drain
+                # waiting for CDC TX space, it is not pumping tud_task, so the CDC's OUT
+                # endpoint stops being serviced and the HOST's next write times out. This bit
+                # recording on the 3.49: the ~7 log lines a `rec` emits, with the host not
+                # reading mid-capture, stalled the drain and wedged the console. Dropping is
+                # already the log queue's own policy on the push side; this matches it on the
+                # transport side. The framework principle: logging never blocks the loop
                 CFG_TUD_CDC_TX_BUFSIZE=512
-                PICO_STDIO_USB_STDOUT_TIMEOUT_US=5000
+                PICO_STDIO_USB_STDOUT_TIMEOUT_US=0
                 #   core 0's stack: the SDK's default is 2 KB, which the widget toolkit's demo
                 # overran the moment its module state was built on the stack -- the board
                 # enumerated and then went silent, core 1 waiting on a lock core 0 died holding.

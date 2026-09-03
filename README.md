@@ -424,6 +424,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-03 — **the console must never block: non-blocking stdout.** Recording wedged the
+  CDC console, and the cause was a blocking write, not the SD load: a `rec` emits ~7 log
+  lines at start, and with the host not reading mid-capture they fill the CDC TX, whereupon
+  the core-1 log drain BLOCKED in the stdio write (`PICO_STDIO_USB_STDOUT_TIMEOUT_US=5000`)
+  waiting for space -- and while stuck there it stopped pumping `tud_task`, so the CDC's
+  OUT endpoint went unserviced and the host's next write timed out. The drain runs on core
+  1, but a blocking write lets it self-stall. Fix: `PICO_STDIO_USB_STDOUT_TIMEOUT_US=0` --
+  stdout drops when the host isn't reading rather than stalling the core that runs USB,
+  matching the log queue's own drop-with-counter policy on the push side. It's the
+  framework's stated principle (logging never blocks the loop) applied at the transport,
+  and it fixes recording on every device-role board at once. (Two wrong guesses preceded
+  the fix -- "core-0 SD starves the CDC" and "no device hang at all" -- both retracted.)
 - 2026-09-03 — **the dictaphone: the codec's encoder, and record/play through the
   filesystem.** The ES8311's capture half plus a recorder and player on the 3.49. New in
   `light-rp2::i2s`: a PIO capture machine (SM2 on PIO1) that samples the codec's SDOUT
