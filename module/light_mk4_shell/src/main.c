@@ -182,13 +182,22 @@ static void core1_main(void)
 }
 #endif
 
+//   CORE 1'S STACK LIVES IN ORDINARY RAM, not the linker's SCRATCH_X default. SCRATCH_X
+// sits directly below SCRATCH_Y (core 0's stack), and a deep core-0 call chain that dips
+// past its own floor was found landing exactly on core 1's live frames: core 1 died
+// alone, the application ran on, and the console -- which IS core 1 -- could not report
+// its own death (diagnosed on the 3.49 with an on-screen core-1 heartbeat and a painted
+// stack watermark: the heartbeat froze as the watermark hit zero). With core 1's stack
+// here, SCRATCH_X is vacant runway: a core-0 excursion overwrites nothing that lives.
+static uint32_t core1_stack[PICO_CORE1_STACK_SIZE / sizeof(uint32_t)];
+
 int main(void)
 {
         // core 1 first: with the SDK's IRQ background task disabled nothing else pumps
         // tud_task(), and stdio_init_all()'s connect wait would otherwise never see enumeration
         // complete. Reset before launch, or a warm restart of core 0 hangs in the FIFO handshake
         multicore_reset_core1();
-        multicore_launch_core1(core1_main);
+        multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof(core1_stack));
         while (!core1_ready)
                 tight_loop_contents();
         //   stdio: USB CDC on the device-role builds (with the connect wait the SDK does for it),
