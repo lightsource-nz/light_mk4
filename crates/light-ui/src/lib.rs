@@ -1270,8 +1270,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
         }
 
-        /// Keep `inset` pixels clear on every edge of the canvas. Set it to the glass's corner
-        /// radius; applied by relayout.
+        /// Keep `inset` pixels clear on every edge of the canvas. On rounded glass this is
+        /// a small BREATHING MARGIN, not the corner radius: the curve is carried by the
+        /// root window's own corner radius (the glass's measured radius minus this inset --
+        /// insetting a rounded rectangle by d leaves a rounded rectangle of radius r - d).
+        /// Setting the full glass radius here is the superseded mk3 approach that gave up a
+        /// whole band on every edge to keep a SQUARE frame inside round glass.
         pub fn set_safe_inset(&mut self, inset: u8) {
                 if self.safe_inset == i32::from(inset) {
                         return;
@@ -1981,22 +1985,38 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let r = self.draw_rect_of(w.rect);
                 let focused = self.focused == Some(id);
                 let (p0, p1) = (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1));
-                //   an unfocused button owns its rect too: the interior fills with bg so a
-                // draw-over frame leaves nothing of the previous image inside the outline
-                if !focused {
-                        let saved_fg = c.fg;
-                        c.fg = c.bg;
-                        if btn.corner_radius != 0 {
-                                c.rect_rounded(p0, p1, u16::from(btn.corner_radius), btn.corners, true);
-                        } else {
-                                c.rect(p0, p1, true);
+                //   a flush row's corners follow the CONTAINER'S OWN ARC -- equal radius,
+                // same centre, so its curve parallels the frame's through the corner and
+                // spans only the short segment inside the row -- rather than a tangent
+                // quarter-circle of reduced radius, whose sweep climbed the row's sides
+                // and met the frame at the corner apex (judged on the 1.69's glass)
+                let flush = btn.corners == light_draw::corner::BOTTOM && btn.corner_radius != 0;
+                let flush_drawn = flush && self.paint_flush_bottom(c, id, focused);
+                if !flush_drawn {
+                        //   a flush-marked row that is NOT docked at the frame (a scrolled
+                        // list row in flight) is an ordinary square row: the frame-following
+                        // corners belong to the docked position, and the old fallback --
+                        // rect_rounded, whose clamp shrank and re-anchored the arc -- is the
+                        // very picture this construction replaced
+                        let radius = if flush { 0 } else { u16::from(btn.corner_radius) };
+                        //   an unfocused button owns its rect too: the interior fills with bg
+                        // so a draw-over frame leaves nothing of the previous image inside
+                        // the outline
+                        if !focused {
+                                let saved_fg = c.fg;
+                                c.fg = c.bg;
+                                if radius != 0 {
+                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
+                                } else {
+                                        c.rect(p0, p1, true);
+                                }
+                                c.fg = saved_fg;
                         }
-                        c.fg = saved_fg;
-                }
-                if btn.corner_radius != 0 {
-                        c.rect_rounded(p0, p1, u16::from(btn.corner_radius), btn.corners, focused);
-                } else {
-                        c.rect(p0, p1, focused);
+                        if radius != 0 {
+                                c.rect_rounded(p0, p1, radius, btn.corners, focused);
+                        } else {
+                                c.rect(p0, p1, focused);
+                        }
                 }
                 // inverting the focused button: swap the colours around the label. Uniform for
                 // 1 bpp and RGB565, since both go through the same colour path
@@ -2017,6 +2037,85 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 c.fg = saved_fg;
                 // TODO a distinct look for disabled buttons wants a colour model 1 bpp lacks
+        }
+
+        /// A flush bottom row drawn CONCENTRIC with its container's corner arcs: the same
+        /// centres, radius reduced by exactly the row's inset, so the row's curve runs
+        /// parallel to the frame's the whole way around the corner at a constant gap.
+        /// This exists because `rect_rounded` cannot draw it: its safety clamp caps the
+        /// radius at half the row's height and anchors the arc to the ROW's corner, which
+        /// shrank the curve and pushed it through the frame at the apex. `false` when the
+        /// geometry degenerates (no rounded parent, uneven insets, row too short) and the
+        /// caller should draw the ordinary way.
+        fn paint_flush_bottom(&self, c: &mut Canvas<'_>, id: WidgetId, focused: bool) -> bool {
+                let w = self.w(id);
+                let Some(parent) = w.parent else { return false };
+                let pw = self.w(parent);
+                let Some(pwin) = pw.window() else { return false };
+                let pr = self.draw_rect_of(pw.rect);
+                //   the clamp mirrors rect_rounded's, so these centres are the ones the
+                // frame was actually drawn with
+                let rad = i32::from(pwin.corner_radius).min((pr.x1 - pr.x0) / 2).min((pr.y1 - pr.y0) / 2);
+                let row = self.draw_rect_of(w.rect);
+                //   the parallel gap is the row's SIDE inset from the frame (exact by
+                // construction); the bottom must be DOCKED at the flush edge, judged with
+                // a pixel of tolerance because the scroll clamp's arithmetic may land the
+                // rest position one off -- a strict test left a scrolled list's corners
+                // square forever
+                let side = row.x0 - pr.x0;
+                if side <= 0 || pr.x1 - row.x1 != side || rad <= side {
+                        return false;
+                }
+                let gap = pr.y1 - row.y1;
+                if (gap - side).abs() > 1 || gap <= 0 {
+                        return false;
+                }
+                let r_in = rad - side;
+                let (cxl, cxr, cy) = (pr.x0 + rad, pr.x1 - rad, pr.y1 - rad);
+                //   the inner arc is tangent to the row's bottom and side edges, so the
+                // quadrant must fit above the row's top
+                if row.y0 > cy || cxl > cxr {
+                        return false;
+                }
+
+                //   the interior, span by span; doubles as the unfocused bg wash and the
+                // focused fill -- below the centres the curve pulls the span ends in
+                let fill = |c: &mut Canvas<'_>| {
+                        for y in row.y0..=row.y1 {
+                                let (mut x0, mut x1) = (row.x0, row.x1);
+                                if y > cy {
+                                        let dy = y - cy;
+                                        let s = isqrt((r_in * r_in - dy * dy).max(0) as u32) as i32;
+                                        x0 = x0.max(cxl - s);
+                                        x1 = x1.min(cxr + s);
+                                }
+                                if x0 <= x1 {
+                                        c.rect(Point::new(x0, y), Point::new(x1, y), true);
+                                }
+                        }
+                };
+                if focused {
+                        fill(c);
+                } else {
+                        let saved_fg = c.fg;
+                        c.fg = c.bg;
+                        fill(c);
+                        c.fg = saved_fg;
+                        //   straight edges to the tangent points, then the concentric arcs.
+                        // Inside a SCROLLING window the arcs are the corner MASK's to draw:
+                        // it repaints after the children, and its erase spans (isqrt) and
+                        // arc() disagree by the odd pixel -- an arc drawn here came back
+                        // with bites taken out of it
+                        c.line(Point::new(row.x0, row.y0), Point::new(row.x1, row.y0));
+                        c.line(Point::new(row.x0, row.y0), Point::new(row.x0, cy));
+                        c.line(Point::new(row.x1, row.y0), Point::new(row.x1, cy));
+                        c.line(Point::new(cxl, row.y1), Point::new(cxr, row.y1));
+                        if !pw.is_scrolling_window() {
+                                c.arc(Point::new(cxl, cy), r_in as u16, 90, 180);
+                                c.arc(Point::new(cxr, cy), r_in as u16, 0, 90);
+                        }
+                }
+                true
         }
 
         fn paint_label(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, clip: &Rect) {
@@ -2057,7 +2156,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // title were drawn against the wider clip, which keeps the frame visible while
                 // content moves beneath it. The content region runs to the scroll STOP for every
                 // row, so a row straddling the bottom paints into the corner band
-                if self.w(id).is_scrolling_window() {
+                let scrolling = self.w(id).is_scrolling_window();
+                let win_clip = clip;
+                if scrolling {
                         let mut vp = self.viewport(id);
                         vp.y1 = vp.y1.max(self.scroll_stop_y1(id));
                         if !rect_intersect(&mut clip, &vp) {
@@ -2067,6 +2168,64 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // children after the parent, in sibling order: later draws on top
                 for child in self.children(id) {
                         self.paint_clipped(c, font, child, clip);
+                }
+                //   the curve belongs to the CONTAINER, not to whichever row is passing: a
+                // rounded scrolling window re-masks its bottom corners after its children,
+                // so content slides beneath a curve that never moves. Corner treatment that
+                // rode the last row vanished the moment a scroll moved it off the stop
+                if scrolling {
+                        c.set_clip(Region::new(win_clip.x0.max(0) as u16, win_clip.y0.max(0) as u16, win_clip.x1.max(0) as u16, win_clip.y1.max(0) as u16));
+                        self.paint_scroll_corner_mask(c, id);
+                }
+        }
+
+        /// Erase whatever content reached outside the rounded viewport's bottom corners --
+        /// the concentric curve the frame's own arcs imply at the content inset -- and
+        /// redraw the border arcs over it. Runs AFTER a scrolling window's children.
+        fn paint_scroll_corner_mask(&self, c: &mut Canvas<'_>, id: WidgetId) {
+                let w = self.w(id);
+                let Some(win) = w.window() else { return };
+                let pr = self.draw_rect_of(w.rect);
+                let rad = i32::from(win.corner_radius).min((pr.x1 - pr.x0) / 2).min((pr.y1 - pr.y0) / 2);
+                let inset = Self::inset_x(win);
+                let r_in = rad - inset;
+                if r_in <= 0 {
+                        return;
+                }
+                let (cxl, cxr, cy) = (pr.x0 + rad, pr.x1 - rad, pr.y1 - rad);
+                let saved_fg = c.fg;
+                c.fg = c.bg;
+                for y in cy..=pr.y1 {
+                        let dy = y - cy;
+                        let s = if dy < r_in { isqrt((r_in * r_in - dy * dy) as u32) as i32 } else { 0 };
+                        //   outside the content curve, inside the frame: erased. The border
+                        // itself is repainted below
+                        let left_edge = cxl - s;
+                        if left_edge > pr.x0 {
+                                c.rect(Point::new(pr.x0, y), Point::new(left_edge - 1, y), true);
+                        }
+                        let right_edge = cxr + s;
+                        if right_edge < pr.x1 {
+                                c.rect(Point::new(right_edge + 1, y), Point::new(pr.x1, y), true);
+                        }
+                }
+                c.fg = saved_fg;
+                if win.border {
+                        c.arc(Point::new(cxl, cy), rad as u16, 90, 180);
+                        c.arc(Point::new(cxr, cy), rad as u16, 0, 90);
+                }
+                //   the inner boundary -- the concentric arcs and the straight run between
+                // them -- drawn HERE, after the erase, because the erase's isqrt spans and
+                // arc()'s trig sampling disagree by the odd pixel and an arc drawn earlier
+                // came back gap-toothed. Rendered whenever the container holds enough
+                // content to scroll: the boundary belongs to the container, marking where
+                // content ends against the curve, at every scroll position
+                let vp = self.viewport(id);
+                let scrollable = win.content_h > self.scroll_stop_y1(id) - vp.y0 + 1;
+                if scrollable {
+                        c.line(Point::new(cxl, cy + r_in), Point::new(cxr, cy + r_in));
+                        c.arc(Point::new(cxl, cy), r_in as u16, 90, 180);
+                        c.arc(Point::new(cxr, cy), r_in as u16, 0, 90);
                 }
         }
 

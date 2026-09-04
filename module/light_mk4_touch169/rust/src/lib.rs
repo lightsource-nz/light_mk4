@@ -171,9 +171,17 @@ pub extern "C" fn light_app_core1_service() {
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// The glass's corner radius, near enough: the root window's frame follows it instead of
-/// floating in a square inside it.
-const CORNER_RADIUS: u8 = 24;
+/// The glass's corner radius is 42 -- MEASURED, not estimated, by mk3's
+/// screentest_calib169 sweep (a rounded rect at inset d closes its corners inside glass
+/// of radius R exactly at r = R - d; the transition sat between 36 and 40 at d = 2, and
+/// the upper end taken). An estimate is exactly how this went wrong twice: mk3's first
+/// guess of 20 and mk4's port guess of 24 both left the frame's corners swallowed by the
+/// glass, invisibly in code. Strict concentric geometry at [`SAFE_INSET`] would say
+/// radius-minus-inset, but the measurement only bounded the radius from below and the
+/// FULL figure is what reads right on the glass -- judged there, 2026-09-04.
+const CORNER_RADIUS: u8 = 42;
+/// A breathing margin on every edge; the curve itself is [`CORNER_RADIUS`]'s job.
+const SAFE_INSET: u8 = 2;
 const ROW_GAP: u8 = 2;
 /// Rows in the scrolling list are pinned to this, so the list overflows rather than shrinking.
 const LIST_MIN_ROW: i32 = 44;
@@ -885,6 +893,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         layer.bg = BG;
         ui.set_font(&font);
+        ui.set_safe_inset(SAFE_INSET);
         let _ = FG;
         // module state is 'static in any case: the runtime never returns
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();

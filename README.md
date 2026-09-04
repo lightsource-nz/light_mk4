@@ -424,6 +424,26 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-04 — **the touch169 demo learns its glass's corners, and the curve learns who
+  owns it.** The 1.69's glass has a MEASURED corner radius of 42 (mk3's calibration
+  sweep); the mk4 demo had guessed 24 -- the same class of invisible error as mk3's first
+  guess of 20, with the frame's corners swallowed by the glass. Now: the root window draws
+  at a 2 px breathing inset with the full measured radius, `set_safe_inset` finally has a
+  caller (and its doc no longer teaches mk3's superseded radius-as-inset approach), and
+  the corner geometry got rebuilt on three findings from the glass. One: a flush row's
+  corners must be CONCENTRIC with the frame -- same centres, radius less the gap, curves
+  parallel the whole way round -- and `rect_rounded` cannot draw that: its safety clamp
+  caps the radius at half the row's height and re-anchors the arc to the row's own corner,
+  which is why every radius ever tried poked through the frame at the apex
+  (`paint_flush_bottom` now draws the true construction). Two: on a SCROLLING window the
+  curve belongs to the CONTAINER, not to whichever row is passing -- corner treatment that
+  rode the last row vanished the moment a scroll moved it -- so a rounded scrolling window
+  re-masks its bottom corners after its children paint, and content slides beneath a curve
+  that never moves. Three: the mask's isqrt erase spans and `arc()`'s trig sampling
+  disagree by the odd pixel, so anything the erase might bite is drawn AFTER it; the inner
+  boundary (arcs plus the straight run between) renders whenever the container holds
+  enough content to scroll, a permanent fixture marking where content ends against the
+  curve. All judged on the glass, iteration by iteration.
 - 2026-09-04 — **PWM audio: the second provider, and the byte that never reached the
   compare register.** mk3's `light_audio` ports as `light-audio::pwm` (the PCM-to-duty
   conversion -- silence at MID-scale, volume attenuating toward it, because a piezo
