@@ -20,7 +20,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
+use light_ui::{scroll, Desc, Page, Shade, SwipeDir, Touch, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -80,6 +80,9 @@ enum Command {
         /// Re-clock the display bus live: the SPI-headroom probe. Too fast shows up as
         /// corrupt pixels rather than a clean failure, so the eye is the instrument.
         SpiHz(u32),
+        /// The focused cell's gradient, live-tunable like every look-and-feel knob:
+        /// `shade FROM TO` in RGB565 hex, `shade off` for the solid inversion.
+        FocusShade(Option<Shade>),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +138,10 @@ const ROW_GAP: u8 = 6;
 const LIST_MIN_ROW: i32 = 56;
 const FPS: u32 = 30;
 const BG: u16 = 0x0000;
+
+/// The selected cell's gradient, top to bottom: a lit steel blue falling into deep navy.
+/// The `shade` console command retunes it live on the glass.
+const FOCUS_SHADE: Shade = Shade { from: 0x4C5D, to: 0x090E };
 
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
@@ -275,6 +282,13 @@ impl DisplayMod {
                                 //   repaint everything at the new clock, so corruption shows
                                 // immediately rather than on the next interaction
                                 self.ui.invalidate_all();
+                        }
+                        AppEvent::Command(Command::FocusShade(s)) => {
+                                self.ui.set_focus_shade(s);
+                                match s {
+                                        Some(s) => info!("focus shade {:04x} -> {:04x}", s.from, s.to),
+                                        None => info!("focus shade off"),
+                                }
                         }
                         AppEvent::Command(Command::UiBack) => {
                                 if !self.ui.navigate_back() {
@@ -608,8 +622,20 @@ fn parse_spi(w: &mut Words) -> Parsed<Command> {
         }
 }
 
+fn parse_shade(w: &mut Words) -> Parsed<Command> {
+        match w.next() {
+                Some("off") => Parsed::Event(Command::FocusShade(None)),
+                Some(from) => match (u16::from_str_radix(from, 16), w.next().map(|t| u16::from_str_radix(t, 16))) {
+                        (Ok(from), Some(Ok(to))) => Parsed::Event(Command::FocusShade(Some(Shade { from, to }))),
+                        _ => Parsed::Usage,
+                },
+                None => Parsed::Usage,
+        }
+}
+
 static COMMANDS: &[CliCommand<Command>] = &[
         CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+        CliCommand { name: "shade", usage: "shade FROM16 TO16 (rgb565 hex) | shade off", parse: parse_shade },
         CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
         CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
         CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
@@ -666,6 +692,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
         layer.bg = BG;
         ui.set_font(&font);
+        ui.set_focus_shade(Some(FOCUS_SHADE));
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod {
                 display,

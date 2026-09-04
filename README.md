@@ -424,6 +424,18 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-05 — **surfaces learn to carry a shade, and the selection learns to glow.**
+  light-draw grows `lerp565` (component-wise RGB565 interpolation) and shaded fills --
+  `rect_shaded` and `rect_rounded_shaded`, vertical gradients through the same span and
+  corner geometry as the solid fills, degrading to a solid on a mono canvas. light-ui
+  carries them as style: `Shade { from, to }`, `Ui::set_focus_shade` (the focused cell
+  fills with a gradient and reads as LIT rather than inverted-flat -- one selection voice
+  across the whole interface), and `Desc::shaded(from, to)` for a button's unfocused
+  surface. Both routes run through the ordinary paint path AND the flush concentric
+  construction, whose span fill lerps per row so a shaded row still hugs the frame's
+  curve. First worn by the 2.8's demo: steel blue falling into deep navy on the selected
+  cell, with a `shade FROM16 TO16 | off` console command for live tuning on the glass --
+  approved on the first candidate, which is what live knobs are for.
 - 2026-09-04 — **the touch169 demo learns its glass's corners, and the curve learns who
   owns it.** The 1.69's glass has a MEASURED corner radius of 42 (mk3's calibration
   sweep); the mk4 demo had guessed 24 -- the same class of invisible error as mk3's first

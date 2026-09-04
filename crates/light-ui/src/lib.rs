@@ -27,7 +27,7 @@
 use heapless::Vec;
 
 use light_display::{Display, DisplayDriver, Region};
-use light_draw::{Canvas, Flip, Point, Rotation, Transform};
+use light_draw::{lerp565, Canvas, Flip, Point, Rotation, Transform};
 use light_display::frames::{FrameLayer, LogicalRegion, MAX_REGIONS};
 use light_core::{debug, error, trace, warn};
 use light_font::Font;
@@ -133,6 +133,9 @@ pub struct Button<A: 'static> {
         /// follows the container's curve; `corners` names only the ones that touch it.
         pub corner_radius: u8,
         pub corners: u8,
+        /// The button's SURFACE when unfocused: a gradient wash under the outline in place
+        /// of the flat background. The focused fill is the UI-level style instead.
+        pub shade: Option<Shade>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -145,6 +148,16 @@ pub enum Kind<A: 'static> {
         Window(Window),
         Button(Button<A>),
         Label(Label),
+}
+
+/// A vertical shade across a surface: `from` at the top edge, `to` at the bottom. An
+/// RGB565 idea -- a mono canvas renders any shade as a solid fill -- carried by the
+/// focused widget's fill ([`Ui::set_focus_shade`]) and by any button built
+/// [`Desc::shaded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Shade {
+        pub from: u16,
+        pub to: u16,
 }
 
 /// Owned widget text: a small copy the application rewrites at runtime
@@ -268,6 +281,7 @@ pub struct Desc<A: 'static> {
         text: Option<&'static str>,
         emit: Option<A>,
         nav: Nav<A>,
+        shade: Option<Shade>,
         corner_radius: u8,
         layout: Layout,
         scroll: u8,
@@ -284,7 +298,7 @@ pub struct Desc<A: 'static> {
 
 impl<A: Copy> Desc<A> {
         const fn base(kind: DescKind, text: Option<&'static str>) -> Self {
-                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, children: &[] }
+                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, children: &[], shade: None }
         }
         pub const fn window(title: &'static str) -> Self {
                 Self::base(DescKind::Window, Some(title))
@@ -313,6 +327,12 @@ impl<A: Copy> Desc<A> {
         }
         pub const fn rounded(mut self, radius: u8) -> Self {
                 self.corner_radius = radius;
+                self
+        }
+        /// A vertical gradient surface for a button, `from` at the top: shown while
+        /// unfocused, under the outline, in place of the flat background.
+        pub const fn shaded(mut self, from: u16, to: u16) -> Self {
+                self.shade = Some(Shade { from, to });
                 self
         }
         pub const fn stack(mut self, gap: u8) -> Self {
@@ -497,6 +517,9 @@ pub struct Ui<A: 'static, const N: usize> {
         /// rather than per-edge because the interface rotates while the corners are fixed in the
         /// panel's frame: a uniform inset is the only value invariant under rotation.
         safe_inset: i32,
+        /// The focused widget's fill, when shaded: the selected cell reads as LIT rather
+        /// than inverted-flat. `None` keeps the solid inversion.
+        focus_shade: Option<Shade>,
         // --- touch tracking, owned by `touch()`; everything logical ---
         touch_down: bool,
         touch_dragging: bool,
@@ -571,6 +594,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         cell_w: 0,
                         cell_h: 0,
                         safe_inset: 0,
+                        focus_shade: None,
                         touch_down: false,
                         touch_dragging: false,
                         drag_window: None,
@@ -726,7 +750,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         pub fn create_button(&mut self, parent: Option<WidgetId>, rect: Rect, label: &'static str, emit: Option<A>, nav: Nav<A>) -> Result<WidgetId, Error> {
-                let id = self.add(parent, Kind::Button(Button { label, emit, nav, corner_radius: 0, corners: light_draw::corner::NONE }), rect, true)?;
+                let id = self.add(parent, Kind::Button(Button { label, emit, nav, corner_radius: 0, corners: light_draw::corner::NONE, shade: None }), rect, true)?;
                 // the first focusable widget takes focus, so a two-button rig always has
                 // somewhere to start cycling from
                 if self.focused.is_none() {
@@ -752,7 +776,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 win.scroll = desc.scroll;
                                 id
                         }
-                        DescKind::Button => self.create_button(parent, rect, desc.text.unwrap_or(""), desc.emit, desc.nav)?,
+                        DescKind::Button => {
+                                let id = self.create_button(parent, rect, desc.text.unwrap_or(""), desc.emit, desc.nav)?;
+                                if let Kind::Button(b) = &mut self.w_mut(id).kind {
+                                        b.shade = desc.shade;
+                                }
+                                id
+                        }
                         DescKind::Label => self.create_label(parent, rect, desc.text.unwrap_or(""))?,
                 };
                 {
@@ -1276,6 +1306,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// insetting a rounded rectangle by d leaves a rounded rectangle of radius r - d).
         /// Setting the full glass radius here is the superseded mk3 approach that gave up a
         /// whole band on every edge to keep a SQUARE frame inside round glass.
+        /// Shade the focused widget's fill with a vertical gradient, or `None` for the
+        /// solid inversion. A UI-level style, not per-widget: the selection highlight is
+        /// one voice across the whole interface.
+        pub fn set_focus_shade(&mut self, shade: Option<Shade>) {
+                if self.focus_shade == shade {
+                        return;
+                }
+                self.focus_shade = shade;
+                self.invalidate_all();
+        }
+
         pub fn set_safe_inset(&mut self, inset: u8) {
                 if self.safe_inset == i32::from(inset) {
                         return;
@@ -1999,23 +2040,39 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // rect_rounded, whose clamp shrank and re-anchored the arc -- is the
                         // very picture this construction replaced
                         let radius = if flush { 0 } else { u16::from(btn.corner_radius) };
-                        //   an unfocused button owns its rect too: the interior fills with bg
-                        // so a draw-over frame leaves nothing of the previous image inside
-                        // the outline
-                        if !focused {
-                                let saved_fg = c.fg;
-                                c.fg = c.bg;
-                                if radius != 0 {
-                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
-                                } else {
-                                        c.rect(p0, p1, true);
+                        if focused {
+                                //   the selection: shaded when the interface carries a focus
+                                // shade -- the cell reads as LIT -- else the solid inversion
+                                match self.focus_shade {
+                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
+                                        Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
+                                        None if radius != 0 => c.rect_rounded(p0, p1, radius, btn.corners, true),
+                                        None => c.rect(p0, p1, true),
                                 }
-                                c.fg = saved_fg;
-                        }
-                        if radius != 0 {
-                                c.rect_rounded(p0, p1, radius, btn.corners, focused);
                         } else {
-                                c.rect(p0, p1, focused);
+                                //   an unfocused button owns its rect too: the interior takes
+                                // its surface -- its own shade, or the flat background -- so a
+                                // draw-over frame leaves nothing of the previous image inside
+                                // the outline
+                                match btn.shade {
+                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
+                                        Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
+                                        None => {
+                                                let saved_fg = c.fg;
+                                                c.fg = c.bg;
+                                                if radius != 0 {
+                                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
+                                                } else {
+                                                        c.rect(p0, p1, true);
+                                                }
+                                                c.fg = saved_fg;
+                                        }
+                                }
+                                if radius != 0 {
+                                        c.rect_rounded(p0, p1, radius, btn.corners, false);
+                                } else {
+                                        c.rect(p0, p1, false);
+                                }
                         }
                 }
                 // inverting the focused button: swap the colours around the label. Uniform for
@@ -2078,9 +2135,16 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return false;
                 }
 
-                //   the interior, span by span; doubles as the unfocused bg wash and the
-                // focused fill -- below the centres the curve pulls the span ends in
-                let fill = |c: &mut Canvas<'_>| {
+                //   the interior, span by span; doubles as the unfocused surface wash and
+                // the focused fill -- below the centres the curve pulls the span ends in,
+                // and a shade colors each span on its way down
+                let btn_shade = match &w.kind {
+                        Kind::Button(b) => b.shade,
+                        _ => None,
+                };
+                let den = row.y1 - row.y0;
+                let fill = |c: &mut Canvas<'_>, shade: Option<Shade>| {
+                        let saved_fg = c.fg;
                         for y in row.y0..=row.y1 {
                                 let (mut x0, mut x1) = (row.x0, row.x1);
                                 if y > cy {
@@ -2090,17 +2154,25 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         x1 = x1.min(cxr + s);
                                 }
                                 if x0 <= x1 {
+                                        if let Some(s) = shade {
+                                                c.fg = lerp565(s.from, s.to, y - row.y0, den);
+                                        }
                                         c.rect(Point::new(x0, y), Point::new(x1, y), true);
                                 }
                         }
+                        c.fg = saved_fg;
                 };
                 if focused {
-                        fill(c);
+                        fill(c, self.focus_shade);
                 } else {
-                        let saved_fg = c.fg;
-                        c.fg = c.bg;
-                        fill(c);
-                        c.fg = saved_fg;
+                        if btn_shade.is_none() {
+                                let saved_fg = c.fg;
+                                c.fg = c.bg;
+                                fill(c, None);
+                                c.fg = saved_fg;
+                        } else {
+                                fill(c, btn_shade);
+                        }
                         //   straight edges to the tangent points, then the concentric arcs.
                         // Inside a SCROLLING window the arcs are the corner MASK's to draw:
                         // it repaints after the children, and its erase spans (isqrt) and

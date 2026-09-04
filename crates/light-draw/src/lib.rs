@@ -738,6 +738,56 @@ impl<'a> Canvas<'a> {
                 }
         }
 
+        /// A rectangle filled with a VERTICAL gradient: `from` at the top row, `to` at the
+        /// bottom. On a Mono1 canvas the interpolated colors degenerate to set pixels --
+        /// a shade is an RGB565 idea; mono callers get a solid fill.
+        pub fn rect_shaded(&mut self, p0: Point, p1: Point, from: u16, to: u16) {
+                let (x0, x1) = (p0.x.min(p1.x), p0.x.max(p1.x));
+                let (y0, y1) = (p0.y.min(p1.y), p0.y.max(p1.y));
+                let den = y1 - y0;
+                for y in y0..=y1 {
+                        self.span(x0, x1, y, lerp565(from, to, y - y0, den));
+                }
+        }
+
+        /// [`rect_rounded`](Self::rect_rounded)'s fill with a vertical gradient: the same
+        /// corner geometry, the row color interpolated from `from` to `to`.
+        pub fn rect_rounded_shaded(&mut self, p0: Point, p1: Point, radius: u16, corners: u8, from: u16, to: u16) {
+                let (x0, x1) = (p0.x.min(p1.x), p0.x.max(p1.x));
+                let (y0, y1) = (p0.y.min(p1.y), p0.y.max(p1.y));
+                let r = i32::from(radius).min((x1 - x0) / 2).min((y1 - y0) / 2);
+                if r <= 0 || corners == corner::NONE {
+                        self.rect_shaded(p0, p1, from, to);
+                        return;
+                }
+                let inset = |bit: u8| if corners & bit != 0 { r } else { 0 };
+                let (tl, tr, br, bl) = (inset(corner::TOP_LEFT), inset(corner::TOP_RIGHT), inset(corner::BOTTOM_RIGHT), inset(corner::BOTTOM_LEFT));
+                let den = y1 - y0;
+                for y in y0..=y1 {
+                        let (mut li, mut ri) = (0, 0);
+                        if y < y0 + r {
+                                let dy = y0 + r - y;
+                                let d = r - isqrt((r * r - dy * dy) as u32) as i32;
+                                if tl != 0 {
+                                        li = d;
+                                }
+                                if tr != 0 {
+                                        ri = d;
+                                }
+                        } else if y > y1 - r {
+                                let dy = y - (y1 - r);
+                                let d = r - isqrt((r * r - dy * dy) as u32) as i32;
+                                if bl != 0 {
+                                        li = d;
+                                }
+                                if br != 0 {
+                                        ri = d;
+                                }
+                        }
+                        self.span(x0 + li, x1 - ri, y, lerp565(from, to, y - y0, den));
+                }
+        }
+
         // --- blits ------------------------------------------------------------------------
         //
         // Both work in PHYSICAL buffer space and ignore the transform entirely: they move an
@@ -977,6 +1027,22 @@ fn cos_deg_q8_q15(deg_q8: i32) -> i32 {
 }
 
 /// Newton's method on integers, a handful of iterations for anything a display holds.
+/// Linear interpolation between two RGB565 colors at `num / den`, component-wise -- the
+/// step gradients are built from. `num` is clamped into `0..=den`; a degenerate `den`
+/// answers `from`.
+pub fn lerp565(from: u16, to: u16, num: i32, den: i32) -> u16 {
+        if den <= 0 {
+                return from;
+        }
+        let num = num.clamp(0, den);
+        let component = |shift: u16, mask: i32| {
+                let a = i32::from(from >> shift) & mask;
+                let b = i32::from(to >> shift) & mask;
+                ((a + (b - a) * num / den) & mask) as u16
+        };
+        component(11, 0x1F) << 11 | component(5, 0x3F) << 5 | component(0, 0x1F)
+}
+
 fn isqrt(n: u32) -> u32 {
         if n == 0 {
                 return 0;
