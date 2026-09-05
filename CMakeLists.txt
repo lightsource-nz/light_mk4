@@ -69,6 +69,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         )
         corrosion_set_hostbuild(crush)
         include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightFont.cmake)
+        include(${CMAKE_CURRENT_LIST_DIR}/cmake/LightTheme.cmake)
 
         if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
                 add_subdirectory(module/light_mk4_shell)

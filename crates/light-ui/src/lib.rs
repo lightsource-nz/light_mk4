@@ -32,6 +32,9 @@ use light_display::frames::{FrameLayer, LogicalRegion, MAX_REGIONS};
 use light_core::{debug, error, trace, warn};
 use light_font::Font;
 
+pub mod theme;
+pub use theme::Theme;
+
 /// A widget rectangle: inclusive, logical, signed -- a widget positioned partly off the canvas
 /// is clipped here before anything reaches the rasteriser.
 pub type Rect = LogicalRegion;
@@ -517,9 +520,10 @@ pub struct Ui<A: 'static, const N: usize> {
         /// rather than per-edge because the interface rotates while the corners are fixed in the
         /// panel's frame: a uniform inset is the only value invariant under rotation.
         safe_inset: i32,
-        /// The focused widget's fill, when shaded: the selected cell reads as LIT rather
-        /// than inverted-flat. `None` keeps the solid inversion.
-        focus_shade: Option<Shade>,
+        /// The look-and-feel every element paints with -- see [`theme`]. Starts as the
+        /// pre-theme monochrome look; an application installs its own with
+        /// [`set_theme`](Self::set_theme), typically parsed from an embedded LTH blob.
+        theme: Theme,
         // --- touch tracking, owned by `touch()`; everything logical ---
         touch_down: bool,
         touch_dragging: bool,
@@ -594,7 +598,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         cell_w: 0,
                         cell_h: 0,
                         safe_inset: 0,
-                        focus_shade: None,
+                        theme: Theme::DEFAULT,
                         touch_down: false,
                         touch_dragging: false,
                         drag_window: None,
@@ -1306,14 +1310,29 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// insetting a rounded rectangle by d leaves a rounded rectangle of radius r - d).
         /// Setting the full glass radius here is the superseded mk3 approach that gave up a
         /// whole band on every edge to keep a SQUARE frame inside round glass.
-        /// Shade the focused widget's fill with a vertical gradient, or `None` for the
-        /// solid inversion. A UI-level style, not per-widget: the selection highlight is
-        /// one voice across the whole interface.
-        pub fn set_focus_shade(&mut self, shade: Option<Shade>) {
-                if self.focus_shade == shade {
+        /// Install a look-and-feel; every element repaints with it. Typically parsed from
+        /// an embedded LTH blob ([`Theme::parse`]) -- theming is a data change, never an
+        /// edit to this crate.
+        pub fn set_theme(&mut self, theme: Theme) {
+                if self.theme == theme {
                         return;
                 }
-                self.focus_shade = shade;
+                self.theme = theme;
+                self.invalidate_all();
+        }
+
+        pub fn theme(&self) -> &Theme {
+                &self.theme
+        }
+
+        /// Shade the focused widget's fill with a vertical gradient, or `None` for the
+        /// solid inversion -- a live handle on the theme's [`theme::key::FOCUS_SURFACE`],
+        /// which is where the value now lives.
+        pub fn set_focus_shade(&mut self, shade: Option<Shade>) {
+                if self.theme.focus_surface == shade {
+                        return;
+                }
+                self.theme.focus_surface = shade;
                 self.invalidate_all();
         }
 
@@ -1987,7 +2006,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if band_top <= r.y1 {
                         c.rect(Point::new(r.x0, band_top), Point::new(r.x1, r.y1), true);
                 }
-                c.fg = saved_fg;
+                c.fg = self.theme.frame;
                 if win.border {
                         if win.corner_radius != 0 {
                                 c.rect_rounded(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), u16::from(win.corner_radius), light_draw::corner::ALL, false);
@@ -1995,7 +2014,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), false);
                         }
                 }
-                let Some(title) = win.title else { return };
+                let Some(title) = win.title else {
+                        c.fg = saved_fg;
+                        return;
+                };
                 let title = if w.text.len > 0 { w.text.as_str() } else { title };
                 // the header band the stack layout reserves: title at the very top, separator
                 // under it; the two must agree on its height (cell_h + 2). A rounded corner is
@@ -2006,14 +2028,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let ty = f.y0 + inset;
                 let indent = corner_indent(win.corner_radius, i32::from(win.corner_radius) - inset);
                 let tx = f.x0 + indent + inset + 1;
+                c.fg = self.theme.title;
                 self.draw_text_fitted(c, font, tx, ty, title, (f.x1 - indent - inset) - tx + 1);
                 // the separator sits a cell lower, where the arc has come most of the way out
+                c.fg = self.theme.frame;
                 let sep_y = ty + self.cell_h;
                 let sep_indent = corner_indent(win.corner_radius, i32::from(win.corner_radius) - (sep_y - f.y0));
                 let sep_x0 = f.x0 + sep_indent + inset;
                 if sep_y <= f.y1 && sep_y >= 0 && sep_x0 >= 0 {
                         c.line(Point::new(sep_x0, sep_y), Point::new(f.x1 - sep_indent - inset, sep_y));
                 }
+                c.fg = saved_fg;
         }
 
         fn paint_button(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, clip: &Rect) {
@@ -2040,47 +2065,54 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // rect_rounded, whose clamp shrank and re-anchored the arc -- is the
                         // very picture this construction replaced
                         let radius = if flush { 0 } else { u16::from(btn.corner_radius) };
+                        let saved_fg = c.fg;
                         if focused {
-                                //   the selection: shaded when the interface carries a focus
-                                // shade -- the cell reads as LIT -- else the solid inversion
-                                match self.focus_shade {
-                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
-                                        Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
-                                        None if radius != 0 => c.rect_rounded(p0, p1, radius, btn.corners, true),
-                                        None => c.rect(p0, p1, true),
-                                }
-                        } else {
-                                //   an unfocused button owns its rect too: the interior takes
-                                // its surface -- its own shade, or the flat background -- so a
-                                // draw-over frame leaves nothing of the previous image inside
-                                // the outline
-                                match btn.shade {
+                                //   the selection: shaded when the theme carries a focus
+                                // surface -- the cell reads as LIT -- else a solid fill in
+                                // the outline color
+                                match self.theme.focus_surface {
                                         Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
                                         Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
                                         None => {
-                                                let saved_fg = c.fg;
+                                                c.fg = self.theme.button_outline;
+                                                if radius != 0 {
+                                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
+                                                } else {
+                                                        c.rect(p0, p1, true);
+                                                }
+                                        }
+                                }
+                        } else {
+                                //   an unfocused button owns its rect too: the interior takes
+                                // its surface -- its own shade, the theme's button surface,
+                                // or the flat background -- so a draw-over frame leaves
+                                // nothing of the previous image inside the outline
+                                match btn.shade.or(self.theme.button_surface) {
+                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
+                                        Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
+                                        None => {
                                                 c.fg = c.bg;
                                                 if radius != 0 {
                                                         c.rect_rounded(p0, p1, radius, btn.corners, true);
                                                 } else {
                                                         c.rect(p0, p1, true);
                                                 }
-                                                c.fg = saved_fg;
                                         }
                                 }
+                                c.fg = self.theme.button_outline;
                                 if radius != 0 {
                                         c.rect_rounded(p0, p1, radius, btn.corners, false);
                                 } else {
                                         c.rect(p0, p1, false);
                                 }
                         }
+                        c.fg = saved_fg;
                 }
-                // inverting the focused button: swap the colours around the label. Uniform for
-                // 1 bpp and RGB565, since both go through the same colour path
+                //   the label in the theme's voice: the focus text over the focused fill,
+                // the button text otherwise. Uniform for 1 bpp and RGB565, since both go
+                // through the same colour path
                 let saved_fg = c.fg;
-                if focused {
-                        c.fg = c.bg;
-                }
+                c.fg = if focused { self.theme.focus_text } else { self.theme.button_text };
                 let label = if w.text.len > 0 { w.text.as_str() } else { btn.label };
                 if !label.is_empty() {
                         // positioned from the TRUE rect, never the clamped one: centring against
@@ -2163,21 +2195,31 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         c.fg = saved_fg;
                 };
                 if focused {
-                        fill(c, self.focus_shade);
+                        if self.theme.focus_surface.is_none() {
+                                let saved_fg = c.fg;
+                                c.fg = self.theme.button_outline;
+                                fill(c, None);
+                                c.fg = saved_fg;
+                        } else {
+                                fill(c, self.theme.focus_surface);
+                        }
                 } else {
-                        if btn_shade.is_none() {
+                        let wash = btn_shade.or(self.theme.button_surface);
+                        if wash.is_none() {
                                 let saved_fg = c.fg;
                                 c.fg = c.bg;
                                 fill(c, None);
                                 c.fg = saved_fg;
                         } else {
-                                fill(c, btn_shade);
+                                fill(c, wash);
                         }
                         //   straight edges to the tangent points, then the concentric arcs.
                         // Inside a SCROLLING window the arcs are the corner MASK's to draw:
                         // it repaints after the children, and its erase spans (isqrt) and
                         // arc() disagree by the odd pixel -- an arc drawn here came back
                         // with bites taken out of it
+                        let saved_fg = c.fg;
+                        c.fg = self.theme.button_outline;
                         c.line(Point::new(row.x0, row.y0), Point::new(row.x1, row.y0));
                         c.line(Point::new(row.x0, row.y0), Point::new(row.x0, cy));
                         c.line(Point::new(row.x1, row.y0), Point::new(row.x1, cy));
@@ -2186,6 +2228,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 c.arc(Point::new(cxl, cy), r_in as u16, 90, 180);
                                 c.arc(Point::new(cxr, cy), r_in as u16, 0, 90);
                         }
+                        c.fg = saved_fg;
                 }
                 true
         }
@@ -2205,7 +2248,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, r.y1), true);
                 c.fg = saved_fg;
                 let text = if w.text.len > 0 { w.text.as_str() } else { l.text };
+                let saved_fg = c.fg;
+                c.fg = self.theme.text;
                 self.draw_text_fitted(c, font, w.rect.x0, w.rect.y0, text, w.rect.x1 - w.rect.x0 + 1);
+                c.fg = saved_fg;
         }
 
         /// `clip` is by value so each subtree narrows its own copy: a scrolling window's children
@@ -2281,7 +2327,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 c.rect(Point::new(right_edge + 1, y), Point::new(pr.x1, y), true);
                         }
                 }
-                c.fg = saved_fg;
+                c.fg = self.theme.frame;
                 if win.border {
                         c.arc(Point::new(cxl, cy), rad as u16, 90, 180);
                         c.arc(Point::new(cxr, cy), rad as u16, 0, 90);
@@ -2299,12 +2345,15 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         c.arc(Point::new(cxl, cy), r_in as u16, 90, 180);
                         c.arc(Point::new(cxr, cy), r_in as u16, 0, 90);
                 }
+                c.fg = saved_fg;
         }
 
         /// Paint the whole tree onto a cleared canvas. The ENTIRE tree, not just the dirty
         /// widgets, because every frame is a full repaint; only the pushed REGION is optimised,
         /// which is where the cost that scales with panel size lives.
         pub fn paint(&self, c: &mut Canvas<'_>, font: &Font<'_>) {
+                //   the theme's ground: every bg wash in the walk paints with this
+                c.bg = self.theme.bg;
                 if let Some(root) = self.root {
                         self.paint_clipped(c, font, root, self.canvas_rect());
                 }

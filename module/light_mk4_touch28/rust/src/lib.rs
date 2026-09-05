@@ -20,7 +20,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, Shade, SwipeDir, Touch, Ui};
+use light_ui::{scroll, Desc, Page, Shade, SwipeDir, Theme, Touch, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -53,6 +53,9 @@ static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel, compiled from `theme/steel.json` at build time -- see light-ui's
+/// `theme` module. Restyling this app is an edit to that file, nothing else.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -137,11 +140,6 @@ const ROW_GAP: u8 = 6;
 /// Touch-target height; the extra 40 rows of panel simply show more of the list at once.
 const LIST_MIN_ROW: i32 = 56;
 const FPS: u32 = 30;
-const BG: u16 = 0x0000;
-
-/// The selected cell's gradient, top to bottom: a lit steel blue falling into deep navy.
-/// The `shade` console command retunes it live on the glass.
-const FOCUS_SHADE: Shade = Shade { from: 0x4C5D, to: 0x090E };
 
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
@@ -344,9 +342,9 @@ impl Module for DisplayMod {
                 //   no set_offset: 240x320 is the ST7789's full GDDRAM, so the power-on (0,0)
                 // is already correct -- the 1.69's row offset of 20 is a fact about its
                 // 240x280 window, not about the driver
-                self.display.driver().clear(BG);
+                self.display.driver().clear(self.ui.theme().bg);
                 self.layer.set_frame_rate(FPS);
-                self.layer.bg = BG;
+                self.layer.bg = self.ui.theme().bg;
                 self.ui.fit(self.layer);
                 if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
                         warn!("the main page did not build: {e:?}");
@@ -388,7 +386,7 @@ impl Module for DisplayMod {
         }
         fn unload(&mut self) {
                 let _ = self.display.wait();
-                self.display.driver().clear(BG);
+                self.display.driver().clear(self.ui.theme().bg);
                 info!("display down");
         }
 }
@@ -690,9 +688,15 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
         let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
-        layer.bg = BG;
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
-        ui.set_focus_shade(Some(FOCUS_SHADE));
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod {
                 display,

@@ -424,6 +424,23 @@ does not apply target rustflags to build scripts under `--target`, so no config.
   not where it is parsed. The cli's tests include the decision-6 property directly: a console
   line and a test injection produce the same record on the same bus, indistinguishable to a
   subscriber.
+- 2026-09-05 — **themes as data: a look-and-feel is a blob in the image, not code in the
+  toolkit.** The font pipeline's arrangement, applied to visual style: a theme is JSON
+  beside the application (`theme/steel.json`), compiled by crush (`crush theme compile`,
+  via `light_mk4_add_theme` in CMake) into an LTH blob -- magic, entry count, then
+  key/length/payload triples -- embedded with `include_bytes!`, parsed by light-ui's
+  `Theme::parse` at boot and installed with `set_theme`. Restyling an interface, or
+  shipping a themed variant, is a DATA change: no edit to the UI crate, ever. The
+  contract that keeps it that way: strictness at authoring (crush rejects unknown JSON
+  keys, so a typo stops the build), tolerance at runtime (the firmware SKIPS unknown
+  binary keys, so a future theme still styles an old firmware with the shared subset).
+  A theme carries the ground, frame, title, text, button outline/text, focus text, and
+  the two shade surfaces; colors are raw RGB565 or `#RRGGBB` truncated on the way in;
+  `Theme::DEFAULT` reproduces the pre-theme monochrome look exactly, so every unthemed
+  application renders unchanged. Every paint site now draws through the theme, and the
+  2.8's demo wears the first one -- steel: grey-blue frame, muted outlines, the
+  steel-into-navy selection -- approved on the glass. Corrosion, it turns out, appends
+  env vars across calls, so a crate embeds fonts and themes side by side.
 - 2026-09-05 — **surfaces learn to carry a shade, and the selection learns to glow.**
   light-draw grows `lerp565` (component-wise RGB565 interpolation) and shaded fills --
   `rect_shaded` and `rect_rounded_shaded`, vertical gradients through the same span and

@@ -14,6 +14,7 @@ mod console;
 mod context;
 mod log;
 mod render;
+mod theme;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -51,8 +52,24 @@ pub enum Command {
                 #[command(subcommand)]
                 cmd: ContextCmd,
         },
+        /// Look-and-feel definitions: compile a JSON theme to an LTH blob
+        Theme {
+                #[command(subcommand)]
+                cmd: ThemeCmd,
+        },
         /// Run commands from a script, a single --command, or an interactive prompt
         Console(ConsoleArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ThemeCmd {
+        /// Compile a JSON theme into the binary blob the firmware embeds
+        Compile {
+                /// The theme source (JSON)
+                input: PathBuf,
+                /// Where the LTH blob goes
+                output: PathBuf,
+        },
 }
 
 #[derive(Subcommand, Debug)]
@@ -212,6 +229,9 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                                 log::info(&format!("context at '{}': {} fonts, {} displays, {} renders", ctx.dir().display(), ctx.fonts().len(), ctx.displays().len(), ctx.renders().len()));
                                 Ok(())
                         }
+                },
+                Command::Theme { cmd } => match cmd {
+                        ThemeCmd::Compile { input, output } => theme::compile(&input, &output),
                 },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
