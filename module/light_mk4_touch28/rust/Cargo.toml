@@ -3,12 +3,13 @@ name = "light_app_touch28"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the Rust half of the Waveshare RP2350-Touch-LCD-2.8 firmware: the widget demo, and the CST328's first bring-up"
+description = "the Waveshare RP2350-Touch-LCD-2.8 instantiation of the light_app_ui_demo widget demo, and the CST328's first bring-up"
 
 [lib]
 crate-type = ["staticlib"]
 
 [dependencies]
+light_app_ui_demo = { path = "../../../crates/light_app_ui_demo" }
 light-core = { path = "../../../crates/light-core" }
 light-draw = { path = "../../../crates/light-draw" }
 light-display = { path = "../../../crates/light-display" }

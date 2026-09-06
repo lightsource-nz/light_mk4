@@ -19,6 +19,7 @@ members = [
         #   hardware-independent applications: the logic of an app as a portable crate,
         # instantiated by a hardware-bound module/ crate per tangible board
         "crates/light_app_crossfire",
+        "crates/light_app_ui_demo",
         "tools/crush",
         "module/light_mk4_touch169/rust",
         "module/light_mk4_touch28/rust",

@@ -23,8 +23,14 @@ use light_font::Font;
 pub enum PixelFormat {
         /// One bit per pixel, eight per byte along a row, bit 0 = leftmost.
         Mono1,
-        /// Sixteen bits per pixel, RGB565, big-endian.
+        /// Sixteen bits per pixel, RGB565, big-endian: the byte order the push panels
+        /// (SPI, QSPI) take on the wire, so their frame buffer IS the transfer.
         Rgb565,
+        /// RGB565 in native little-endian halfwords: for a frame buffer a scanout engine
+        /// reads as u16s by DMA rather than pushing byte-by-byte down a wire. The byte
+        /// order is a property of who CONSUMES the buffer -- and it was invisible for a
+        /// whole bring-up on white-on-black, whose colors are byte-swap invariant.
+        Rgb565Le,
 }
 
 impl PixelFormat {
@@ -32,12 +38,26 @@ impl PixelFormat {
         pub const fn stride(self, width: u16) -> usize {
                 match self {
                         PixelFormat::Mono1 => (width as usize).div_ceil(8),
-                        PixelFormat::Rgb565 => width as usize * 2,
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => width as usize * 2,
                 }
         }
 
         pub const fn buffer_len(self, width: u16, height: u16) -> usize {
                 self.stride(width) * height as usize
+        }
+
+        /// Whether this is a 16-bit color format, whichever byte order.
+        pub const fn is_rgb565(self) -> bool {
+                matches!(self, PixelFormat::Rgb565 | PixelFormat::Rgb565Le)
+        }
+
+        /// The two bytes of an RGB565 color in this format's memory order.
+        #[inline]
+        fn rgb565_bytes(self, color: u16) -> [u8; 2] {
+                match self {
+                        PixelFormat::Rgb565Le => color.to_le_bytes(),
+                        _ => color.to_be_bytes(),
+                }
         }
 }
 
@@ -370,10 +390,11 @@ impl<'a> Canvas<'a> {
                                         *byte &= !(1 << (x % 8));
                                 }
                         }
-                        PixelFormat::Rgb565 => {
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
                                 let i = (y as usize * self.phys_w as usize + x as usize) * 2;
-                                self.buf[i] = (color >> 8) as u8;
-                                self.buf[i + 1] = color as u8;
+                                let [b0, b1] = self.format.rgb565_bytes(color);
+                                self.buf[i] = b0;
+                                self.buf[i + 1] = b1;
                         }
                 }
         }
@@ -387,6 +408,10 @@ impl<'a> Canvas<'a> {
                         PixelFormat::Rgb565 => {
                                 let i = (y as usize * self.phys_w as usize + x as usize) * 2;
                                 u16::from_be_bytes([self.buf[i], self.buf[i + 1]])
+                        }
+                        PixelFormat::Rgb565Le => {
+                                let i = (y as usize * self.phys_w as usize + x as usize) * 2;
+                                u16::from_le_bytes([self.buf[i], self.buf[i + 1]])
                         }
                 }
         }
@@ -441,8 +466,8 @@ impl<'a> Canvas<'a> {
                 let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
                 let mut i = py as isize * self.phys_w as isize + px as isize;
                 match self.format {
-                        PixelFormat::Rgb565 => {
-                                let [hi, lo] = color.to_be_bytes();
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
+                                let [hi, lo] = self.format.rgb565_bytes(color);
                                 if step == 1 {
                                         let start = i as usize * 2;
                                         if hi == lo {
@@ -497,8 +522,8 @@ impl<'a> Canvas<'a> {
                                 let n = self.format.buffer_len(self.phys_w, self.phys_h);
                                 self.buf[..n].fill(v);
                         }
-                        PixelFormat::Rgb565 => {
-                                let [hi, lo] = self.bg.to_be_bytes();
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
+                                let [hi, lo] = self.format.rgb565_bytes(self.bg);
                                 let n = self.format.buffer_len(self.phys_w, self.phys_h);
                                 if hi == lo {
                                         // black, white and the greys: one memset
@@ -527,8 +552,8 @@ impl<'a> Canvas<'a> {
                 let step = self.transform.b as isize + self.transform.d as isize * self.phys_w as isize;
                 let mut i = py as isize * self.phys_w as isize + px as isize;
                 match self.format {
-                        PixelFormat::Rgb565 => {
-                                let [hi, lo] = color.to_be_bytes();
+                        PixelFormat::Rgb565 | PixelFormat::Rgb565Le => {
+                                let [hi, lo] = self.format.rgb565_bytes(color);
                                 for _ in y0..=y1 {
                                         let b = i as usize * 2;
                                         self.buf[b] = hi;
@@ -827,7 +852,8 @@ impl<'a> Canvas<'a> {
         /// gaps that widen with the scale. Destination pixels whose source falls outside the
         /// buffer are left as they are, so clear first if that matters.
         pub fn blit_rotated(&mut self, src: &[u8], angle_deg: i16, scale_q15: i32) -> bool {
-                if self.format != PixelFormat::Rgb565 || scale_q15 <= 0 {
+                //   byte pairs copied verbatim from a same-format snapshot: endian-agnostic
+                if !self.format.is_rgb565() || scale_q15 <= 0 {
                         return false;
                 }
                 let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
@@ -872,7 +898,7 @@ impl<'a> Canvas<'a> {
         /// to slide in a direction the VIEWER would name maps it through the transform's `a` and
         /// `c`, which give the physical direction logical +x points in.
         pub fn blit_offset(&mut self, src: &[u8], off_x: i32, off_y: i32) -> bool {
-                if self.format != PixelFormat::Rgb565 {
+                if !self.format.is_rgb565() {
                         return false;
                 }
                 let (w, h) = (i32::from(self.phys_w), i32::from(self.phys_h));
@@ -945,12 +971,12 @@ impl<'a> Canvas<'a> {
                                         //   RGB565 ink-only text is the case every label is, and
                                         // it gets the tight loop: the row's physical start and
                                         // step computed once, two bytes written per ink pixel
-                                        if bg.is_none() && self.format == PixelFormat::Rgb565 {
+                                        if bg.is_none() && self.format.is_rgb565() {
                                                 if let Some(r) = row {
                                                         let (px, py) = self.transform.apply(x_lo, y);
                                                         let step = self.transform.a as isize + self.transform.c as isize * self.phys_w as isize;
                                                         let mut i = py as isize * self.phys_w as isize + px as isize;
-                                                        let [hi, lo] = fg.to_be_bytes();
+                                                        let [hi, lo] = self.format.rgb565_bytes(fg);
                                                         for gx in (x_lo - pen)..=(x_hi - pen) {
                                                                 if r[gx as usize / 8] >> (7 - gx % 8) & 1 != 0 {
                                                                         let b = i as usize * 2;

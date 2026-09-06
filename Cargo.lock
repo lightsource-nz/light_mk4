@@ -168,6 +168,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
 
 [[package]]
+name = "crossfire_pico2_app"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-rp2",
+ "light_app_crossfire",
+]
+
+[[package]]
+name = "crossfire_pico_app"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-rp2",
+ "light_app_crossfire",
+]
+
+[[package]]
 name = "crush"
 version = "0.1.0"
 dependencies = [
@@ -409,7 +433,6 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-midi",
- "light-rp2",
 ]
 
 [[package]]
@@ -474,6 +497,7 @@ dependencies = [
  "light-input",
  "light-rp2",
  "light-ui",
+ "light_app_ui_demo",
 ]
 
 [[package]]
@@ -487,6 +511,7 @@ dependencies = [
  "light-input",
  "light-rp2",
  "light-ui",
+ "light_app_ui_demo",
 ]
 
 [[package]]
@@ -504,6 +529,7 @@ dependencies = [
  "light-rtc",
  "light-sd",
  "light-ui",
+ "light_app_ui_demo",
 ]
 
 [[package]]
@@ -517,6 +543,19 @@ dependencies = [
  "light-input",
  "light-rp2",
  "light-rtc",
+ "light-ui",
+ "light_app_ui_demo",
+]
+
+[[package]]
+name = "light_app_ui_demo"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-input",
  "light-ui",
 ]
 

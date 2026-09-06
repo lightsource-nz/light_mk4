@@ -1,8 +1,8 @@
-//! The Rust side of the touch28 firmware: the touch169's demo on the Waveshare
-//! RP2350-Touch-LCD-2.8 -- the first board with the CST328 touch controller, whose bring-up
-//! this firmware exists to run. Same shell, same module set, same event bus; what differs is
-//! the wiring (`board.rs`), the touch driver, and the glass: 240x320, square corners, no
-//! GDDRAM offset.
+//! The touch28 firmware: the widget demo on the Waveshare RP2350-Touch-LCD-2.8 -- the
+//! first board with the CST328 touch controller, whose bring-up this firmware exists to
+//! run. The application is `light_app_ui_demo`, with no hardware in it; this crate is the
+//! tangible 2.8: the wiring (`board.rs`), the ST7789 over SPI, the CST328, the IMU, the
+//! shell ABI and the panic handler.
 //!
 //! Bring-up checklist (mk3 authored this board's support without hardware): the CST328's
 //! 0xCACA probe answers; coordinates track a finger; the IMU axis map is IDENTITY until the
@@ -15,15 +15,17 @@
 
 use core::cell::RefCell;
 use core::fmt::Write;
+use light_app_ui_demo as demo;
+use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod};
 use light_input::cst328::{self, Cst328};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
-use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, Shade, SwipeDir, Theme, Touch, Ui};
-use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
-use light_display::{Display, FrameLayer, UpdateError};
+use light_input::touch::Tracker;
+use light_ui::{Theme, Ui};
+use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 mod board;
@@ -53,61 +55,23 @@ static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
-/// The look-and-feel, compiled from `theme/steel.json` at build time -- see light-ui's
-/// `theme` module. Restyling this app is an edit to that file, nothing else.
+/// The look-and-feel: the framework's steel theme, the default for every board with
+/// color support. A board-specific override would be a local theme file extending it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
 
+/// This board's extension events, riding the demo's bus.
 #[derive(Clone, Copy, Debug)]
-enum AppEvent {
-        Touch(cst328::Event),
-        /// A swipe, in the panel's own coordinate space.
-        Gesture(Gesture),
-        /// The board's settled orientation changed.
-        Orientation(Orientation),
-        Command(Command),
-        /// Something a widget emitted.
-        Ui(UiAction),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Command {
-        Stats,
-        Backlight(u16),
-        UiFocus { next: bool },
-        UiActivate,
-        UiPress { x: u16, y: u16 },
-        UiBack,
-        RenderMode(RenderMode),
+enum Ext {
         /// Re-clock the display bus live: the SPI-headroom probe. Too fast shows up as
         /// corrupt pixels rather than a clean failure, so the eye is the instrument.
         SpiHz(u32),
-        /// The focused cell's gradient, live-tunable like every look-and-feel knob:
-        /// `shade FROM TO` in RGB565 hex, `shade off` for the solid inversion.
-        FocusShade(Option<Shade>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RenderMode {
-        Normal,
-        Paused,
-        Repush,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum UiAction {
-        Toggle(u8),
-        Item(u8),
-        DragConsumed,
-}
+type AppEvent = DemoEvent<Ext>;
 
 static EVENTS: EventBus<AppEvent, 16, 5> = EventBus::new();
-static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
-/// The 1.69's push-versus-touch bisect instruments, carried: whether the CST328 shares the
-/// CST816T's SPI-burst sensitivity is one of the questions this board's bring-up answers.
-static PUSHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static TOUCH_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -125,271 +89,73 @@ pub extern "C" fn light_app_core1_service() {
                 if b < 0 {
                         break;
                 }
-                let _ = CONSOLE_BYTES.push(b as u8);
+                demo::push_console_byte(b as u8);
         }
 }
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// Square glass on this board: product photos show no rounding worth declaring, so 0 exactly
-/// like the OLED rigs. TO BE CONFIRMED: if the glass clips corner content, measure the radius
-/// the way the 1.69's was measured.
-const CORNER_RADIUS: u8 = 0;
-/// mk3's demo config for this board: rows this tall need more than the OLED rigs' 2 px.
-const ROW_GAP: u8 = 6;
-/// Touch-target height; the extra 40 rows of panel simply show more of the list at once.
-const LIST_MIN_ROW: i32 = 56;
+//   Square glass on this board: product photos show no rounding worth declaring, so the
+// theme's screen_radius keeps its default of 0. TO BE CONFIRMED: if the glass clips
+// corner content, measure the radius the way the 1.69's was measured and set the
+// `screen_radius` metric in a local theme file extending "default" (see the 1.69's).
 const FPS: u32 = 30;
-
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
-const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
-const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
-
-static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Ui(UiAction::Toggle(0))).tag(1);
-static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Ui(UiAction::Toggle(1))).tag(2);
-static BTN_GAMMA: Desc<AppEvent> = Desc::button(LABEL_OFF[2]).emit(AppEvent::Ui(UiAction::Toggle(2))).tag(3);
-static BTN_MORE: Desc<AppEvent> = Desc::button("More >").navigate(&PAGE_DETAIL);
-static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 2.8").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_GAMMA, &BTN_MORE, &BTN_LIST]);
-
-static LBL_DETAIL: Desc<AppEvent> = Desc::label("swipe right to go back");
-static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_DIM)));
-static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_LEVEL_MAX)));
-static BTN_BACK: Desc<AppEvent> = Desc::button("< Back").back();
-static DETAIL_WINDOW: Desc<AppEvent> = Desc::window("More").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
-
-static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Ui(UiAction::Item(1))).min_size(0, LIST_MIN_ROW);
-static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Ui(UiAction::Item(2))).min_size(0, LIST_MIN_ROW);
-static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Ui(UiAction::Item(3))).min_size(0, LIST_MIN_ROW);
-static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Ui(UiAction::Item(4))).min_size(0, LIST_MIN_ROW);
-static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Ui(UiAction::Item(5))).min_size(0, LIST_MIN_ROW);
-static ITEM_6: Desc<AppEvent> = Desc::button("Item 6").emit(AppEvent::Ui(UiAction::Item(6))).min_size(0, LIST_MIN_ROW);
-static ITEM_7: Desc<AppEvent> = Desc::button("Item 7").emit(AppEvent::Ui(UiAction::Item(7))).min_size(0, LIST_MIN_ROW);
-static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> =
-        Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &ITEM_6, &ITEM_7, &BTN_LIST_BACK]);
-
-static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
-static PAGE_DETAIL: Page<AppEvent> = Page::new(&DETAIL_WINDOW, Some(&PAGE_MAIN));
-static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
-
-const UI_WIDGETS: usize = 12;
-
-// --- the modules --------------------------------------------------------------------------
-
-struct DisplayMod {
-        display: Display<'static, St7789<Spi1Display>>,
-        layer: &'static mut FrameLayer,
-        font: Font<'static>,
-        ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
-        events: Subscription,
-        toggled: [bool; 3],
-        mode: RenderMode,
-        drag_reported: bool,
-        draw_us_max: u64,
-        push_us_max: u64,
-        push_started_us: Option<u64>,
+demo_pages! {
+        event: AppEvent,
+        title: "mk4 2.8",
+        //   mk3's demo config for this board: rows this tall need more than the OLED rigs'
+        // 2 px gap, and 56 px is the touch-target height -- the extra 40 rows of panel
+        // simply show more of the list at once
+        row_gap: 6,
+        list_min_row: 56,
+        backlight_dim: BACKLIGHT_DIM
 }
 
-impl DisplayMod {
-        fn publish(ev: Option<AppEvent>) {
-                if let Some(ev) = ev {
-                        if let Err(e) = EVENTS.publish(ev) {
-                                warn!("event bus full; dropped {e:?}");
-                        }
-                }
+/// The same table as the 1.69's -- but the axis map is the UNMEASURED identity, so until
+/// the calibration session these rotations are the thing under test, not a fact.
+fn rotation_map(o: Orientation) -> Option<Rotation> {
+        match o {
+                Orientation::Portrait => Some(Rotation::R0),
+                Orientation::PortraitFlip => Some(Rotation::R180),
+                Orientation::LandscapeL => Some(Rotation::R270),
+                Orientation::LandscapeR => Some(Rotation::R90),
+                _ => None,
         }
+}
 
-        fn handle(&mut self, ev: AppEvent) {
-                match ev {
-                        AppEvent::Touch(t) => {
-                                if self.mode == RenderMode::Repush {
-                                        if let cst328::Event::Down { .. } = t {
-                                                if !self.display.busy() {
-                                                        let _ = self.display.update_async(light_display::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
-                                                }
-                                        }
-                                }
-                                let outcome = match t {
-                                        cst328::Event::Down { x, y } | cst328::Event::Move { x, y } => self.ui.touch(x, y, true),
-                                        cst328::Event::Up => self.ui.touch(0, 0, false),
-                                        cst328::Event::Reset => return,
-                                };
-                                match outcome {
-                                        Touch::Drag if !self.drag_reported => {
-                                                self.drag_reported = true;
-                                                Self::publish(Some(AppEvent::Ui(UiAction::DragConsumed)));
-                                        }
-                                        Touch::Tap { hit, emitted } => {
-                                                debug!("tap: {}", if hit { "hit" } else { "no widget there" });
-                                                Self::publish(emitted);
-                                        }
-                                        Touch::DragEnd | Touch::None => self.drag_reported = false,
-                                        _ => {}
-                                }
-                        }
-                        AppEvent::Gesture(g) => {
-                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.ui.navigate_back() {
-                                        debug!("swipe: returned to the previous page");
-                                }
-                        }
-                        AppEvent::Orientation(o) => {
-                                //   the same table as the 1.69's -- but the axis map is the
-                                // UNMEASURED identity, so until the calibration session these
-                                // rotations are the thing under test, not a fact
-                                let rotation = match o {
-                                        Orientation::Portrait => Some(Rotation::R0),
-                                        Orientation::PortraitFlip => Some(Rotation::R180),
-                                        Orientation::LandscapeL => Some(Rotation::R270),
-                                        Orientation::LandscapeR => Some(Rotation::R90),
-                                        _ => None,
-                                };
-                                if let Some(r) = rotation {
-                                        self.ui.set_rotation(self.layer, r);
-                                        let (w, h) = self.ui.logical_size();
-                                        info!("orientation {o:?}: canvas now {w}x{h}");
-                                }
-                        }
-                        AppEvent::Command(Command::UiFocus { next }) => {
-                                if next {
-                                        self.ui.focus_next()
-                                } else {
-                                        self.ui.focus_prev()
-                                }
-                        }
-                        AppEvent::Command(Command::UiActivate) => {
-                                let emitted = self.ui.activate();
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::UiPress { x, y }) => {
-                                let (hit, emitted) = self.ui.press_at(x, y);
-                                info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::RenderMode(m)) => {
-                                self.mode = m;
-                                info!("render mode {m:?}");
-                        }
-                        AppEvent::Command(Command::SpiHz(hz)) => {
-                                //   never mid-push: a divider change under a DMA burst tears
-                                // the transfer
-                                let _ = self.display.wait();
-                                let actual = self.display.driver().bus_mut().set_baudrate(hz);
+// --- the driver-specific edges -------------------------------------------------------------
+
+struct Hook;
+
+impl BoardHook<St7789<Spi1Display>, Ext> for Hook {
+        fn after_init(&mut self, display: &mut Display<'static, St7789<Spi1Display>>, bg: u16) {
+                //   no set_offset: 240x320 is the ST7789's full GDDRAM, so the power-on
+                // (0,0) is already correct -- the 1.69's row offset of 20 is a fact about
+                // its 240x280 window, not about the driver
+                display.driver().clear(bg);
+        }
+        fn on_unload(&mut self, display: &mut Display<'static, St7789<Spi1Display>>, bg: u16) {
+                display.driver().clear(bg);
+        }
+        fn on_ext(&mut self, view: &mut DemoView<'_, St7789<Spi1Display>, Ext>, ext: Ext) {
+                match ext {
+                        Ext::SpiHz(hz) => {
+                                //   never mid-push: a divider change under a DMA burst
+                                // tears the transfer
+                                let _ = view.display.wait();
+                                let actual = view.display.driver().bus_mut().set_baudrate(hz);
                                 info!("spi re-clocked: asked {hz} Hz, running {actual} Hz");
-                                //   repaint everything at the new clock, so corruption shows
-                                // immediately rather than on the next interaction
-                                self.ui.invalidate_all();
+                                //   repaint everything at the new clock, so corruption
+                                // shows immediately rather than on the next interaction
+                                view.ui.invalidate_all();
                         }
-                        AppEvent::Command(Command::FocusShade(s)) => {
-                                self.ui.set_focus_shade(s);
-                                match s {
-                                        Some(s) => info!("focus shade {:04x} -> {:04x}", s.from, s.to),
-                                        None => info!("focus shade off"),
-                                }
-                        }
-                        AppEvent::Command(Command::UiBack) => {
-                                if !self.ui.navigate_back() {
-                                        info!("ui back: nowhere to go from this page");
-                                }
-                        }
-                        AppEvent::Ui(UiAction::Toggle(i)) => {
-                                let i = usize::from(i) % 3;
-                                self.toggled[i] = !self.toggled[i];
-                                if let Some(id) = self.ui.find(i as u8 + 1) {
-                                        self.ui.set_label(id, if self.toggled[i] { LABEL_ON[i] } else { LABEL_OFF[i] });
-                                }
-                                info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
-                        }
-                        AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
-                        AppEvent::Command(Command::Stats) => {
-                                info!(
-                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
-                                        self.layer.frames(),
-                                        self.layer.skipped,
-                                        self.display.timeouts,
-                                        self.draw_us_max,
-                                        self.push_us_max
-                                );
-                                self.draw_us_max = 0;
-                                self.push_us_max = 0;
-                        }
-                        _ => {}
-                }
-        }
-
-        fn render(&mut self) {
-                if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
-                        return;
-                }
-                let now = light_rp2::now_us();
-                let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
-                let done = light_rp2::now_us();
-                if drew || self.ui.is_animating() {
-                        self.draw_us_max = self.draw_us_max.max(done - now);
-                        self.push_started_us = Some(done);
                 }
         }
 }
 
-impl Module for DisplayMod {
-        fn name(&self) -> &'static str {
-                "display"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                let mut clock = SysClock;
-                self.display.init(&mut clock);
-                //   no set_offset: 240x320 is the ST7789's full GDDRAM, so the power-on (0,0)
-                // is already correct -- the 1.69's row offset of 20 is a fact about its
-                // 240x280 window, not about the driver
-                self.display.driver().clear(self.ui.theme().bg);
-                self.layer.set_frame_rate(FPS);
-                self.layer.bg = self.ui.theme().bg;
-                self.ui.fit(self.layer);
-                if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
-                        warn!("the main page did not build: {e:?}");
-                }
-                self.ui.invalidate_all();
-                self.render();
-                info!(
-                        "display up: {}x{}, double-buffered at {} fps, font {}px cell {}x{} ({} glyphs, {} bytes)",
-                        DISPLAY_WIDTH,
-                        DISPLAY_HEIGHT,
-                        FPS,
-                        self.font.pixel_size(),
-                        self.font.cell_width(),
-                        self.font.cell_height(),
-                        self.font.glyph_count(),
-                        FONT_BLOB.len()
-                );
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                match self.layer.poll(&mut self.display) {
-                        Ok(_) => {}
-                        Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
-                        Err(UpdateError::Busy) => unreachable!(),
-                }
-                if let Some(started) = self.push_started_us {
-                        if !self.layer.busy(&self.display) {
-                                self.push_us_max = self.push_us_max.max(light_rp2::now_us() - started);
-                                self.push_started_us = None;
-                        }
-                }
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        self.handle(ev);
-                }
-                self.render();
-                let busy = self.layer.busy(&self.display);
-                PUSHING.store(busy, core::sync::atomic::Ordering::Relaxed);
-                if self.ui.is_dirty() || self.ui.is_animating() || busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                let _ = self.display.wait();
-                self.display.driver().clear(self.ui.theme().bg);
-                info!("display down");
-        }
-}
+// --- the board's own modules ---------------------------------------------------------------
 
 /// Owns the CST328 and publishes what it reports. The first hardware this driver has met.
 struct TouchMod {
@@ -436,11 +202,11 @@ impl Module for TouchMod {
                                                 self.touch.recoveries
                                         );
                                 }
-                                AppEvent::Ui(UiAction::DragConsumed) => self.tracker.suppress(),
+                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
                                 _ => {}
                         }
                 }
-                if TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed) {
+                if demo::touch_reads_held() {
                         return Poll::Idle;
                 }
                 let now_ms = (light_rp2::now_us() / 1000) as u32;
@@ -448,9 +214,9 @@ impl Module for TouchMod {
                 match ev {
                         cst328::Event::Down { x, y } => {
                                 self.moves = 0;
-                                debug!("touch down at {x},{y}");
+                                light_core::debug!("touch down at {x},{y}");
                         }
-                        cst328::Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
+                        cst328::Event::Up => light_core::debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
                         cst328::Event::Reset => match self.touch.probe() {
                                 Ok(_) => info!("touch controller reset ({} so far); answering again", self.touch.recoveries),
                                 Err(e) => warn!("touch controller reset ({} so far); still not answering: {e:?}", self.touch.recoveries),
@@ -538,127 +304,21 @@ impl Module for BoardMod {
         }
 }
 
-struct ConsoleMod {
-        reader: LineReader<96>,
-}
+// --- the console table ---------------------------------------------------------------------
 
-impl ConsoleMod {
-        fn dispatch(&mut self, line: &str) -> Poll {
-                match CLI.dispatch(line) {
-                        Outcome::Quiet => Poll::Idle,
-                        Outcome::Shutdown => Poll::Shutdown,
-                        Outcome::Event(c) => {
-                                if let Command::Stats = c {
-                                        info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
-                                }
-                                if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
-                                        warn!("event bus full; dropped {e:?}");
-                                }
-                                Poll::Busy
-                        }
-                        Outcome::Handled => Poll::Busy,
-                }
-        }
-}
-
-fn parse_stats(_w: &mut Words) -> Parsed<Command> {
-        Parsed::Event(Command::Stats)
-}
-
-fn parse_backlight(w: &mut Words) -> Parsed<Command> {
-        match w.next().and_then(|s| s.parse::<u16>().ok()) {
-                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Parsed::Event(Command::Backlight(level)),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_ui(w: &mut Words) -> Parsed<Command> {
-        match (w.next(), w.next(), w.next()) {
-                (Some("focus"), Some("next"), _) => Parsed::Event(Command::UiFocus { next: true }),
-                (Some("focus"), Some("prev"), _) => Parsed::Event(Command::UiFocus { next: false }),
-                (Some("activate"), _, _) => Parsed::Event(Command::UiActivate),
-                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
-                        (Ok(x), Ok(y)) => Parsed::Event(Command::UiPress { x, y }),
-                        _ => Parsed::Usage,
-                },
-                (Some("back"), _, _) => Parsed::Event(Command::UiBack),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_touch(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("hold") => {
-                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads held while the panel is being pushed");
-                        Parsed::Done
-                }
-                Some("free") => {
-                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads not held");
-                        Parsed::Done
-                }
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_render(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("pause") => Parsed::Event(Command::RenderMode(RenderMode::Paused)),
-                Some("resume") => Parsed::Event(Command::RenderMode(RenderMode::Normal)),
-                Some("repush") => Parsed::Event(Command::RenderMode(RenderMode::Repush)),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_spi(w: &mut Words) -> Parsed<Command> {
+fn parse_spi(w: &mut Words) -> Parsed<AppEvent> {
         match w.next().and_then(|s| s.parse::<u32>().ok()) {
                 //   the achievable rates at clk_peri 150 MHz are coarse (75, 37.5, 25...);
                 // the driver reports what it actually got
-                Some(hz) if (1_000_000..=100_000_000).contains(&hz) => Parsed::Event(Command::SpiHz(hz)),
+                Some(hz) if (1_000_000..=100_000_000).contains(&hz) => Parsed::Event(DemoEvent::Ext(Ext::SpiHz(hz))),
                 _ => Parsed::Usage,
         }
 }
 
-fn parse_shade(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("off") => Parsed::Event(Command::FocusShade(None)),
-                Some(from) => match (u16::from_str_radix(from, 16), w.next().map(|t| u16::from_str_radix(t, 16))) {
-                        (Ok(from), Some(Ok(to))) => Parsed::Event(Command::FocusShade(Some(Shade { from, to }))),
-                        _ => Parsed::Usage,
-                },
-                None => Parsed::Usage,
-        }
-}
-
-static COMMANDS: &[CliCommand<Command>] = &[
-        CliCommand { name: "stats", usage: "stats", parse: parse_stats },
-        CliCommand { name: "shade", usage: "shade FROM16 TO16 (rgb565 hex) | shade off", parse: parse_shade },
-        CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
-        CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
-        CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
-        CliCommand { name: "render", usage: "render pause|resume|repush", parse: parse_render },
+static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "spi", usage: "spi HZ (1000000..100000000; the headroom probe)", parse: parse_spi },
 ];
-static CLI: Cli<Command> = Cli::new(COMMANDS);
-
-impl Module for ConsoleMod {
-        fn name(&self) -> &'static str {
-                "console"
-        }
-        fn poll(&mut self) -> Poll {
-                let mut result = Poll::Idle;
-                while let Some(b) = CONSOLE_BYTES.pop() {
-                        if let Some(line) = self.reader.push(b) {
-                                match self.dispatch(line.as_str()) {
-                                        Poll::Shutdown => return Poll::Shutdown,
-                                        p => result = p,
-                                }
-                        }
-                }
-                result
-        }
-}
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
 // --- entry ----------------------------------------------------------------------------------
 
@@ -685,9 +345,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
-        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
+        let ui: &'static mut Ui<AppEvent, { demo::UI_WIDGETS }> = UI.take();
         //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
         // worth halting on, not styling to guess past
         let theme = match Theme::parse(THEME_BLOB) {
@@ -697,23 +357,30 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         layer.bg = theme.bg;
         ui.set_theme(theme);
         ui.set_font(&font);
-        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
-        let display_mod = DISPLAY_MOD.init(DisplayMod {
+        type BoardDisplayMod = DisplayMod<St7789<Spi1Display>, SysClock, Ext, Hook>;
+        static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
+        let display_mod = DISPLAY_MOD.init(DisplayMod::new(
                 display,
                 layer,
                 font,
                 ui,
-                events: EVENTS.subscribe().expect("subscriber slot"),
-                toggled: [false; 3],
-                mode: RenderMode::Normal,
-                drag_reported: false,
-                draw_us_max: 0,
-                push_us_max: 0,
-                push_started_us: None,
-        });
+                SysClock,
+                &EVENTS,
+                DisplayConfig {
+                        width: DISPLAY_WIDTH,
+                        height: DISPLAY_HEIGHT,
+                        fps: FPS,
+                        desc: "ST7789 over SPI, double-buffered",
+                        repush: true,
+                        draw_over: false,
+                        rotation_map,
+                        main_page: &PAGE_MAIN,
+                },
+                Hook,
+        ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
-        let mut console_mod = ConsoleMod { reader: LineReader::new() };
+        let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<5> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");

@@ -29,7 +29,7 @@ impl Frame<'_> {
         /// The bytes of one row-run inside `region` at row `y` (absolute). Whole-pixel formats
         /// only: a packed 1 bpp row has no byte-aligned run for an arbitrary x range.
         pub fn row(&self, region: &Region, y: u16) -> &[u8] {
-                debug_assert!(self.format == PixelFormat::Rgb565);
+                debug_assert!(self.format.is_rgb565());
                 let start = y as usize * self.stride + region.x0 as usize * 2;
                 let len = region.width() as usize * 2;
                 &self.buf[start..start + len]

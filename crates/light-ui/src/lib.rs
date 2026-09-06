@@ -1431,7 +1431,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// which case the caller draws the settled tree without waiting a pass.
         fn rotation_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, now_us: u64) -> Step {
                 if !self.rotate_started {
-                        if !display.is_double_buffered() || display.format() != light_draw::PixelFormat::Rgb565 {
+                        if !display.is_double_buffered() || !display.format().is_rgb565() {
                                 // nowhere to hold the image, or nothing to rotate it with: a
                                 // correct snap beats a broken animation
                                 let target = self.rotate_target;
@@ -1481,7 +1481,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // shrinking offset, and the outgoing page survives in the live buffer
                         // wherever a step has not yet covered it. Only what the blit speaks
                         // can capture; the slide-over works in any format
-                        self.page_move_over = !(display.is_double_buffered() && display.format() == light_draw::PixelFormat::Rgb565);
+                        self.page_move_over = !(display.is_double_buffered() && display.format().is_rgb565());
                         if self.page_move_over {
                                 //   logical space end to end -- the canvas transform does the
                                 // physical mapping -- so direction is just the arrival side:

@@ -1,0 +1,14 @@
+[package]
+name = "light_app_ui_demo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the widget demo every touch board runs: pages, UI driving, console -- the hardware-independent application, instantiated by a board module per tangible display"
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+light-display = { path = "../light-display" }
+light-font = { path = "../light-font" }
+light-input = { path = "../light-input" }
+light-ui = { path = "../light-ui" }

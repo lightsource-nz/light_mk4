@@ -1,34 +1,28 @@
-//! The Rust side of the touch169 firmware.
+//! The touch169 firmware: the widget demo on the Waveshare RP2350-Touch-LCD-1.69. The
+//! application is `light_app_ui_demo`, with no hardware in it; this crate is the tangible
+//! 1.69: the wiring (`board.rs`), the ST7789 over SPI, the CST816T, the IMU, the piezo,
+//! the shell ABI and the panic handler.
 //!
 //! The C shell (`module/light_mk4_shell`) brings the pico-sdk runtime up, puts TinyUSB on
-//! core 1, and calls `light_app_main` on core 0 with the clocks it configured; it never returns.
-//! Core 1 calls `light_app_core1_service` from its USB loop. Everything the shell provides to
-//! Rust is declared in the one `extern` block below.
-//!
-//! The application is a set of modules over one event bus: the console parses lines into
-//! events, the touch driver publishes touches, and every module subscribes and matches on what
-//! it cares about. The board's peripherals are taken once as an owned set and handed to the
-//! drivers that need them.
-//!
-//! What it shows is mk3's `light_ui` demo: one rounded window filling the glass with a stack of
-//! buttons in it, a second page reached from the last row and returned from with a swipe, and a
-//! scrolling list. The widget tree is `static` data; a button EMITS an application event, which
-//! goes over the same bus a console line does, so a tap, `ui activate` at the console and a
-//! script are three spellings of one thing.
+//! core 1, and calls `light_app_main` on core 0 with the clocks it configured; it never
+//! returns. Core 1 calls `light_app_core1_service` from its USB loop. Everything the shell
+//! provides to Rust is declared in the one `extern` block below.
 
 #![no_std]
 
 use core::cell::RefCell;
 use core::fmt::Write;
+use light_app_ui_demo as demo;
+use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod};
 use light_input::cst816t::{self, Cst816t};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
-use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
-use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
-use light_display::{Display, FrameLayer, UpdateError};
+use light_input::touch::Tracker;
+use light_ui::{Theme, Ui};
+use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
+use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
 use light_audio::pwm::{pcm_to_duty, Encoding, VOLUME_MAX as AUDIO_VOLUME_MAX};
@@ -69,40 +63,20 @@ static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0;
 /// The demo's font, rendered by crush at build time and handed over as a path by
 /// `light_mk4_add_font` in the CMake -- a blob in flash, parsed in place, no generated C.
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel, compiled from `theme/round169.json`: the framework's default theme
+/// plus this glass's corner curvature. That screen_radius of 42 is MEASURED, not
+/// estimated, by mk3's screentest_calib169 sweep (a rounded rect at inset d closes its
+/// corners inside glass of radius R exactly at r = R - d; the transition sat between 36
+/// and 40 at d = 2, and the upper end taken). An estimate is exactly how this went wrong
+/// twice: mk3's first guess of 20 and mk4's port guess of 24 both left the frame's
+/// corners swallowed by the glass, invisibly in code -- judged there, 2026-09-04.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
 
-/// Everything that happens in this application, as one type. The console is one producer of
-/// `Command`s; a widget, a test or a boot script are others, without going through text.
+/// This board's extension events -- the piezo -- riding the demo's bus.
 #[derive(Clone, Copy, Debug)]
-enum AppEvent {
-        Touch(cst816t::Event),
-        /// A swipe, in the panel's own coordinate space.
-        Gesture(Gesture),
-        /// The board's settled orientation changed.
-        Orientation(Orientation),
-        Command(Command),
-        /// Something a widget emitted.
-        Ui(UiAction),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Command {
-        Stats,
-        /// A backlight level, 0..=BACKLIGHT_LEVEL_MAX.
-        Backlight(u16),
-        /// The UI events as commands: `ui focus next|prev`, `ui activate`, `ui press X Y`,
-        /// `ui back`. Most of their value is on a bring-up rig: a console drives a board whose
-        /// only physical input is a touch panel, and a host script replays an interaction.
-        UiFocus { next: bool },
-        UiActivate,
-        UiPress { x: u16, y: u16 },
-        UiBack,
-        /// The rendering bisect: normal; paused (nothing drawn or pushed); or repushing the
-        /// UNCHANGED frame on every touch -- all the bus and DMA activity, nothing changing on
-        /// the glass -- which separates electrical coupling from the LCD itself disturbing the
-        /// touch sensor.
-        RenderMode(RenderMode),
+enum Ext {
         /// A square wave at `hz` on the piezo, for `ms` (0 = until `tone off`).
         Tone { hz: u16, ms: u16 },
         ToneOff,
@@ -115,34 +89,9 @@ enum Command {
         Volume(u16),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RenderMode {
-        Normal,
-        Paused,
-        Repush,
-}
+type AppEvent = DemoEvent<Ext>;
 
-#[derive(Clone, Copy, Debug)]
-enum UiAction {
-        /// One of the three toggle buttons.
-        Toggle(u8),
-        /// A list row.
-        Item(u8),
-        /// A drag scrolled a window: the finger's movement is spent, and the touch module must
-        /// not let its release classify as a swipe as well.
-        DragConsumed,
-}
-
-/// 16 events deep, 6 subscribers: display, touch, imu, board, audio, and one spare.
 static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
-/// Raw console bytes, core 1 → core 0. Sized for a burst of pasted text.
-static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
-/// The display module says whether a panel push is in flight; the touch module reads it. One
-/// bisect found the CST816T fails its reads while the SPI/DMA burst runs, whatever the clock
-/// rate and whether the picture changes, and a read that fails counts toward its reset --
-/// so while `touch hold` is on, the controller is left alone until the push is over.
-static PUSHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static TOUCH_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -152,9 +101,6 @@ fn log_sink(record: &log::Record) {
         unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
 }
 
-/// Called by the C shell from core 1's USB loop, between `tud_task()` calls. Moves a bounded
-/// amount of log to stdio and a bounded amount of console input into the mailbox, so a burst of
-/// either cannot starve `tud_task()`.
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
         log::drain(4, log_sink);
@@ -163,293 +109,60 @@ pub extern "C" fn light_app_core1_service() {
                 if b < 0 {
                         break;
                 }
-                //   a full mailbox drops the byte; the line it belonged to will fail to parse
-                // and say so, which beats blocking the core that owns USB
-                let _ = CONSOLE_BYTES.push(b as u8);
+                demo::push_console_byte(b as u8);
         }
 }
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// The glass's corner radius is 42 -- MEASURED, not estimated, by mk3's
-/// screentest_calib169 sweep (a rounded rect at inset d closes its corners inside glass
-/// of radius R exactly at r = R - d; the transition sat between 36 and 40 at d = 2, and
-/// the upper end taken). An estimate is exactly how this went wrong twice: mk3's first
-/// guess of 20 and mk4's port guess of 24 both left the frame's corners swallowed by the
-/// glass, invisibly in code. Strict concentric geometry at [`SAFE_INSET`] would say
-/// radius-minus-inset, but the measurement only bounded the radius from below and the
-/// FULL figure is what reads right on the glass -- judged there, 2026-09-04.
-const CORNER_RADIUS: u8 = 42;
-/// A breathing margin on every edge; the curve itself is [`CORNER_RADIUS`]'s job.
+/// A breathing margin on every edge; the glass's curve itself is the THEME's job (the
+/// `screen_radius` metric -- see [`THEME_BLOB`] for the measurement behind the 42).
+/// Strict concentric geometry here would say radius-minus-inset, but the measurement
+/// only bounded the radius from below and the full figure is what reads right.
 const SAFE_INSET: u8 = 2;
-const ROW_GAP: u8 = 2;
-/// Rows in the scrolling list are pinned to this, so the list overflows rather than shrinking.
-const LIST_MIN_ROW: i32 = 44;
 const FPS: u32 = 30;
-const BG: u16 = 0x0000;
-const FG: u16 = 0xFFFF;
-
 /// A tenth: the panel stays readable, the way an idle device dims rather than goes dark.
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
-const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
-const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
-
-static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Ui(UiAction::Toggle(0))).tag(1);
-static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Ui(UiAction::Toggle(1))).tag(2);
-static BTN_GAMMA: Desc<AppEvent> = Desc::button(LABEL_OFF[2]).emit(AppEvent::Ui(UiAction::Toggle(2))).tag(3);
-static BTN_MORE: Desc<AppEvent> = Desc::button("More >").navigate(&PAGE_DETAIL);
-static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 demo").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_GAMMA, &BTN_MORE, &BTN_LIST]);
-
-static LBL_DETAIL: Desc<AppEvent> = Desc::label("swipe right to go back");
-//   the whole press IS the command: no handler, the button emits the same event the console's
-// `backlight off` does
-static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_DIM)));
-static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_LEVEL_MAX)));
-static BTN_BACK: Desc<AppEvent> = Desc::button("< Back").back();
-static DETAIL_WINDOW: Desc<AppEvent> = Desc::window("More").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
-
-static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Ui(UiAction::Item(1))).min_size(0, LIST_MIN_ROW);
-static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Ui(UiAction::Item(2))).min_size(0, LIST_MIN_ROW);
-static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Ui(UiAction::Item(3))).min_size(0, LIST_MIN_ROW);
-static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Ui(UiAction::Item(4))).min_size(0, LIST_MIN_ROW);
-static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Ui(UiAction::Item(5))).min_size(0, LIST_MIN_ROW);
-static ITEM_6: Desc<AppEvent> = Desc::button("Item 6").emit(AppEvent::Ui(UiAction::Item(6))).min_size(0, LIST_MIN_ROW);
-static ITEM_7: Desc<AppEvent> = Desc::button("Item 7").emit(AppEvent::Ui(UiAction::Item(7))).min_size(0, LIST_MIN_ROW);
-// the back row is a list item like any other, and deliberately LAST: reaching it means
-// scrolling the whole list, so navigating out doubles as the end-to-end check
-static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> =
-        Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &ITEM_6, &ITEM_7, &BTN_LIST_BACK]);
-
-static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
-static PAGE_DETAIL: Page<AppEvent> = Page::new(&DETAIL_WINDOW, Some(&PAGE_MAIN));
-static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
-
-/// The widest page is the list: a window and eight rows.
-const UI_WIDGETS: usize = 12;
-
-// --- the modules --------------------------------------------------------------------------
-
-/// Owns the panel and the widget tree. Input arrives as bus events; what a widget emits goes
-/// back onto the bus; the frame layer works out which panel pixels changed.
-struct DisplayMod {
-        display: Display<'static, St7789<Spi1Display>>,
-        //   the two big objects live in .bss as statics built in place (their constructors are
-        // const): a stack temporary of either overran core 0's 4 KB stack, and what sits
-        // directly below it is core 1's
-        layer: &'static mut FrameLayer,
-        font: Font<'static>,
-        ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
-        events: Subscription,
-        toggled: [bool; 3],
-        /// See Command::RenderMode.
-        mode: RenderMode,
-        /// Whether the drag in progress has already told the touch module it consumed the touch.
-        drag_reported: bool,
-        /// Timing, for `stats`: the longest draw (frame_begin to frame_end) and the longest
-        /// push (frame_end until the panel is idle) seen, in microseconds.
-        draw_us_max: u64,
-        push_us_max: u64,
-        push_started_us: Option<u64>,
+demo_pages! {
+        event: AppEvent,
+        title: "mk4 demo",
+        row_gap: 2,
+        //   rows in the scrolling list are pinned to this, so the list overflows rather
+        // than shrinking
+        list_min_row: 44,
+        backlight_dim: BACKLIGHT_DIM
 }
 
-impl DisplayMod {
-        fn publish(ev: Option<AppEvent>) {
-                if let Some(ev) = ev {
-                        if let Err(e) = EVENTS.publish(ev) {
-                                warn!("event bus full; dropped {e:?}");
-                        }
-                }
-        }
-
-        fn handle(&mut self, ev: AppEvent) {
-                match ev {
-                        AppEvent::Touch(t) => {
-                                //   the panel's own coordinates go straight in: the toolkit
-                                // untransforms them, which keeps touches landing on the right
-                                // widget once the interface has been rotated. The tracker runs
-                                // the whole tap-versus-drag interaction; this module's part is
-                                // one rule: a drag that scrolled has SPENT the finger's movement
-                                if self.mode == RenderMode::Repush {
-                                        if let cst816t::Event::Down { .. } = t {
-                                                // the front buffer as it stands, to the whole panel
-                                                if !self.display.busy() {
-                                                        let _ = self.display.update_async(light_display::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
-                                                }
-                                        }
-                                }
-                                let outcome = match t {
-                                        cst816t::Event::Down { x, y } | cst816t::Event::Move { x, y } => self.ui.touch(x, y, true),
-                                        cst816t::Event::Up => self.ui.touch(0, 0, false),
-                                        cst816t::Event::Reset => return,
-                                };
-                                match outcome {
-                                        Touch::Drag if !self.drag_reported => {
-                                                self.drag_reported = true;
-                                                Self::publish(Some(AppEvent::Ui(UiAction::DragConsumed)));
-                                        }
-                                        Touch::Tap { hit, emitted } => {
-                                                debug!("tap: {}", if hit { "hit" } else { "no widget there" });
-                                                Self::publish(emitted);
-                                        }
-                                        Touch::DragEnd | Touch::None => self.drag_reported = false,
-                                        _ => {}
-                                }
-                        }
-                        AppEvent::Gesture(g) => {
-                                //   swipe right returns to the previous page. Classified from the
-                                // gesture's ENDPOINTS in the frame the user is looking at: the
-                                // controller's own code is in the panel's frame, which is wrong
-                                // in landscape
-                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.ui.navigate_back() {
-                                        debug!("swipe: returned to the previous page");
-                                }
-                        }
-                        AppEvent::Orientation(o) => {
-                                let rotation = match o {
-                                        Orientation::Portrait => Some(Rotation::R0),
-                                        Orientation::PortraitFlip => Some(Rotation::R180),
-                                        // derived by mk3 and confirmed on this board: L is 270, R is 90
-                                        Orientation::LandscapeL => Some(Rotation::R270),
-                                        Orientation::LandscapeR => Some(Rotation::R90),
-                                        // flat has no upright; keep whatever we had
-                                        _ => None,
-                                };
-                                if let Some(r) = rotation {
-                                        self.ui.set_rotation(self.layer, r);
-                                        let (w, h) = self.ui.logical_size();
-                                        info!("orientation {o:?}: canvas now {w}x{h}");
-                                }
-                        }
-                        AppEvent::Command(Command::UiFocus { next }) => {
-                                if next {
-                                        self.ui.focus_next()
-                                } else {
-                                        self.ui.focus_prev()
-                                }
-                        }
-                        AppEvent::Command(Command::UiActivate) => {
-                                let emitted = self.ui.activate();
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::UiPress { x, y }) => {
-                                // a miss is not an error: tapping empty space is legitimate
-                                let (hit, emitted) = self.ui.press_at(x, y);
-                                info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::RenderMode(m)) => {
-                                self.mode = m;
-                                info!("render mode {m:?}");
-                        }
-                        AppEvent::Command(Command::UiBack) => {
-                                if !self.ui.navigate_back() {
-                                        info!("ui back: nowhere to go from this page");
-                                }
-                        }
-                        AppEvent::Ui(UiAction::Toggle(i)) => {
-                                let i = usize::from(i) % 3;
-                                self.toggled[i] = !self.toggled[i];
-                                if let Some(id) = self.ui.find(i as u8 + 1) {
-                                        self.ui.set_label(id, if self.toggled[i] { LABEL_ON[i] } else { LABEL_OFF[i] });
-                                }
-                                info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
-                        }
-                        AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
-                        AppEvent::Command(Command::Stats) => {
-                                info!(
-                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
-                                        self.layer.frames(),
-                                        self.layer.skipped,
-                                        self.display.timeouts,
-                                        self.draw_us_max,
-                                        self.push_us_max
-                                );
-                                self.draw_us_max = 0;
-                                self.push_us_max = 0;
-                        }
-                        _ => {}
-                }
-        }
-
-        fn render(&mut self) {
-                if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
-                        return;
-                }
-                let now = light_rp2::now_us();
-                //   through Ui::render, which also runs the rotation and page animations; the
-                // phase split that found Font::pixel is done by running the frame by hand with
-                // frame_begin / paint / commit / frame_end when it is wanted again
-                let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
-                let done = light_rp2::now_us();
-                if drew || self.ui.is_animating() {
-                        self.draw_us_max = self.draw_us_max.max(done - now);
-                        self.push_started_us = Some(done);
-                }
+/// Derived by mk3 and confirmed on this board: L is 270, R is 90; flat has no upright,
+/// so the canvas keeps whatever it had.
+fn rotation_map(o: Orientation) -> Option<Rotation> {
+        match o {
+                Orientation::Portrait => Some(Rotation::R0),
+                Orientation::PortraitFlip => Some(Rotation::R180),
+                Orientation::LandscapeL => Some(Rotation::R270),
+                Orientation::LandscapeR => Some(Rotation::R90),
+                _ => None,
         }
 }
 
-impl Module for DisplayMod {
-        fn name(&self) -> &'static str {
-                "display"
+// --- the driver-specific edges -------------------------------------------------------------
+
+struct Hook;
+
+impl BoardHook<St7789<Spi1Display>, Ext> for Hook {
+        fn after_init(&mut self, display: &mut Display<'static, St7789<Spi1Display>>, bg: u16) {
+                //   the 1.69's row offset of 20 is a fact about its 240x280 window into the
+                // ST7789's GDDRAM
+                display.driver().set_offset(0, DISPLAY_ROW_OFFSET);
+                display.driver().clear(bg);
         }
-        fn load(&mut self) -> Result<(), ()> {
-                let mut clock = SysClock;
-                self.display.init(&mut clock);
-                self.display.driver().set_offset(0, DISPLAY_ROW_OFFSET);
-                self.display.driver().clear(BG);
-                self.layer.set_frame_rate(FPS);
-                self.layer.bg = BG;
-                self.ui.fit(self.layer);
-                //   entered through the page system rather than built directly, so the toolkit
-                // knows which page it is showing and back has something to reason from
-                if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
-                        warn!("the main page did not build: {e:?}");
-                }
-                // nothing on the panel matches the freshly built tree yet
-                self.ui.invalidate_all();
-                self.render();
-                info!(
-                        "display up: {}x{}, double-buffered at {} fps, font {}px cell {}x{} ({} glyphs, {} bytes)",
-                        DISPLAY_WIDTH,
-                        DISPLAY_HEIGHT,
-                        FPS,
-                        self.font.pixel_size(),
-                        self.font.cell_width(),
-                        self.font.cell_height(),
-                        self.font.glyph_count(),
-                        FONT_BLOB.len()
-                );
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                match self.layer.poll(&mut self.display) {
-                        Ok(_) => {}
-                        Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
-                        Err(UpdateError::Busy) => unreachable!(),
-                }
-                if let Some(started) = self.push_started_us {
-                        if !self.layer.busy(&self.display) {
-                                self.push_us_max = self.push_us_max.max(light_rp2::now_us() - started);
-                                self.push_started_us = None;
-                        }
-                }
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        self.handle(ev);
-                }
-                self.render();
-                let busy = self.layer.busy(&self.display);
-                PUSHING.store(busy, core::sync::atomic::Ordering::Relaxed);
-                if self.ui.is_dirty() || self.ui.is_animating() || busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                let _ = self.display.wait();
-                self.display.driver().clear(BG);
-                info!("display down");
+        fn on_unload(&mut self, display: &mut Display<'static, St7789<Spi1Display>>, bg: u16) {
+                display.driver().clear(bg);
         }
 }
+
+// --- the board's own modules ---------------------------------------------------------------
 
 /// Owns the touch controller and publishes what it reports: samples, and the swipes the
 /// tracker makes of them.
@@ -491,11 +204,11 @@ impl Module for TouchMod {
                                         );
                                 }
                                 // the interface scrolled with this touch: its release is not a swipe
-                                AppEvent::Ui(UiAction::DragConsumed) => self.tracker.suppress(),
+                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
                                 _ => {}
                         }
                 }
-                if TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed) {
+                if demo::touch_reads_held() {
                         return Poll::Idle;
                 }
                 let now_ms = (light_rp2::now_us() / 1000) as u32;
@@ -596,8 +309,6 @@ impl Module for BoardMod {
         }
 }
 
-/// The console: bytes from core 1 into lines, lines into commands, commands onto the bus. The
-/// string front-end of the event bus; `help`, `loglevel` and `quit` are its own.
 /// One period of sine at 20000 amplitude, 32 steps -- plenty for a bring-up beeper.
 static SINE: [i16; 32] = [
         0, 3902, 7654, 11111, 14142, 16629, 18478, 19616, 20000, 19616, 18478, 16629, 14142, 11111, 7654, 3902, 0, -3902, -7654, -11111, -14142, -16629, -18478, -19616, -20000, -19616, -18478, -16629,
@@ -636,18 +347,18 @@ impl Module for AudioMod {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Command(Command::Tone { hz, ms }) => {
+                                AppEvent::Ext(Ext::Tone { hz, ms }) => {
                                         busy = true;
                                         self.buzzer.tone(u32::from(hz));
                                         self.tone_end_ms = (ms > 0).then(|| now_ms.wrapping_add(u32::from(ms)));
                                         info!("tone {hz} Hz{}", if ms > 0 { " (timed)" } else { "" });
                                 }
-                                AppEvent::Command(Command::ToneOff) => {
+                                AppEvent::Ext(Ext::ToneOff) => {
                                         self.buzzer.tone_off();
                                         self.tone_end_ms = None;
                                         info!("tone off");
                                 }
-                                AppEvent::Command(Command::Beep(hz)) => {
+                                AppEvent::Ext(Ext::Beep(hz)) => {
                                         if self.buzzer.busy() {
                                                 info!("beep: already playing");
                                                 continue;
@@ -673,7 +384,7 @@ impl Module for AudioMod {
                                                 warn!("beep: play refused");
                                         }
                                 }
-                                AppEvent::Command(Command::Volume(v)) => {
+                                AppEvent::Ext(Ext::Volume(v)) => {
                                         self.volume = v.min(AUDIO_VOLUME_MAX);
                                         info!("volume {} (applies at the next beep)", self.volume);
                                 }
@@ -704,89 +415,11 @@ impl Module for AudioMod {
         }
 }
 
-struct ConsoleMod {
-        reader: LineReader<96>,
-}
+// --- the console table ---------------------------------------------------------------------
 
-impl ConsoleMod {
-        fn dispatch(&mut self, line: &str) -> Poll {
-                match CLI.dispatch(line) {
-                        Outcome::Quiet => Poll::Idle,
-                        Outcome::Shutdown => Poll::Shutdown,
-                        Outcome::Event(c) => {
-                                //   the console's own counters live on this module, which a
-                                // table parse function cannot reach: reported here, alongside
-                                // whatever every other module says to the same event
-                                if let Command::Stats = c {
-                                        info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
-                                }
-                                if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
-                                        warn!("event bus full; dropped {e:?}");
-                                }
-                                Poll::Busy
-                        }
-                        Outcome::Handled => Poll::Busy,
-                }
-        }
-}
-
-//   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
-// this table is everything this application adds. The parse functions produce the same
-// `Command` events a touch produces -- a console line, a tap and a host test are the same
-// record on the same bus
-fn parse_stats(_w: &mut Words) -> Parsed<Command> {
-        Parsed::Event(Command::Stats)
-}
-
-fn parse_backlight(w: &mut Words) -> Parsed<Command> {
-        match w.next().and_then(|s| s.parse::<u16>().ok()) {
-                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Parsed::Event(Command::Backlight(level)),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_ui(w: &mut Words) -> Parsed<Command> {
-        match (w.next(), w.next(), w.next()) {
-                (Some("focus"), Some("next"), _) => Parsed::Event(Command::UiFocus { next: true }),
-                (Some("focus"), Some("prev"), _) => Parsed::Event(Command::UiFocus { next: false }),
-                (Some("activate"), _, _) => Parsed::Event(Command::UiActivate),
-                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
-                        (Ok(x), Ok(y)) => Parsed::Event(Command::UiPress { x, y }),
-                        _ => Parsed::Usage,
-                },
-                (Some("back"), _, _) => Parsed::Event(Command::UiBack),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_touch(w: &mut Words) -> Parsed<Command> {
+fn parse_tone(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                Some("hold") => {
-                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads held while the panel is being pushed");
-                        Parsed::Done
-                }
-                Some("free") => {
-                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads not held");
-                        Parsed::Done
-                }
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_render(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("pause") => Parsed::Event(Command::RenderMode(RenderMode::Paused)),
-                Some("resume") => Parsed::Event(Command::RenderMode(RenderMode::Normal)),
-                Some("repush") => Parsed::Event(Command::RenderMode(RenderMode::Repush)),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_tone(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("off") => Parsed::Event(Command::ToneOff),
+                Some("off") => Parsed::Event(DemoEvent::Ext(Ext::ToneOff)),
                 Some(hz) => {
                         let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
                         if !(20..=10_000).contains(&hz) {
@@ -799,54 +432,31 @@ fn parse_tone(w: &mut Words) -> Parsed<Command> {
                                         _ => return Parsed::Usage,
                                 },
                         };
-                        Parsed::Event(Command::Tone { hz, ms })
+                        Parsed::Event(DemoEvent::Ext(Ext::Tone { hz, ms }))
                 }
                 None => Parsed::Usage,
         }
 }
 
-fn parse_volume(w: &mut Words) -> Parsed<Command> {
+fn parse_volume(w: &mut Words) -> Parsed<AppEvent> {
         match w.next().and_then(|s| s.parse::<u16>().ok()) {
-                Some(v) if v <= AUDIO_VOLUME_MAX => Parsed::Event(Command::Volume(v)),
+                Some(v) if v <= AUDIO_VOLUME_MAX => Parsed::Event(DemoEvent::Ext(Ext::Volume(v))),
                 _ => Parsed::Usage,
         }
 }
 
-static COMMANDS: &[CliCommand<Command>] = &[
-        CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
         CliCommand { name: "beep", usage: "beep [HZ]", parse: |w| match w.next() {
-                None => Parsed::Event(Command::Beep(880)),
+                None => Parsed::Event(DemoEvent::Ext(Ext::Beep(880))),
                 Some(hz) => match hz.parse::<u16>() {
-                        Ok(hz) if (20..=10_000).contains(&hz) => Parsed::Event(Command::Beep(hz)),
+                        Ok(hz) if (20..=10_000).contains(&hz) => Parsed::Event(DemoEvent::Ext(Ext::Beep(hz))),
                         _ => Parsed::Usage,
                 },
         } },
         CliCommand { name: "volume", usage: "volume 0..1000", parse: parse_volume },
-        CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
-        CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
-        CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
-        CliCommand { name: "render", usage: "render pause|resume|repush", parse: parse_render },
 ];
-static CLI: Cli<Command> = Cli::new(COMMANDS);
-
-impl Module for ConsoleMod {
-        fn name(&self) -> &'static str {
-                "console"
-        }
-        fn poll(&mut self) -> Poll {
-                let mut result = Poll::Idle;
-                while let Some(b) = CONSOLE_BYTES.pop() {
-                        if let Some(line) = self.reader.push(b) {
-                                match self.dispatch(line.as_str()) {
-                                        Poll::Shutdown => return Poll::Shutdown,
-                                        p => result = p,
-                                }
-                        }
-                }
-                result
-        }
-}
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
 // --- entry ----------------------------------------------------------------------------------
 
@@ -886,33 +496,46 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 },
                 playing: false,
         };
-        //   built in place in .bss -- see DisplayMod -- and taken once
+        //   built in place in .bss -- see the demo's DisplayMod -- and taken once
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
-        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
-        layer.bg = BG;
+        let ui: &'static mut Ui<AppEvent, { demo::UI_WIDGETS }> = UI.take();
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
         ui.set_safe_inset(SAFE_INSET);
-        let _ = FG;
         // module state is 'static in any case: the runtime never returns
-        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
-        let display_mod = DISPLAY_MOD.init(DisplayMod {
+        type BoardDisplayMod = DisplayMod<St7789<Spi1Display>, SysClock, Ext, Hook>;
+        static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
+        let display_mod = DISPLAY_MOD.init(DisplayMod::new(
                 display,
                 layer,
                 font,
                 ui,
-                events: EVENTS.subscribe().expect("subscriber slot"),
-                toggled: [false; 3],
-                mode: RenderMode::Normal,
-                drag_reported: false,
-                draw_us_max: 0,
-                push_us_max: 0,
-                push_started_us: None,
-        });
+                SysClock,
+                &EVENTS,
+                DisplayConfig {
+                        width: DISPLAY_WIDTH,
+                        height: DISPLAY_HEIGHT,
+                        fps: FPS,
+                        desc: "ST7789 over SPI, double-buffered",
+                        repush: true,
+                        draw_over: false,
+                        rotation_map,
+                        main_page: &PAGE_MAIN,
+                },
+                Hook,
+        ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
-        let mut console_mod = ConsoleMod { reader: LineReader::new() };
+        let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<6> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");

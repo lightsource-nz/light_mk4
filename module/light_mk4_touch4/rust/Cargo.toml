@@ -9,6 +9,7 @@ description = "the Rust half of the Waveshare RP2350-Touch-LCD-4 firmware: the w
 crate-type = ["staticlib"]
 
 [dependencies]
+light_app_ui_demo = { path = "../../../crates/light_app_ui_demo" }
 light-core = { path = "../../../crates/light-core" }
 light-draw = { path = "../../../crates/light-draw" }
 light-display = { path = "../../../crates/light-display" }

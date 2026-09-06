@@ -1,6 +1,8 @@
-//! The Rust side of the touch349 firmware: the widget demo on the Waveshare
-//! RP2350-Touch-LCD-3.49 -- a 172x640 bar of glass, the first QSPI panel (AXS15231B, LCD and
-//! touch in one chip), and the first board on the RP2350's upper GPIO bank.
+//! The touch349 firmware: the widget demo on the Waveshare RP2350-Touch-LCD-3.49 -- a
+//! 172x640 bar of glass, the first QSPI panel (AXS15231B, LCD and touch in one chip), and
+//! the first board on the RP2350's upper GPIO bank. The application is `light_app_ui_demo`;
+//! this crate is the tangible 3.49: the wiring, the QSPI panel, the codec + TF-slot audio
+//! leg, the battery latch, the shell ABI and the panic handler.
 //!
 //! Bring-up checklist (this board's support is authored from Waveshare's reference demo, not
 //! a schematic): the panel lights and draws (if dark, SLPOUT/DISPON are the first suspects
@@ -12,15 +14,17 @@
 
 use core::cell::RefCell;
 use core::fmt::Write;
+use light_app_ui_demo as demo;
+use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
-use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, SwipeDir, Touch, Ui};
-use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
-use light_display::{Display, FrameLayer, UpdateError};
+use light_input::touch::Tracker;
+use light_ui::{Theme, Ui};
+use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
+use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
+use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
@@ -280,27 +284,16 @@ static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel: the framework's steel theme, the default for every board with
+/// color support. A board-specific override would be a local theme file extending it.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
 
+/// This board's extension events -- the codec + TF-slot audio leg, the RTC, the PSRAM
+/// probe, the power path -- riding the demo's bus.
 #[derive(Clone, Copy, Debug)]
-enum AppEvent {
-        Touch(axs::Event),
-        Gesture(Gesture),
-        Orientation(Orientation),
-        Command(Command),
-        Ui(UiAction),
-}
-
-#[derive(Clone, Copy, Debug)]
-enum Command {
-        Stats,
-        Backlight(u16),
-        UiFocus { next: bool },
-        UiActivate,
-        UiPress { x: u16, y: u16 },
-        UiBack,
-        RenderMode(RenderMode),
+enum Ext {
         RtcShow,
         RtcSet(Datetime),
         Tone { hz: u16, ms: u16 },
@@ -319,6 +312,8 @@ enum Command {
         MicDbg,
         Synth,
 }
+
+type AppEvent = DemoEvent<Ext>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum FsOp {
@@ -355,24 +350,7 @@ impl FsPath {
         }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RenderMode {
-        Normal,
-        Paused,
-        Repush,
-}
-
-#[derive(Clone, Copy, Debug)]
-enum UiAction {
-        Toggle(u8),
-        Item(u8),
-        DragConsumed,
-}
-
 static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
-static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
-static PUSHING: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-static TOUCH_HOLD: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 // --- core 1 --------------------------------------------------------------------------------
 
@@ -390,250 +368,50 @@ pub extern "C" fn light_app_core1_service() {
                 if b < 0 {
                         break;
                 }
-                let _ = CONSOLE_BYTES.push(b as u8);
+                demo::push_console_byte(b as u8);
         }
 }
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// Bar glass, corners unmeasured: 0 until the glass says otherwise.
-const CORNER_RADIUS: u8 = 0;
-const ROW_GAP: u8 = 6;
-/// A 640-tall list has room; rows sized for a finger on the narrow bar.
-const LIST_MIN_ROW: i32 = 56;
+//   Bar glass, corners unmeasured: the theme's screen_radius keeps its default of 0
+// until the glass says otherwise.
 const FPS: u32 = 30;
-const BG: u16 = 0x0000;
 
 /// The demo's Dim: through the floor mapping this lands ~59% LED-on time, in the lower
 /// part of the panel's narrow usable band -- clearly dim, clearly lit. The original MAX/10
 /// mapped below the driver's cutoff and read as OFF.
 const BACKLIGHT_DIM: u16 = 250;
 
-const LABEL_OFF: [&str; 3] = ["Alpha", "Beta", "Gamma"];
-const LABEL_ON: [&str; 3] = ["Alpha *", "Beta *", "Gamma *"];
+demo_pages! {
+        event: AppEvent,
+        title: "mk4 3.49",
+        row_gap: 6,
+        //   a 640-tall list has room; rows sized for a finger on the narrow bar
+        list_min_row: 56,
+        backlight_dim: BACKLIGHT_DIM
+}
 
-static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Ui(UiAction::Toggle(0))).tag(1);
-static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Ui(UiAction::Toggle(1))).tag(2);
-static BTN_GAMMA: Desc<AppEvent> = Desc::button(LABEL_OFF[2]).emit(AppEvent::Ui(UiAction::Toggle(2))).tag(3);
-static BTN_MORE: Desc<AppEvent> = Desc::button("More >").navigate(&PAGE_DETAIL);
-static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 3.49").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_GAMMA, &BTN_MORE, &BTN_LIST]);
+/// Portrait only, MEASURED: the bar rests near-landscape on its long edge, so ordinary
+/// handling flapped LandscapeL/R -- a 180-degree relayout per touch, and every tap then
+/// landed where a widget used to be. A 172 px-tall landscape canvas was never worth having
+/// anyway; the bar rotates end-for-end (a deliberate gesture, nowhere near the resting
+/// pose) and otherwise holds still.
+fn rotation_map(o: Orientation) -> Option<Rotation> {
+        match o {
+                Orientation::Portrait => Some(Rotation::R0),
+                Orientation::PortraitFlip => Some(Rotation::R180),
+                _ => None,
+        }
+}
 
-static LBL_DETAIL: Desc<AppEvent> = Desc::label("swipe right to go back");
-static BTN_DIM: Desc<AppEvent> = Desc::button("Dim").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_DIM)));
-static BTN_BRIGHT: Desc<AppEvent> = Desc::button("Bright").emit(AppEvent::Command(Command::Backlight(BACKLIGHT_LEVEL_MAX)));
-static BTN_BACK: Desc<AppEvent> = Desc::button("< Back").back();
-static DETAIL_WINDOW: Desc<AppEvent> = Desc::window("More").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_DETAIL, &BTN_DIM, &BTN_BRIGHT, &BTN_BACK]);
+/// No init or unload edges: the AXS15231B wants no GDDRAM offset, and its full-frame
+/// pushes repaint everything anyway.
+struct Hook;
 
-static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Ui(UiAction::Item(1))).min_size(0, LIST_MIN_ROW);
-static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Ui(UiAction::Item(2))).min_size(0, LIST_MIN_ROW);
-static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Ui(UiAction::Item(3))).min_size(0, LIST_MIN_ROW);
-static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Ui(UiAction::Item(4))).min_size(0, LIST_MIN_ROW);
-static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Ui(UiAction::Item(5))).min_size(0, LIST_MIN_ROW);
-static ITEM_6: Desc<AppEvent> = Desc::button("Item 6").emit(AppEvent::Ui(UiAction::Item(6))).min_size(0, LIST_MIN_ROW);
-static ITEM_7: Desc<AppEvent> = Desc::button("Item 7").emit(AppEvent::Ui(UiAction::Item(7))).min_size(0, LIST_MIN_ROW);
-static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> =
-        Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &ITEM_6, &ITEM_7, &BTN_LIST_BACK]);
-
-static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
-static PAGE_DETAIL: Page<AppEvent> = Page::new(&DETAIL_WINDOW, Some(&PAGE_MAIN));
-static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
-
-const UI_WIDGETS: usize = 12;
+impl BoardHook<Axs15231b<PioQspiDisplayBus>, Ext> for Hook {}
 
 // --- the modules --------------------------------------------------------------------------
-
-struct DisplayMod {
-        display: Display<'static, Axs15231b<PioQspiDisplayBus>>,
-        layer: &'static mut FrameLayer,
-        font: Font<'static>,
-        ui: &'static mut Ui<AppEvent, UI_WIDGETS>,
-        events: Subscription,
-        toggled: [bool; 3],
-        mode: RenderMode,
-        drag_reported: bool,
-        draw_us_max: u64,
-        push_us_max: u64,
-        push_started_us: Option<u64>,
-}
-
-impl DisplayMod {
-        fn publish(ev: Option<AppEvent>) {
-                if let Some(ev) = ev {
-                        if let Err(e) = EVENTS.publish(ev) {
-                                warn!("event bus full; dropped {e:?}");
-                        }
-                }
-        }
-
-        fn handle(&mut self, ev: AppEvent) {
-                match ev {
-                        AppEvent::Touch(t) => {
-                                if self.mode == RenderMode::Repush {
-                                        if let axs::Event::Down { .. } = t {
-                                                if !self.display.busy() {
-                                                        let _ = self.display.update_async(light_display::Region::full(DISPLAY_WIDTH, DISPLAY_HEIGHT));
-                                                }
-                                        }
-                                }
-                                let outcome = match t {
-                                        axs::Event::Down { x, y } | axs::Event::Move { x, y } => self.ui.touch(x, y, true),
-                                        axs::Event::Up => self.ui.touch(0, 0, false),
-                                        axs::Event::Reset => return,
-                                };
-                                match outcome {
-                                        Touch::Drag if !self.drag_reported => {
-                                                self.drag_reported = true;
-                                                Self::publish(Some(AppEvent::Ui(UiAction::DragConsumed)));
-                                        }
-                                        Touch::Tap { hit, emitted } => {
-                                                debug!("tap: {}", if hit { "hit" } else { "no widget there" });
-                                                Self::publish(emitted);
-                                        }
-                                        Touch::DragEnd | Touch::None => self.drag_reported = false,
-                                        _ => {}
-                                }
-                        }
-                        AppEvent::Gesture(g) => {
-                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.ui.navigate_back() {
-                                        debug!("swipe: returned to the previous page");
-                                }
-                        }
-                        AppEvent::Orientation(o) => {
-                                //   portrait only, MEASURED: the bar rests near-landscape on
-                                // its long edge, so ordinary handling flapped LandscapeL/R --
-                                // a 180-degree relayout per touch, and every tap then landed
-                                // where a widget used to be. A 172 px-tall landscape canvas
-                                // was never worth having anyway; the bar rotates end-for-end
-                                // (a deliberate gesture, nowhere near the resting pose) and
-                                // otherwise holds still
-                                let rotation = match o {
-                                        Orientation::Portrait => Some(Rotation::R0),
-                                        Orientation::PortraitFlip => Some(Rotation::R180),
-                                        _ => None,
-                                };
-                                if let Some(r) = rotation {
-                                        self.ui.set_rotation(self.layer, r);
-                                        let (w, h) = self.ui.logical_size();
-                                        info!("orientation {o:?}: canvas now {w}x{h}");
-                                }
-                        }
-                        AppEvent::Command(Command::UiFocus { next }) => {
-                                if next {
-                                        self.ui.focus_next()
-                                } else {
-                                        self.ui.focus_prev()
-                                }
-                        }
-                        AppEvent::Command(Command::UiActivate) => {
-                                let emitted = self.ui.activate();
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::UiPress { x, y }) => {
-                                let (hit, emitted) = self.ui.press_at(x, y);
-                                info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
-                                Self::publish(emitted);
-                        }
-                        AppEvent::Command(Command::RenderMode(m)) => {
-                                self.mode = m;
-                                info!("render mode {m:?}");
-                        }
-                        AppEvent::Command(Command::UiBack) => {
-                                if !self.ui.navigate_back() {
-                                        info!("ui back: nowhere to go from this page");
-                                }
-                        }
-                        AppEvent::Ui(UiAction::Toggle(i)) => {
-                                let i = usize::from(i) % 3;
-                                self.toggled[i] = !self.toggled[i];
-                                if let Some(id) = self.ui.find(i as u8 + 1) {
-                                        self.ui.set_label(id, if self.toggled[i] { LABEL_ON[i] } else { LABEL_OFF[i] });
-                                }
-                                info!("button {i} toggled {}", if self.toggled[i] { "on" } else { "off" });
-                        }
-                        AppEvent::Ui(UiAction::Item(n)) => info!("list item {n} pressed"),
-                        AppEvent::Command(Command::Stats) => {
-                                info!(
-                                        "display: {} frames, {} skipped, {} chunk timeouts; max draw {} us, max push {} us",
-                                        self.layer.frames(),
-                                        self.layer.skipped,
-                                        self.display.timeouts,
-                                        self.draw_us_max,
-                                        self.push_us_max
-                                );
-                                self.draw_us_max = 0;
-                                self.push_us_max = 0;
-                        }
-                        _ => {}
-                }
-        }
-
-        fn render(&mut self) {
-                if self.mode != RenderMode::Normal || (!self.ui.is_dirty() && !self.ui.is_animating()) {
-                        return;
-                }
-                let now = light_rp2::now_us();
-                let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
-                let done = light_rp2::now_us();
-                if drew || self.ui.is_animating() {
-                        self.draw_us_max = self.draw_us_max.max(done - now);
-                        self.push_started_us = Some(done);
-                }
-        }
-}
-
-impl Module for DisplayMod {
-        fn name(&self) -> &'static str {
-                "display"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                let mut clock = SysClock;
-                self.display.init(&mut clock);
-                self.layer.set_frame_rate(FPS);
-                self.layer.bg = BG;
-                self.ui.fit(self.layer);
-                if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
-                        warn!("the main page did not build: {e:?}");
-                }
-                self.ui.invalidate_all();
-                self.render();
-                info!(
-                        "display up: {}x{} AXS15231B over PIO-QSPI, double-buffered at {} fps, font {}px ({} glyphs, {} bytes)",
-                        DISPLAY_WIDTH,
-                        DISPLAY_HEIGHT,
-                        FPS,
-                        self.font.pixel_size(),
-                        self.font.glyph_count(),
-                        FONT_BLOB.len()
-                );
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                match self.layer.poll(&mut self.display) {
-                        Ok(_) => {}
-                        Err(UpdateError::Timeout) => warn!("display chunk timed out; update abandoned"),
-                        Err(UpdateError::Busy) => unreachable!(),
-                }
-                if let Some(started) = self.push_started_us {
-                        if !self.layer.busy(&self.display) {
-                                self.push_us_max = self.push_us_max.max(light_rp2::now_us() - started);
-                                self.push_started_us = None;
-                        }
-                }
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        self.handle(ev);
-                }
-                self.render();
-                let busy = self.layer.busy(&self.display);
-                PUSHING.store(busy, core::sync::atomic::Ordering::Relaxed);
-                if self.ui.is_dirty() || self.ui.is_animating() || busy { Poll::Busy } else { Poll::Idle }
-        }
-        fn unload(&mut self) {
-                let _ = self.display.wait();
-                info!("display down");
-        }
-}
 
 /// Owns the AXS15231B's touch half: no reset line of its own (the panel's reset is the
 /// chip's), so a wedge is reported, never reset from here.
@@ -678,11 +456,11 @@ impl Module for TouchMod {
                                                 self.touch.bus_errors
                                         );
                                 }
-                                AppEvent::Ui(UiAction::DragConsumed) => self.tracker.suppress(),
+                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
                                 _ => {}
                         }
                 }
-                if TOUCH_HOLD.load(core::sync::atomic::Ordering::Relaxed) && PUSHING.load(core::sync::atomic::Ordering::Relaxed) {
+                if demo::touch_reads_held() {
                         return Poll::Idle;
                 }
                 let now_ms = (light_rp2::now_us() / 1000) as u32;
@@ -787,11 +565,11 @@ impl Module for RtcMod {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Command(Command::Stats) | AppEvent::Command(Command::RtcShow) => {
+                                AppEvent::Command(Command::Stats) | AppEvent::Ext(Ext::RtcShow) => {
                                         busy = true;
                                         self.report();
                                 }
-                                AppEvent::Command(Command::RtcSet(t)) => {
+                                AppEvent::Ext(Ext::RtcSet(t)) => {
                                         busy = true;
                                         match self.rtc.set(&t) {
                                                 Ok(()) => self.report(),
@@ -837,7 +615,7 @@ struct AudioMod {
         /// filled from RAM, not per-sample off the card (which starved it: 33 underruns in
         /// a bench playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
         /// word each -- * 2 bytes). In .bss, like everything the card touches.
-        play_stage: &'static mut [u8; 2560],
+        play_stage: &'static mut [u8; 4096],
         /// Whether the capture buffers were already handed to the transport.
         cap_handed: bool,
         /// The `rec null` bisect: capture runs, everything drains to nowhere.
@@ -1089,35 +867,35 @@ impl Module for AudioMod {
         fn poll(&mut self) -> Poll {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                AppEvent::Command(Command::Tone { hz, ms }) => {
+                                AppEvent::Ext(Ext::Tone { hz, ms }) => {
                                         self.phase_inc = ((u64::from(hz) << 32) / u64::from(AUDIO_SAMPLE_HZ)) as u32;
                                         self.remaining = u32::from(ms) * AUDIO_SAMPLE_HZ / 1000;
                                         info!("tone {hz} Hz for {ms} ms");
                                 }
-                                AppEvent::Command(Command::ToneOff) => {
+                                AppEvent::Ext(Ext::ToneOff) => {
                                         self.remaining = 0;
                                         info!("tone off");
                                 }
-                                AppEvent::Command(Command::Volume(v)) => match self.codec.set_volume(v) {
+                                AppEvent::Ext(Ext::Volume(v)) => match self.codec.set_volume(v) {
                                         Ok(()) => info!("volume {v}"),
                                         Err(e) => warn!("volume set failed: {e:?}"),
                                 },
-                                AppEvent::Command(Command::RecStart(path)) => {
+                                AppEvent::Ext(Ext::RecStart(path)) => {
                                         let path = path;
                                         self.rec_start(path.as_str());
                                 }
-                                AppEvent::Command(Command::RecStop) => self.rec_stop(),
-                                AppEvent::Command(Command::RecStatus) => {
+                                AppEvent::Ext(Ext::RecStop) => self.rec_stop(),
+                                AppEvent::Ext(Ext::RecStatus) => {
                                         match self.rec.as_ref() {
                                                 Some(r) => info!("rec: recording, {} B so far, {} overruns", r.file.size(), self.i2s.cap_overruns),
                                                 None => info!("rec: idle"),
                                         };
                                 }
-                                AppEvent::Command(Command::PlayStart(path)) => {
+                                AppEvent::Ext(Ext::PlayStart(path)) => {
                                         let path = path;
                                         self.play_start(path.as_str());
                                 }
-                                AppEvent::Command(Command::Synth) => {
+                                AppEvent::Ext(Ext::Synth) => {
                                         //   write a clean 2 s 440 Hz sine to SINE.WAV via the
                                         // ordinary fs path, so `play SINE.WAV` exercises the
                                         // file-playback chain with a KNOWN-good signal --
@@ -1157,7 +935,7 @@ impl Module for AudioMod {
                                                 Err(e) => info!("synth: mount failed: {e:?}"),
                                         }
                                 }
-                                AppEvent::Command(Command::MicMon(on)) => {
+                                AppEvent::Ext(Ext::MicMon(on)) => {
                                         //   enable the mic, route ADC->DAC, unmute and drive
                                         // the speaker: the analog front end, alone
                                         let r = if on {
@@ -1171,7 +949,7 @@ impl Module for AudioMod {
                                                 Err(e) => warn!("micmon failed: {e:?}"),
                                         }
                                 }
-                                AppEvent::Command(Command::MicDbg) => {
+                                AppEvent::Ext(Ext::MicDbg) => {
                                         //   enable the mic, start capture (speaker muted, NO
                                         // loopback -- cannot feed back), sample the raw DIN
                                         // pad, then stop. Splits "SDOUT dead" from "PIO
@@ -1198,8 +976,8 @@ impl Module for AudioMod {
                                         info!("micdbg: DIN GPIO high {}/4000, sm pc {}", highs, pc);
                                         info!("micdbg: raw FIFO words {:#010x} {:#010x} {:#010x} {:#010x}", fifo[0], fifo[1], fifo[2], fifo[3]);
                                 }
-                                AppEvent::Command(Command::PlayStop) => self.play_stop(),
-                                AppEvent::Command(Command::PlayStatus) => {
+                                AppEvent::Ext(Ext::PlayStop) => self.play_stop(),
+                                AppEvent::Ext(Ext::PlayStatus) => {
                                         match self.play.as_ref() {
                                                 Some(p) => info!("play: at {} of {} B", p.file.pos(), p.data_end),
                                                 None => info!("play: idle"),
@@ -1367,7 +1145,7 @@ impl Module for BoardMod {
                                         let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
                                         info!("battery: {mv} mV (raw {raw})");
                                 }
-                                AppEvent::Command(Command::Psram) => {
+                                AppEvent::Ext(Ext::Psram) => {
                                         busy = true;
                                         let size = unsafe { light_board_psram_size() };
                                         if size == 0 {
@@ -1377,7 +1155,7 @@ impl Module for BoardMod {
                                                 info!("psram: {} KB detected; {} words tested, {} mismatches", size / 1024, checked, bad);
                                         }
                                 }
-                                AppEvent::Command(Command::Sd) => {
+                                AppEvent::Ext(Ext::Sd) => {
                                         busy = true;
                                         let mut clock = SysClock;
                                         let mut sd = self.sd.borrow_mut();
@@ -1397,7 +1175,7 @@ impl Module for BoardMod {
                                                 Err(e) => info!("sd: {e:?}"),
                                         }
                                 }
-                                AppEvent::Command(Command::Fs { op, path, arg }) => {
+                                AppEvent::Ext(Ext::Fs { op, path, arg }) => {
                                         busy = true;
                                         fs_command(&mut self.sd.borrow_mut(), op, path.as_str(), arg.as_str());
                                 }
@@ -1427,56 +1205,29 @@ impl Module for BoardMod {
         }
 }
 
-struct ConsoleMod {
-        reader: LineReader<96>,
-}
-
-impl ConsoleMod {
-        fn dispatch(&mut self, line: &str) -> Poll {
-                match CLI.dispatch(line) {
-                        Outcome::Quiet => Poll::Idle,
-                        Outcome::Shutdown => Poll::Shutdown,
-                        Outcome::Event(c) => {
-                                if let Command::Stats = c {
-                                        info!("console: {} bytes dropped, {} lines dropped; bus: {} refused, {} backlog", CONSOLE_BYTES.dropped(), self.reader.dropped_lines, EVENTS.refused(), EVENTS.backlog());
-                                }
-                                if let Err(e) = EVENTS.publish(AppEvent::Command(c)) {
-                                        warn!("event bus full; dropped {e:?}");
-                                }
-                                Poll::Busy
-                        }
-                        Outcome::Handled => Poll::Busy,
-                }
-        }
-}
-
-fn parse_stats(_w: &mut Words) -> Parsed<Command> {
-        Parsed::Event(Command::Stats)
-}
-
-fn parse_play(w: &mut Words) -> Parsed<Command> {
+fn parse_play(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                None => Parsed::Event(Command::PlayStatus),
-                Some("stop") => Parsed::Event(Command::PlayStop),
+                None => Parsed::Event(DemoEvent::Ext(Ext::PlayStatus)),
+                Some("stop") => Parsed::Event(DemoEvent::Ext(Ext::PlayStop)),
                 Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(Command::PlayStart(p)),
+                        Some(p) => Parsed::Event(DemoEvent::Ext(Ext::PlayStart(p))),
                         None => Parsed::Usage,
                 },
         }
 }
 
-fn parse_rec(w: &mut Words) -> Parsed<Command> {
+fn parse_rec(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                None => Parsed::Event(Command::RecStatus),
-                Some("stop") => Parsed::Event(Command::RecStop),
+                None => Parsed::Event(DemoEvent::Ext(Ext::RecStatus)),
+                Some("stop") => Parsed::Event(DemoEvent::Ext(Ext::RecStop)),
                 Some(name) => match FsPath::new(name) {
-                        Some(p) => Parsed::Event(Command::RecStart(p)),
+                        Some(p) => Parsed::Event(DemoEvent::Ext(Ext::RecStart(p))),
                         None => Parsed::Usage,
                 },
         }
 }
 
-fn parse_fs(w: &mut Words) -> Parsed<Command> {
+fn parse_fs(w: &mut Words) -> Parsed<AppEvent> {
         let op = match w.next() {
                 Some("info") | None => FsOp::Info,
                 Some("ls") => FsOp::Ls,
@@ -1498,53 +1249,7 @@ fn parse_fs(w: &mut Words) -> Parsed<Command> {
                 return Parsed::Usage;
         }
         match (FsPath::new(path), FsPath::new(arg)) {
-                (Some(path), Some(arg)) => Parsed::Event(Command::Fs { op, path, arg }),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_backlight(w: &mut Words) -> Parsed<Command> {
-        match w.next().and_then(|s| s.parse::<u16>().ok()) {
-                Some(level) if level <= BACKLIGHT_LEVEL_MAX => Parsed::Event(Command::Backlight(level)),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_ui(w: &mut Words) -> Parsed<Command> {
-        match (w.next(), w.next(), w.next()) {
-                (Some("focus"), Some("next"), _) => Parsed::Event(Command::UiFocus { next: true }),
-                (Some("focus"), Some("prev"), _) => Parsed::Event(Command::UiFocus { next: false }),
-                (Some("activate"), _, _) => Parsed::Event(Command::UiActivate),
-                (Some("press"), Some(x), Some(y)) => match (x.parse(), y.parse()) {
-                        (Ok(x), Ok(y)) => Parsed::Event(Command::UiPress { x, y }),
-                        _ => Parsed::Usage,
-                },
-                (Some("back"), _, _) => Parsed::Event(Command::UiBack),
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_touch(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("hold") => {
-                        TOUCH_HOLD.store(true, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads held while the panel is being pushed");
-                        Parsed::Done
-                }
-                Some("free") => {
-                        TOUCH_HOLD.store(false, core::sync::atomic::Ordering::Relaxed);
-                        info!("touch: reads not held");
-                        Parsed::Done
-                }
-                _ => Parsed::Usage,
-        }
-}
-
-fn parse_render(w: &mut Words) -> Parsed<Command> {
-        match w.next() {
-                Some("pause") => Parsed::Event(Command::RenderMode(RenderMode::Paused)),
-                Some("resume") => Parsed::Event(Command::RenderMode(RenderMode::Normal)),
-                Some("repush") => Parsed::Event(Command::RenderMode(RenderMode::Repush)),
+                (Some(path), Some(arg)) => Parsed::Event(DemoEvent::Ext(Ext::Fs { op, path, arg })),
                 _ => Parsed::Usage,
         }
 }
@@ -1572,9 +1277,9 @@ fn weekday(y: u16, m: u8, d: u8) -> u8 {
         ((h + 6) % 7) as u8
 }
 
-fn parse_rtc(w: &mut Words) -> Parsed<Command> {
+fn parse_rtc(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                None => Parsed::Event(Command::RtcShow),
+                None => Parsed::Event(DemoEvent::Ext(Ext::RtcShow)),
                 Some("set") => {
                         let (Some(date), Some(time)) = (w.next(), w.next()) else { return Parsed::Usage };
                         let Some((year, month, day)) = split3(date, '-') else { return Parsed::Usage };
@@ -1583,7 +1288,7 @@ fn parse_rtc(w: &mut Words) -> Parsed<Command> {
                         if !valid {
                                 return Parsed::Usage;
                         }
-                        Parsed::Event(Command::RtcSet(Datetime {
+                        Parsed::Event(DemoEvent::Ext(Ext::RtcSet(Datetime {
                                 year,
                                 month,
                                 day,
@@ -1591,15 +1296,15 @@ fn parse_rtc(w: &mut Words) -> Parsed<Command> {
                                 hour: hour as u8,
                                 minute: minute as u8,
                                 second: second as u8,
-                        }))
+                        })))
                 }
                 _ => Parsed::Usage,
         }
 }
 
-fn parse_tone(w: &mut Words) -> Parsed<Command> {
+fn parse_tone(w: &mut Words) -> Parsed<AppEvent> {
         match w.next() {
-                Some("off") => Parsed::Event(Command::ToneOff),
+                Some("off") => Parsed::Event(DemoEvent::Ext(Ext::ToneOff)),
                 Some(hz) => {
                         let Ok(hz) = hz.parse::<u16>() else { return Parsed::Usage };
                         if !(20..=10_000).contains(&hz) {
@@ -1612,56 +1317,33 @@ fn parse_tone(w: &mut Words) -> Parsed<Command> {
                                         _ => return Parsed::Usage,
                                 },
                         };
-                        Parsed::Event(Command::Tone { hz, ms })
+                        Parsed::Event(DemoEvent::Ext(Ext::Tone { hz, ms }))
                 }
                 None => Parsed::Usage,
         }
 }
 
-fn parse_volume(w: &mut Words) -> Parsed<Command> {
+fn parse_volume(w: &mut Words) -> Parsed<AppEvent> {
         match w.next().and_then(|s| s.parse::<u8>().ok()) {
-                Some(v) if v <= 100 => Parsed::Event(Command::Volume(v)),
+                Some(v) if v <= 100 => Parsed::Event(DemoEvent::Ext(Ext::Volume(v))),
                 _ => Parsed::Usage,
         }
 }
 
-static COMMANDS: &[CliCommand<Command>] = &[
-        CliCommand { name: "stats", usage: "stats", parse: parse_stats },
+static COMMANDS: &[CliCommand<AppEvent>] = &demo_commands![Ext;
         CliCommand { name: "rtc", usage: "rtc | rtc set YYYY-MM-DD HH:MM:SS", parse: parse_rtc },
         CliCommand { name: "tone", usage: "tone HZ [MS] | tone off", parse: parse_tone },
         CliCommand { name: "volume", usage: "volume 0..100", parse: parse_volume },
-        CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(Command::Psram) },
-        CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(Command::Sd) },
+        CliCommand { name: "psram", usage: "psram", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Psram)) },
+        CliCommand { name: "sd", usage: "sd", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Sd)) },
         CliCommand { name: "fs", usage: "fs info|ls [P]|cat P|write P TEXT|rm P|mv A B|mkdir P|trunc P N", parse: parse_fs },
         CliCommand { name: "rec", usage: "rec NAME.WAV | rec stop | rec", parse: parse_rec },
         CliCommand { name: "play", usage: "play NAME.WAV | play stop | play", parse: parse_play },
-        CliCommand { name: "micmon", usage: "micmon on|off", parse: |w| match w.next() { Some("on") => Parsed::Event(Command::MicMon(true)), Some("off") => Parsed::Event(Command::MicMon(false)), _ => Parsed::Usage } },
-        CliCommand { name: "micdbg", usage: "micdbg", parse: |_| Parsed::Event(Command::MicDbg) },
-        CliCommand { name: "synth", usage: "synth", parse: |_| Parsed::Event(Command::Synth) },
-        CliCommand { name: "backlight", usage: "backlight 0..1000", parse: parse_backlight },
-        CliCommand { name: "ui", usage: "ui focus next|prev | ui activate | ui press X Y | ui back", parse: parse_ui },
-        CliCommand { name: "touch", usage: "touch hold|free", parse: parse_touch },
-        CliCommand { name: "render", usage: "render pause|resume|repush", parse: parse_render },
+        CliCommand { name: "micmon", usage: "micmon on|off", parse: |w| match w.next() { Some("on") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(true))), Some("off") => Parsed::Event(DemoEvent::Ext(Ext::MicMon(false))), _ => Parsed::Usage } },
+        CliCommand { name: "micdbg", usage: "micdbg", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::MicDbg)) },
+        CliCommand { name: "synth", usage: "synth", parse: |_| Parsed::Event(DemoEvent::Ext(Ext::Synth)) },
 ];
-static CLI: Cli<Command> = Cli::new(COMMANDS);
-
-impl Module for ConsoleMod {
-        fn name(&self) -> &'static str {
-                "console"
-        }
-        fn poll(&mut self) -> Poll {
-                let mut result = Poll::Idle;
-                while let Some(b) = CONSOLE_BYTES.pop() {
-                        if let Some(line) = self.reader.push(b) {
-                                match self.dispatch(line.as_str()) {
-                                        Poll::Shutdown => return Poll::Shutdown,
-                                        p => result = p,
-                                }
-                        }
-                }
-                result
-        }
-}
+static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
 // --- entry ----------------------------------------------------------------------------------
 
@@ -1715,7 +1397,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 rec: unsafe { &mut *REC_SLOT.0.get() },
                 play: unsafe { &mut *PLAY_SLOT.0.get() },
                 play_stage: {
-                        static STAGE: ConstStaticCell<[u8; 2560]> = ConstStaticCell::new([0; 2560]);
+                        //   STREAM_WORDS * 2: one full mono refill. 2560 was the size for
+                        // the ORIGINAL ring; when the underrun fix grew STREAM_WORDS to
+                        // 2048 the dictaphone's copy was resized and this one was not, and
+                        // a stage smaller than one refill reads short and declares the
+                        // playback finished on its first buffer
+                        static STAGE: ConstStaticCell<[u8; 4096]> = ConstStaticCell::new([0; 4096]);
                         STAGE.take()
                 },
                 cap_handed: false,
@@ -1723,28 +1410,42 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 null_bytes: 0,
         };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
-        static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
+        static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
-        let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
-        layer.bg = BG;
+        let ui: &'static mut Ui<AppEvent, { demo::UI_WIDGETS }> = UI.take();
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
-        static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
-        let display_mod = DISPLAY_MOD.init(DisplayMod {
+        type BoardDisplayMod = DisplayMod<Axs15231b<PioQspiDisplayBus>, SysClock, Ext, Hook>;
+        static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
+        let display_mod = DISPLAY_MOD.init(DisplayMod::new(
                 display,
                 layer,
                 font,
                 ui,
-                events: EVENTS.subscribe().expect("subscriber slot"),
-                toggled: [false; 3],
-                mode: RenderMode::Normal,
-                drag_reported: false,
-                draw_us_max: 0,
-                push_us_max: 0,
-                push_started_us: None,
-        });
+                SysClock,
+                &EVENTS,
+                DisplayConfig {
+                        width: DISPLAY_WIDTH,
+                        height: DISPLAY_HEIGHT,
+                        fps: FPS,
+                        desc: "AXS15231B over PIO-QSPI, double-buffered",
+                        repush: true,
+                        draw_over: false,
+                        rotation_map,
+                        main_page: &PAGE_MAIN,
+                },
+                Hook,
+        ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
         let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
-        let mut console_mod = ConsoleMod { reader: LineReader::new() };
+        let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<7> = Runtime::new();
         rt.add(&mut board_mod).expect("capacity");
