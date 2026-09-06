@@ -1,7 +1,7 @@
 //! The `critical_section` implementation for RP2350: interrupts off on this core AND a hardware
 //! spinlock held against the other core.
 //!
-//! This is the primitive mk3 had three divergent versions of (lock-free CAS on host, pico-sdk
+//! This is the primitive the predecessor C framework had three divergent versions of (lock-free CAS on host, pico-sdk
 //! `critical_section_t` on RP2, a saved PRIMASK on STM32 that was silently not re-entrant).
 //! Here there is exactly one, the portable code sees only `critical_section::with`, and nesting
 //! is handled: a section entered while interrupts are already disabled is treated as nested and

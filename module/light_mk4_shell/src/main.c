@@ -6,7 +6,7 @@
 // handful of functions below; keeping them in one file makes the size of that surface -- one of
 // the things the spike measures -- visible.
 //
-// USB LIVES ON CORE 1, the arrangement mk3 arrived at for this board: tusb_init() and tud_task()
+// USB LIVES ON CORE 1, the arrangement this board's bring-up settled on: tusb_init() and tud_task()
 // here, on this core and no other, because dcd_int_enable() enables USBCTRL_IRQ on the CALLING
 // core and TinyUSB guards its queues with per-core IRQ-disable sections that are not cross-core
 // safe. Every stdio write and read therefore happens from core 1 -- the log drain and the console
@@ -80,7 +80,7 @@ static void __attribute__((noreturn)) shell_panic_finish(void)
 #endif
         }
 #ifdef LIGHT_SHELL_USB_HOST
-        //   the host-role board is on an SWD dock and its USB port is a host port: BOOTSEL would
+        //   the host-role board is flashed over SWD and its USB port is a host port: BOOTSEL would
         // be invisible and would wipe the message. Halt where a debugger can read it
         __breakpoint();
         while (true)
@@ -112,8 +112,8 @@ void __attribute__((noreturn)) light_shell_panic_sdk(const char *fmt, ...)
 
 #ifdef LIGHT_SHELL_USB_HOST
 //   THE HOST ROLE, for crossfire: the native USB port is a HOST -- USB-MIDI instruments plug
-// into it -- so there is no CDC console, and stdio is the UART (through the debug probe on the
-// po13 rig). The whole host stack runs on CORE 0, driven from the Rust runtime through the three
+// into it -- so there is no CDC console, and stdio is the UART (carried by the debug probe when
+// one is attached). The whole host stack runs on CORE 0, driven from the Rust runtime through the three
 // calls below: TinyUSB guards its queues with per-core IRQ-disable sections that are not
 // cross-core safe, dcd/hcd_int_enable() enables the IRQ on the CALLING core, and the class
 // callbacks (tuh_midi_mount_cb, implemented on the Rust side) then run in the same context as
@@ -134,7 +134,7 @@ void light_shell_usb_host_task(void)
 }
 
 //   the RP2 native host controller can leave stale buffer-control state behind across a
-// disconnect (hathach/tinyusb#3533), which panics the next enumeration; mk3's answer is a full
+// disconnect (hathach/tinyusb#3533), which panics the next enumeration; the answer is a full
 // teardown and re-init once the root port is EMPTY, from the main loop and never from inside a
 // callback the stack is still unwinding. The settle delay matches TinyUSB's own dynamic_switch
 // example

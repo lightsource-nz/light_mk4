@@ -41,9 +41,9 @@ members = [
 [patch.crates-io]
 freetype-sys = { path = "tools/vendor/freetype-sys" }
 
-#   one version for every crate in the workspace: they are released together, as mk3's groups
-# were, and the git tag light-release.ps1 mints is the version of record. This literal has to
-# agree with it -- cargo cannot read a tag -- so a release bumps it in the same commit
+#   one version for every crate in the workspace: they are released together, and the git tag
+# light-release.ps1 mints is the version of record. This literal has to agree with it --
+# cargo cannot read a tag -- so a release bumps it in the same commit
 [workspace.package]
 version = "0.1.0"
 edition = "2024"

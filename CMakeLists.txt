@@ -5,10 +5,10 @@ cmake_minimum_required(VERSION 3.25)
 # Rust staticlib the firmware links. The Rust crates themselves are a plain cargo workspace and
 # are tested with cargo directly on the host (see the HOST branch at the bottom).
 #
-#   mk3 is used for exactly two things here, neither of them framework code: its preinit
-# resolves PICO_SDK_PATH / PICO_PLATFORM / PICO_BOARD from the LIGHT_* preset variables the same
-# way every sibling project does, and its presets file supplies the board configurations. The
-# spike takes no mk3 C code.
+#   the light framework checkout is used for exactly two things here, neither of them framework
+# code: its preinit resolves PICO_SDK_PATH / PICO_PLATFORM / PICO_BOARD from the LIGHT_* preset
+# variables the same way every sibling project does, and its presets file supplies the board
+# configurations. The spike takes none of its C code.
 if(DEFINED ENV{LIGHT_PATH} AND (NOT LIGHT_PATH))
         set(LIGHT_PATH "$ENV{LIGHT_PATH}" CACHE PATH "path to the light framework project")
 endif()
@@ -61,8 +61,8 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
-        # cross build -- Corrosion's hostbuild is what mk3 did with an ExternalProject for the C
-        # crush, without the second CMake tree
+        # cross build -- Corrosion's hostbuild does what the C implementation this replaces did
+        # with an ExternalProject for its crush, without the second CMake tree
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
                 CRATES crush
@@ -74,10 +74,10 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         if(LIGHT_SYSTEM STREQUAL "PICO_SDK")
                 add_subdirectory(module/light_mk4_shell)
                 #   module/<target>/ because that is where light-flash.ps1 expects <target>.uf2
-                # -- the layout every mk3 project shares, and worth matching rather than forking
-                # the script
+                # -- the layout every sibling project shares, and worth matching rather than
+                # forking the script
                 #   the RP2 port crate is one source for both chips behind a feature; the
-                # po13 demo runs on either Pico and forwards it, so the tree's platform
+                # pico2 demo runs on either Pico and forwards it, so the tree's platform
                 # settles it here. The other apps name their chip themselves: a hardware
                 # module is one tangible board (crossfire_pico IS an RP2040), and the
                 # touch169 app runs nowhere but the RP2350
@@ -99,10 +99,10 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_4")
                         add_subdirectory(module/light_mk4_touch4)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
-                        #   two applications share the Picos: the po13 demo, and crossfire
+                        #   two applications share the Picos: the pico2 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
                         # configure the shell differently -- chosen by the preset
-                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the po13 demo) or crossfire")
+                        set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the pico2 demo) or crossfire")
                         if(LIGHT_MK4_PICO2_APP STREQUAL "crossfire")
                                 #   the app is one portable crate; the module is the
                                 # TANGIBLE crossfire this tree's chip names

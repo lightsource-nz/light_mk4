@@ -1,5 +1,5 @@
 //! Inertial sensing: axis mapping into the device frame, orientation from gravity, and the
-//! polling throttle -- mk3's `light_imu`, ported.
+//! polling throttle -- ported from the predecessor C framework.
 //!
 //! Readings are in engineering units (milli-g, milli-degrees per second), integer throughout.
 //! The chip reports its own axes; the BOARD's axis map rotates them into the device frame --

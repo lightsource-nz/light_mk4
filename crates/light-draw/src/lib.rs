@@ -1,4 +1,4 @@
-//! The rasteriser: mk3's `light_draw`, ported.
+//! The rasteriser, ported from the predecessor C framework.
 //!
 //! A [`Canvas`] draws in LOGICAL coordinates onto a PHYSICAL buffer through a 2x3 integer
 //! affine transform composed from a rotation and a flip -- so an application can keep drawing

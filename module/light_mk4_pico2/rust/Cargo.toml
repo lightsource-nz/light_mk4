@@ -3,7 +3,7 @@ name = "light_app_pico2"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the Rust half of the bare Pico 2 spike firmware: LED and console, for the SWD rig"
+description = "the bare Pico 2 demo firmware: the widget demo on a Waveshare Pico-OLED-1.3 display board, with the LED and console"
 
 [lib]
 crate-type = ["staticlib"]

@@ -2,9 +2,9 @@
 //! subscriber, in order.
 //!
 //! This is assessment decision 6 -- "the command tree is the event bus, make it so on purpose".
-//! In mk3, light_ui routed UI events through the CLI's line queue and the boot command was a
-//! baked string; in the spike, modules reached each other through per-consumer static mailboxes
-//! that had to know their consumer. Here the console parses a line into an event and publishes
+//! In the predecessor C framework, UI events were routed through the CLI's line queue and the
+//! boot command was a baked string; in the spike, modules reached each other through
+//! per-consumer static mailboxes that had to know their consumer. Here the console parses a line into an event and publishes
 //! it, a touch driver publishes the same way, a test injects events directly, and a module
 //! subscribes and matches on what it cares about.
 //!

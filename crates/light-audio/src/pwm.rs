@@ -1,18 +1,18 @@
 //! PCM-to-duty conversion for PWM audio: the portable half of the framework's second
-//! audio provider, ported from mk3's `light_audio`. A passive piezo or buzzer on a
+//! audio provider, ported from the predecessor C framework. A passive piezo or buzzer on a
 //! PWM-capable pin plays 8-bit unsigned duty values at a supersonic carrier; this module
 //! is the ONE place a source sample format is interpreted on the way there. The transport
 //! -- the carrier, the pacing DMA, the tone mode -- is a port crate's business
 //! (`light_rp2::pwm_audio`).
 //!
-//! The load-bearing property, kept from mk3 with its test suite: silence is MID-SCALE
+//! The load-bearing property, kept from the original along with its test suite: silence is MID-SCALE
 //! ([`DUTY_SILENCE`]), and volume attenuates towards it, never towards zero. Attenuating
 //! towards zero slides the output's DC level with the volume, and a piezo renders a DC
 //! step as an audible click. Every way of getting this arithmetic wrong is audible and
 //! none of them are visible in the code -- which is why the tests below exist (several
-//! were added under mk3 only because a mutant survived the first version).
+//! were added originally only because a mutant survived the first version).
 
-/// Volume is per-mille, `0..=1000` -- mk3's scale, kept so the tested arithmetic ports
+/// Volume is per-mille, `0..=1000` -- the original scale, kept so the tested arithmetic ports
 /// verbatim. (The ES8311 codec's `set_volume` runs 0..100 because that is a register
 /// mapping; this is a sample-domain attenuation, a different thing.)
 pub const VOLUME_MAX: u16 = 1000;

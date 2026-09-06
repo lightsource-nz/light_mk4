@@ -1,8 +1,8 @@
 //! Board wiring for crossfire on a stock Pico (RP2040), the product board: the LED, and --
-//! when the board sits in the po13
-//! dock -- the Waveshare Pico-OLED-1.3 (SH1107, 64x128 portrait glass, 1 bpp) on SPI1 as the
-//! status display, pins from mk3's `light_display_po13.h`. The OLED and keys are the bench
-//! rig's.
+//! when a Waveshare Pico-OLED-1.3 display board is fitted -- its panel (SH1107, 64x128
+//! portrait glass, 1 bpp) on SPI1 as the status display, on the Pico-OLED-1.3's pins as it
+//! plugs onto the Pico header. The OLED and its keys are optional equipment, not part of
+//! the product board.
 //!
 //! This lives with the HARDWARE MODULE, not in the port crate or the application:
 //! `light-rp2` knows the chip and nothing about what anyone soldered to it, and
@@ -27,9 +27,9 @@ pub const PIN_OLED_RESET: usize = 12;
 /// The glass is physically portrait: 64 wide, 128 tall.
 pub const OLED_WIDTH: u16 = 64;
 pub const OLED_HEIGHT: u16 = 128;
-/// The controller's RAM offset the panel sits at (0xD3), mk3's verified value.
+/// The controller's RAM offset the panel sits at (0xD3), verified on the glass.
 pub const OLED_DISPLAY_OFFSET: u8 = 96;
-/// mk3's `SPI_BAUDRATE` for the OLED rigs; this panel was never re-clocked.
+/// The verified clock for these small OLED panels; this panel was never re-clocked.
 pub const OLED_SPI_HZ: u32 = 10_000_000;
 /// The display bus's DMA channel: the top of the RP2040's 12, where pico-sdk's
 /// dma_claim_unused_channel (counting up from 0) will not reach -- and the top is a CHIP

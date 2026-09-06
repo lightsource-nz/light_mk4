@@ -8,7 +8,7 @@
 //! playing), one big record/stop button, play-last, and a recordings list -- the newest
 //! [`LIST_ROWS`] takes, tap to play. Recordings are auto-named `REC_NNNN.WAV` (8.3: the
 //! filesystem writes short names only) and land as ordinary mono 16-bit WAV any desktop
-//! player opens. The full bench console (`rec`/`play`/`fs`/`tone`/`micdbg`/...) stays: it
+//! player opens. The full diagnostic console (`rec`/`play`/`fs`/`tone`/`micdbg`/...) stays: it
 //! is the same machinery the buttons drive.
 
 #![no_std]
@@ -953,7 +953,7 @@ struct AudioMod {
         play: &'static mut Option<Playback>,
         /// One stream-buffer's worth of file bytes, bulk-read per refill so the DAC ring is
         /// filled from RAM, not per-sample off the card (which starved it: 33 underruns in
-        /// a bench playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
+        /// a measured playback). Sized for a full mono buffer (STREAM_WORDS frames -- one
         /// word each -- * 2 bytes). In .bss, like everything the card touches.
         play_stage: &'static mut [u8; 4096],
         /// Whether the capture buffers were already handed to the transport.
@@ -1150,8 +1150,8 @@ impl AudioMod {
                         return;
                 }
                 info!("rec: header written");
-                //   retried: the first attempt right after the SD burst has timed out on
-                // the bench where a later one succeeds
+                //   retried: the first attempt right after the SD burst has been seen to
+                // time out where a later one succeeds
                 let mut mic = Err(light_core::hal::I2cError::Timeout);
                 for attempt in 1..=3 {
                         mic = self.codec.mic_config(self.mic14, self.mic17);

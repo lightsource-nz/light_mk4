@@ -1,6 +1,7 @@
 //! One PWM output on a pin, through the pac: a backlight, a buzzer.
 //!
-//! mk3's `light_backlight_pwm`, whose one finding is kept: the carrier sits around 30 kHz --
+//! Ported from the predecessor C framework's backlight driver, whose one finding is kept: the
+//! carrier sits around 30 kHz --
 //! above anything the eye or a camera shutter picks up as flicker, AND above the audible range,
 //! unlike the 8-9 kHz it once ran at, which was squarely audible as an LED-driver whine on one
 //! board's LCD backlight. Resolution comes from the wrap alone, not from the divider.

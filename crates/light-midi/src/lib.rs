@@ -1,6 +1,6 @@
-//! USB-MIDI forwarding: crossfire's engine, ported.
+//! USB-MIDI forwarding: the forwarder engine, ported from the predecessor C framework.
 //!
-//! One rule, mk3's: incoming data on cable C of any mounted device is forwarded to cable C of
+//! One rule: incoming data on cable C of any mounted device is forwarded to cable C of
 //! every other mounted device that has a cable C. Devices are slots indexed the way the host
 //! stack indexes its MIDI interfaces; what sits behind a slot -- TinyUSB, an SPI-linked peer
 //! board, a test mock -- is a [`Transport`], and the engine sees only 4-byte USB-MIDI event
@@ -68,7 +68,7 @@ pub enum MidiEvent {
 
 /// A USB host stack driving MIDI devices: the packet path plus the lifecycle around it.
 /// What lets an application own its forwarding loop without naming the stack -- the port
-/// crate implements this for the real controller, a test mock for the bench.
+/// crate implements this for the real controller, a test mock for the host tests.
 pub trait Host: Transport {
         /// Run the stack: enumeration, transfers, callbacks. Every pass.
         fn task(&mut self);

@@ -1,14 +1,15 @@
 //! crush: font-crusher in Rust.
 //!
-//! The command surface is mk3's -- `font add`, `display add`, `render new`, `console` -- because
-//! that is what `crush_add_font_target()` generates, what the 93 acceptance tests exercise, and
-//! what people have in their shell history. What changes is the OUTPUT: a render now produces an
-//! LGF blob (see `light-font`) beside the C pair mk3's consumers still link, so the two stacks can
-//! share one crush during the migration.
+//! The command surface is kept compatible with the C implementation this replaces -- `font add`,
+//! `display add`, `render new`, `console` -- because that is what `crush_add_font_target()`
+//! generates, what the 93 acceptance tests exercise, and what people have in their shell
+//! history. What changes is the OUTPUT: a render now produces an LGF blob (see `light-font`)
+//! beside the C pair existing consumers still link, so the two stacks can share one crush
+//! during the migration.
 //!
 //! The context is a directory of JSON files, `.crush/` in the working directory (or
-//! `$CRUSH_CONTEXT`), with the same file names and top-level shape as mk3's so an existing
-//! context template still seeds it.
+//! `$CRUSH_CONTEXT`), with the same file names and top-level shape as the C implementation's so
+//! an existing context template still seeds it.
 
 mod console;
 mod context;

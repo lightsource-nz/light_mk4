@@ -1,5 +1,5 @@
-//! SH1107 OLED controller over a 4-wire SPI display bus, ported from mk3's
-//! `light_display_sh1107` with its addressing lessons: vertical addressing mode, one column per
+//! SH1107 OLED controller over a 4-wire SPI display bus, ported from the predecessor C
+//! framework with its addressing lessons: vertical addressing mode, one column per
 //! chunk, the page address re-armed per column and the column address always sent as both
 //! nibbles, low first. The source buffer is `PixelFormat::Mono1` (row-major, leftmost pixel in
 //! bit 0); the controller wants column-major bytes of eight vertically stacked pixels, so each
@@ -52,7 +52,7 @@ impl<B: SpiDisplayBus> Sh1107<B> {
                 Self { bus, n_pages: 0, n_columns: 0, display_offset: 0, page_buf: [0; MAX_PAGES], region: Region::new(0, 0, 0, 0) }
         }
 
-        /// The Pico-OLED-1.3 sits at offset 96 (mk3's setting, verified on the panel).
+        /// The Pico-OLED-1.3 sits at offset 96 (verified on the panel).
         pub fn set_display_offset(&mut self, offset: u8) {
                 self.display_offset = offset;
         }
@@ -85,7 +85,7 @@ impl<B: SpiDisplayBus> Sh1107<B> {
 impl<B: SpiDisplayBus> DisplayDriver for Sh1107<B> {
         fn init(&mut self, clock: &mut dyn Clock, width: u16, height: u16) {
                 // physical column = buffer x; page = group of 8 buffer rows. width/height are
-                // the panel's real orientation (the po13 is 64 wide x 128 tall)
+                // the panel's real orientation (the Pico-OLED-1.3 is 64 wide x 128 tall)
                 self.n_columns = width;
                 self.n_pages = (height as usize).div_ceil(8).min(MAX_PAGES);
                 self.bus.reset_pulse(clock);

@@ -2,16 +2,16 @@
 //! `light_core::hal`, and the counterpart of `light-rp2`. Board wiring -- which pins carry
 //! what on whichever board the chip sits on -- lives with the application, not here.
 //!
-//! The C shell (`module/light_mk4_shell_cmsis`) owns what mk3's chip port owned: the CMSIS
+//! The C shell (`module/light_mk4_shell_cmsis`) owns what a chip port owns: the CMSIS
 //! startup file and linker script, the clock tree (400 MHz off the crystal, with PLL1's Q output
 //! for the SPI kernel clock and PLL3 at 48 MHz for USB), the caches, and the console -- ITM and
 //! USART1 both, since they fail in opposite ways. This crate owns the peripherals the drivers
-//! talk to, through the registers directly. mk3's finding that matters most is carried in
+//! talk to, through the registers directly. The finding that matters most is carried in
 //! [`spi::Spi4Display`]: the H7's SPI is a different generation from the F4's, with a transfer
 //! size programmed per transaction and a FIFO to prime before the start.
 //!
 //! No pac: the handful of registers this port touches are written against the reference
-//! manual, as mk3's C was, which keeps the crate small and its failures legible.
+//! manual, as its C predecessor was, which keeps the crate small and its failures legible.
 
 #![no_std]
 

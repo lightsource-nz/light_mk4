@@ -1,7 +1,7 @@
 #   the C shell for the bare-CMSIS STM32 targets: what light_mk4_shell is for the RP2 boards,
 # minus an SDK. The chip's CMSIS device files and core headers come from the framework's vendored
-# checkouts under lib/ -- the one thing mk3 is used for besides its presets, and it is not
-# framework code.
+# checkouts under lib/ -- the one thing the framework checkout is used for besides its presets,
+# and it is not framework code.
 #
 #   light_mk4_shell_cmsis_configure(<target> CHIP <stm32h743|stm32f411>): sources, include
 # paths, the chip's flags, its linker script and the packaging step, for an executable that links
@@ -17,7 +17,7 @@ if(NOT EXISTS ${LIGHT_MK4_CMSIS_CORE}/core_cm7.h)
         message(FATAL_ERROR "CMSIS sources are missing under ${LIGHT_PATH}/lib: run git -C ${LIGHT_PATH} submodule update --init --recursive")
 endif()
 
-#   the H743 linker script is mk3's template with its two variables settled here: .data/.bss/heap
+#   the H743 linker script is the framework's template with its two variables settled here: .data/.bss/heap
 # in AXI SRAM, the DMA-reachable choice, and the stack at the top of DTCM. The F411's is plain
 set(LIGHT_H743_DATA_REGION AXI)
 set(LIGHT_H743_STACK_ASSERT "ASSERT(_Min_Stack_Size <= LENGTH(DTCM), \"stack does not fit in DTCM\")")

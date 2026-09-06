@@ -6,7 +6,7 @@ license.workspace = true
 description = "portable, no_std core of the light framework: the port interface, the module runtime, logging, events"
 
 [dependencies]
-#   fixed-capacity containers with no allocator: every mk3 "MAX_*" array becomes one of these,
+#   fixed-capacity containers with no allocator: every fixed "MAX_*" array becomes one of these,
 # with overflow as a value the caller must handle instead of a silent drop or a deadlock
 heapless = "0.8"
 #   the one concurrency primitive the core asks of a port. The port crate supplies the

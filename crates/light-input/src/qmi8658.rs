@@ -1,9 +1,9 @@
-//! QST QMI8658C 6-axis IMU over I2C, ported from mk3's `light_imu_qmi8658`.
+//! QST QMI8658C 6-axis IMU over I2C, ported from the predecessor C framework's driver.
 //!
 //! PROVENANCE: the register map is cross-referenced from open-source drivers, not a primary
 //! datasheet -- the same footing the CST816T driver started on, where the vertical gesture
 //! codes turned out inverted. The WHO_AM_I read at init is the first real evidence either way;
-//! mk3 confirmed this configuration and the touch169's axis map on hardware.
+//! this configuration and the touch169's axis map were confirmed on hardware.
 
 use light_core::hal::{I2cBus, I2cError};
 use crate::imu::{scale_sample, ImuDriver, Sample, AXES};

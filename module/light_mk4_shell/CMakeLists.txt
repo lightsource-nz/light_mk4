@@ -8,7 +8,7 @@
 # UART. The application supplies tusb_config.h on its include path either way.
 function(light_mk4_shell_configure TARGET)
         cmake_parse_arguments(SHELL "USB_HOST" "" "" ${ARGN})
-        #   USB on core 1 -- see src/main.c. These are the knobs mk3's touch169 build settled on:
+        #   USB on core 1 -- see src/main.c. These are the knobs the touch169 bring-up settled on:
         target_compile_definitions(${TARGET} PRIVATE
                 #   the shell calls tusb_init() on core 1 itself, and pumps tud_task() there;
                 # either of these left on would have the SDK do it from core 0
@@ -44,15 +44,16 @@ function(light_mk4_shell_configure TARGET)
         if(SHELL_USB_HOST)
                 target_compile_definitions(${TARGET} PRIVATE LIGHT_SHELL_USB_HOST=1)
                 #   the host stack and TinyUSB's BSP (board_init, which the SDK integration
-                # calls for the clock); PIO-USB deliberately not -- see mk3's light_usb for why
+                # calls for the clock); PIO-USB deliberately not -- the host role runs on the
+                # native port alone
                 target_link_libraries(${TARGET} PRIVATE tinyusb_host tinyusb_board)
                 pico_enable_stdio_usb(${TARGET} 0)
                 pico_enable_stdio_uart(${TARGET} 1)
         else()
                 #   the console is USB CDC on every device-role board (the touch169 has no SWD
-                # pads and CDC is its only way in) -- AND the UART, for a board in the SWD dock
-                # whose own USB port is not cabled: the probe's CDC carries it. mk3-era doubts
-                # about the po13 UART through the probe were retired by crossfire's host-role
+                # pads and CDC is its only way in) -- AND the UART, for a board on a debug probe
+                # whose own USB port is not cabled: the probe's CDC carries it. Earlier doubts
+                # about a UART console through the probe were retired by crossfire's host-role
                 # console running on exactly that path. stdio writes go to both; reads take
                 # whichever arrives
                 pico_enable_stdio_usb(${TARGET} 1)

@@ -1,8 +1,9 @@
 //! The context: fonts, displays and renders, as JSON files in a `.crush/` directory.
 //!
-//! File names and top-level keys follow mk3's (`font.json` with `contextFonts`, and so on) so a
-//! context seeded from mk3's template loads, and so the CMake wrapper's dependency stamps keep
-//! pointing at real files. Object fields are this implementation's own.
+//! File names and top-level keys follow the C implementation's (`font.json` with
+//! `contextFonts`, and so on) so a context seeded from its template loads, and so the CMake
+//! wrapper's dependency stamps keep pointing at real files. Object fields are this
+//! implementation's own.
 
 use std::collections::BTreeMap;
 use std::fs;

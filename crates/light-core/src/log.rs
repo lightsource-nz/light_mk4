@@ -1,14 +1,14 @@
 //! Logging: a bounded queue of records that never blocks the producer.
 //!
-//! mk3's message queue could deadlock the whole application when it filled on a single-core
-//! path, and its consumers spent real effort keeping it from filling. This one has a stated
+//! The predecessor C framework's message queue could deadlock the whole application when it
+//! filled on a single-core path, and its consumers spent real effort keeping it from filling. This one has a stated
 //! policy instead: when the queue is full the record is DROPPED and counted, and the next drain
 //! reports how many were lost. A full log costs a lost line, never a stalled main loop.
 //!
 //! Records are formatted at the producer into a fixed buffer, so a record has a known size and
 //! the queue has a known footprint (`DEPTH * size_of::<Record>()`, no heap) -- except that a
 //! message with no arguments, which is most of them, is kept as the `&'static str` it already
-//! is: no formatting, no copy. Measured on the bench (STM32F411 at 16 MHz, opt-level 1) before
+//! is: no formatting, no copy. Measured on hardware (STM32F411 at 16 MHz, opt-level 1) before
 //! that fast path: 54 us for a static message, 78 us with one integer, 123 us with three
 //! arguments -- so the `fmt` machinery and the copy were most of the cost of the commonest
 //! case, not the formatting. Full deferred formatting (`defmt`-style ids decoded on the host)
@@ -362,8 +362,8 @@ mod tests {
                 reset();
                 //   four producers hammer the queue while the drainer runs; every record is
                 // either delivered or counted in a drop notice. the total must balance exactly
-                // -- the shape of test that found mk3's refcount races, where a lost update
-                // shows up as a count that no longer adds up
+                // -- the shape of test that has caught real refcount races before, where a lost
+                // update shows up as a count that no longer adds up
                 const PRODUCERS: u32 = 4;
                 const EACH: u32 = 2_000;
                 let mut delivered = 0u32;

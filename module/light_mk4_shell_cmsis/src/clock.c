@@ -1,5 +1,5 @@
-// clock.c -- the STM32H743's clock tree, mk3's light_core_chip_stm32h743/src/clock.c with the
-// framework's logging replaced by a status string the shell prints once the console exists.
+// clock.c -- the STM32H743's clock tree, ported from the predecessor C framework with its
+// logging replaced by a status string the shell prints once the console exists.
 //
 // ST's SystemInit() does not configure the PLL on H7, so the part boots on HSI at 64 MHz with
 // every prescaler at 1. This takes it to 400 MHz off the board's crystal and provides the 48 MHz

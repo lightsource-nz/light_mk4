@@ -1,6 +1,6 @@
 //! Board wiring for the WeAct Blackpill (STM32F411CEU6): a LED on PC13 and a key on PA0, both
-//! active low -- from mk3's `light_board.h`. mk3 ran its console demo here and read neither,
-//! so the key's sense is the header's word until the bench says otherwise (the H7's turned
+//! active low -- per the board's documentation. Nothing here has read the key yet, so its
+//! sense is the documentation's word until hardware says otherwise (the H7's turned
 //! out inverted).
 //!
 //! This lives with the APPLICATION, not in the port crate: `light-stm32f4` knows the chip and

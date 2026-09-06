@@ -1,4 +1,4 @@
-// clock_f4.c -- the F411 runs on its reset defaults, as mk3's F4 ports did: HSI at 16 MHz with
+// clock_f4.c -- the F411 runs on its reset defaults: HSI at 16 MHz with
 // every prescaler at 1. Correct, crystal-free, and slow; a PLL is a later slice, and the shell
 // reports the clocks it hands over either way.
 #include "shell.h"

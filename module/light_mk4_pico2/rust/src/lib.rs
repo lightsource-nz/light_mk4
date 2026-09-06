@@ -1,8 +1,7 @@
-//! The Rust side of the po13 rig firmware: a Pico 2 with the Pico-OLED-1.3. The LED blinks, the
-//! OLED shows mk3's `light_ui` demo on a 1 bpp panel mounted sideways -- the same widget toolkit
+//! The Rust side of this firmware: a Pico 2 with the Waveshare Pico-OLED-1.3. The LED blinks,
+//! the OLED shows the widget demo on a 1 bpp panel mounted sideways -- the same widget toolkit
 //! the touch169 runs, driven from the board's two keys instead of a touch panel: KEY0 moves the
-//! focus, KEY1 activates. That is the other half of the pair mk3 kept, proving one widget tree
-//! works from either input path.
+//! focus, KEY1 activates. The pair proves one widget tree works from either input path.
 //!
 //! The shell (module/light_mk4_shell) is the same file the touch169 links.
 
@@ -42,7 +41,7 @@ enum AppEvent {
         LedBlink,
         /// One of the board's keys, debounced: `(key, pressed)`.
         Key(u8, bool),
-        /// The UI events as commands, for driving the rig from the console or a script.
+        /// The UI events as commands, for driving the UI from the console or a script.
         UiFocus { next: bool },
         UiActivate,
         UiBack,
@@ -59,7 +58,7 @@ static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's MONO default (this panel is 1 bpp), with this
-/// rig's outer rounding -- see theme/po13.json.
+/// board's outer rounding -- see theme/po13.json.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 fn log_sink(record: &log::Record) {
@@ -175,7 +174,7 @@ impl OledMod {
 
         fn handle(&mut self, ev: AppEvent) {
                 match ev {
-                        // KEY0 moves the focus, KEY1 activates: the two-button rig
+                        // KEY0 moves the focus, KEY1 activates: the two-button input path
                         AppEvent::Key(0, true) | AppEvent::UiFocus { next: true } => self.ui.focus_next(),
                         AppEvent::UiFocus { next: false } => self.ui.focus_prev(),
                         AppEvent::Key(1, true) | AppEvent::UiActivate => {

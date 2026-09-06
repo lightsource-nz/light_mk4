@@ -1,12 +1,12 @@
 //! PWM streaming audio out: the transport half of the framework's second audio provider,
-//! ported from mk3's `light_platform_pwm` streaming and tone paths (hw-verified on a
-//! piezo under mk3). Two completely different configurations of one PWM slice:
+//! ported from the predecessor C framework's PWM streaming and tone paths (hw-verified
+//! on a piezo there). Two completely different configurations of one PWM slice:
 //!
 //! - **The sample path**: "DAC mode" -- undivided clock, wrap 255 (a ~586 kHz carrier on
 //!   a 150 MHz part, far above anything audible, leaving 8 bits of duty resolution) --
 //!   with a WORD-wide DMA writing channel-positioned duty values into the compare
 //!   register, paced by one of the DMA block's pacing timers at the sample rate for no
-//!   CPU at all. Word-wide, not mk3's single bytes: the APB bridge replicates narrow
+//!   CPU at all. Word-wide, never single bytes: the APB bridge replicates narrow
 //!   writes across the lanes -- see [`PwmAudio::duty_word`], where that finding lives.
 //!   Samples start as [`light_audio::pwm::pcm_to_duty`]'s 8-bit duty and are positioned
 //!   by `duty_word` on their way into the buffer.
@@ -88,7 +88,7 @@ impl PwmAudio {
 
         /// A duty sample positioned for this pin's channel within the 32-bit CC register
         /// (A in the low half, B in the high). The stream is WORD-sized transfers of these:
-        /// mk3 streamed single bytes at the channel's byte offset, but the APB bridge
+        /// an earlier port streamed single bytes at the channel's byte offset, but the APB bridge
         /// upgrades narrow writes to word width by REPLICATING the byte across the lanes,
         /// so a duty D landed in the compare as D * 257 -- above the 255 wrap for every
         /// nonzero sample, pinning the output at constant high, which a piezo renders as

@@ -1,4 +1,4 @@
-//! CST328 capacitive touch controller (Hynitron), ported from mk3's `light_touch_cst328`.
+//! CST328 capacitive touch controller (Hynitron), ported from the predecessor C framework's driver.
 //!
 //! NOT a bigger CST816: registers are 16 bits wide (the reason `I2cBus` grew its 16-bit
 //! operations), the address differs, mode changes are address-only transactions with no data

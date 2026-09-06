@@ -1,6 +1,7 @@
 //! The console: a script of command lines, one `--command`, or an interactive prompt.
 //!
-//! Behaviour pinned by mk3's acceptance tests: comments and blank lines are not commands and are
+//! Behaviour pinned by the acceptance tests inherited from the C implementation: comments and
+//! blank lines are not commands and are
 //! not echoed; every command line is echoed as `crush> line` before its own output; a leading
 //! `crush` token is tolerated; quoted arguments keep their spaces and lose their quotes, with no
 //! backslash escapes (which is what lets a Windows path through); a script stops at the first
@@ -24,8 +25,8 @@ enum Line {
         Command(Vec<String>),
 }
 
-/// mk3's tokenizer rules: whitespace-separated, `"` groups and is stripped, no escapes, `#`
-/// starts a comment outside quotes.
+/// The C implementation's tokenizer rules: whitespace-separated, `"` groups and is stripped, no
+/// escapes, `#` starts a comment outside quotes.
 pub fn tokenize(line: &str) -> Vec<String> {
         let mut out = Vec::new();
         let mut cur = String::new();

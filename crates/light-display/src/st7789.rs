@@ -1,5 +1,5 @@
-//! ST7789 controller driver over a 4-wire SPI display bus. Ported from mk3's
-//! `light_display_st7789`, including the row offset that board found by measurement.
+//! ST7789 controller driver over a 4-wire SPI display bus. Ported from the predecessor C
+//! framework, including a row offset that was found by measurement.
 
 use light_core::hal::{Clock, SpiDisplayBus};
 use crate::display::{DisplayDriver, Frame, Region};
@@ -38,7 +38,7 @@ impl<B: SpiDisplayBus> St7789<B> {
         }
 
         /// Where the visible glass sits in GDDRAM. The touch169's panel shows rows 20..299, so
-        /// its row offset is 20 -- measured, not guessed (see mk3's board wiring for how).
+        /// its row offset is 20 -- measured on the glass, not guessed.
         pub fn set_offset(&mut self, col: u16, row: u16) {
                 self.col_offset = col;
                 self.row_offset = row;
@@ -63,7 +63,7 @@ impl<B: SpiDisplayBus> St7789<B> {
 
         /// Blocking clear of the whole panel, using the CURRENT offset -- so call it after
         /// `set_offset`, or the band the offset moves the window over stays uninitialised (the
-        /// noise strip mk3 found at rows 280..299).
+        /// noise strip that shows up at rows 280..299).
         pub fn clear(&mut self, color: u16) {
                 let full = Region::full(self.width, self.height);
                 self.set_window(&full);

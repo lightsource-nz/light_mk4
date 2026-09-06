@@ -1,4 +1,5 @@
-//! SPI4 as a 4-wire display bus, blocking: mk3's STM32 ioport transport for the H7 generation.
+//! SPI4 as a 4-wire display bus, blocking: the predecessor C framework's STM32 display
+//! transport, for the H7 generation.
 //!
 //! The H7's SPI is not the F4's with more bits. A transfer size is programmed per transaction
 //! (TSIZE, with the peripheral disabled to change it -- TSIZE 0 is "until stopped", which on a
@@ -13,7 +14,7 @@
 //! incomplete burst, which costs frame rate, not correctness. The H7's DMA is a later slice.
 //!
 //! Every wait is bounded. An unbounded spin on a peripheral that never raises its flag is a
-//! board indistinguishable from a dead one, and mk3 was bitten by exactly that three times.
+//! board indistinguishable from a dead one, and exactly that bite has landed three times before.
 
 use light_core::hal::{Clock, SpiDisplayBus};
 

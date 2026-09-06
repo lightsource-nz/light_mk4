@@ -1,5 +1,5 @@
-//! Log lines in mk3's shape -- `[  ERROR] message` -- because the acceptance tests, and the
-//! CMake wrapper that captures crush's output, pattern-match on exactly that.
+//! Log lines in the C implementation's shape -- `[  ERROR] message` -- because the acceptance
+//! tests, and the CMake wrapper that captures crush's output, pattern-match on exactly that.
 
 fn emit(tag: &str, msg: &str) {
         println!("[{tag:>7}] {msg}");

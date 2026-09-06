@@ -1,5 +1,5 @@
-//! Board wiring for the Waveshare RP2350-Touch-LCD-1.69: pins from the board schematic, as
-//! recorded in mk3's `light_ui_hw_ws_touch169.h` and confirmed on hardware there.
+//! Board wiring for the Waveshare RP2350-Touch-LCD-1.69: pins from the board schematic,
+//! confirmed on hardware.
 //!
 //! This lives with the APPLICATION, not in the port crate: `light-rp2` knows the chip and
 //! nothing about what anyone soldered to it. This module is the one place that knows which pin
@@ -23,14 +23,14 @@ pub const PIN_DISPLAY_RESET: usize = 13;
 pub const PIN_DISPLAY_BL: usize = 25;
 pub const DISPLAY_WIDTH: u16 = 240;
 pub const DISPLAY_HEIGHT: u16 = 280;
-/// The visible glass is GDDRAM rows 20..299 -- measured (mk3 board wiring).
+/// The visible glass is GDDRAM rows 20..299 -- measured on hardware.
 pub const DISPLAY_ROW_OFFSET: u16 = 20;
 /// 40 MHz confirmed clean on hardware; 10 MHz would cap a full frame at 9.3 fps.
 ///
 /// Tried at 10 MHz on 2026-08-29 to test whether the touch controller's wedges (I2C on
 /// pins 6/7 timing out under continuous rendering) track the SPI clock on 10/11: 17
 /// clean taps then a wedge, against wedges every 4-8 taps at 40 MHz. Suggestive, not
-/// decisive -- one run each. Left at 40 MHz, the clock mk3 verified the panel at.
+/// decisive -- one run each. Left at 40 MHz, the clock the panel is verified at.
 pub const DISPLAY_SPI_HZ: u32 = 40_000_000;
 
 pub const PIN_TOUCH_SDA: usize = 6;
@@ -41,7 +41,7 @@ pub const TOUCH_I2C_HZ: u32 = 300_000;
 /// The QMI8658C shares I2C1 with the touch controller, at its own address. INT1/INT2
 /// (23/24) are wired but unused: the data-ready bit arrives inside the sample frame.
 pub const PIN_IMU_INT1: usize = 23;
-/// How the IMU is mounted, CONFIRMED on hardware by mk3 with the +1g-points-up
+/// How the IMU is mounted, CONFIRMED on hardware with the +1g-points-up
 /// convention: chip +Y points right, chip +X points up the screen, chip +Z points into
 /// it. A real rotation -- the transposition and the inversion corroborate each other.
 pub const IMU_AXIS_MAP: light_input::imu::AxisMap = light_input::imu::AxisMap { source: [light_input::imu::Y, light_input::imu::X, light_input::imu::Z], sign: [1, 1, -1] };
@@ -49,14 +49,14 @@ pub const IMU_AXIS_MAP: light_input::imu::AxisMap = light_input::imu::AxisMap { 
 /// DMA channel for the display bus: see `Spi1Display` for why the top of the range.
 pub const DISPLAY_DMA_CH: usize = 15;
 
-/// The piezo, on the pin mk3's bench wired it to (`ST_AUDIO_PIN_BUZZER`) and verified
+/// The piezo, on the pin it is wired to and verified
 /// audible: GPIO 2 is free of every on-board function on this board.
 pub const PIN_BUZZER: usize = 2;
 /// The sample stream's DMA channel and pacing timer, below the display's channel.
 pub const AUDIO_DMA_CH: usize = 13;
 pub const AUDIO_DMA_TIMER: usize = 0;
 
-/// Backlight levels run `0..=BACKLIGHT_LEVEL_MAX`, mk3's scale.
+/// Backlight levels run `0..=BACKLIGHT_LEVEL_MAX`, a per-mille scale.
 pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 pub const BACKLIGHT_CARRIER_HZ: u32 = 30_000;
 

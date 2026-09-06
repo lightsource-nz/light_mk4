@@ -1,7 +1,7 @@
 //! SPI1 as a 4-wire display bus, with DMA-backed asynchronous data bursts.
 //!
-//! Register-level port of pico-sdk's `hardware_spi` init and blocking write, and of mk3's
-//! `light_ioport` RP2 backend for the DMA burst and its completion rule.
+//! Register-level port of pico-sdk's `hardware_spi` init and blocking write, and of the
+//! predecessor C framework's RP2 display transport for the DMA burst and its completion rule.
 
 use light_core::{Clock, SpiDisplayBus};
 use crate::pac;

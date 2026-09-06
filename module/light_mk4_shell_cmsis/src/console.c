@@ -1,4 +1,4 @@
-// console.c -- USART1 on PA9/PA10 and the ITM stimulus port, mk3's STM32 consoles.
+// console.c -- USART1 on PA9/PA10 and the ITM stimulus port: the STM32 consoles.
 //
 // Both backends, because they fail in opposite ways: SWO needs a debugger attached and one wire
 // already on the SWD header; the USART needs no debugger but a wire to something. Neither may

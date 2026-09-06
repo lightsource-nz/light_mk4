@@ -4,8 +4,8 @@
 // Rust and does not come back. The same functions cross the boundary as on the RP2 shell; there
 // is no second core, so the log drain the RP2 shell runs on core 1 is the Rust side's own job.
 //
-// Two chips so far. The H743 gets its caches and mk3's 400 MHz clock tree; the F411 runs on its
-// reset defaults -- HSI at 16 MHz, every prescaler at 1 -- as mk3's F4 ports did.
+// Two chips so far. The H743 gets its caches and a 400 MHz clock tree; the F411 runs on its
+// reset defaults -- HSI at 16 MHz, every prescaler at 1.
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -81,8 +81,8 @@ int main(void)
         struct light_shell_info info;
 #if defined(STM32H743xx)
         //   the instruction cache before anything else: at 400 MHz flash is two wait states,
-        // and fetch has no coherency problem to manage. The data cache stays OFF, as mk3's
-        // default: the frame buffer is DMA territory one day, and a cached buffer handed to DMA
+        // and fetch has no coherency problem to manage. The data cache stays OFF,
+        // deliberately: the frame buffer is DMA territory one day, and a cached buffer handed to DMA
         // is silently wrong
         SCB_EnableICache();
         light_shell_clock_init();

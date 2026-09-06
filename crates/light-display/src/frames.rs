@@ -1,7 +1,7 @@
 //! The frame layer: pacing, buffering and dirty regions between the rasteriser and a display.
 //!
-//! mk3's `light_canvas`, ported -- it absorbed four divergent copies of the frame loop, and its
-//! two contracts hold here:
+//! Ported from the predecessor C framework, where it absorbed four divergent copies of the
+//! frame loop; its two contracts hold here:
 //!
 //! - **Every frame is a full repaint.** `frame_begin` clears the buffer. Under double
 //!   buffering the buffer being drawn into was last touched two frames ago, so it cannot be

@@ -1,6 +1,6 @@
-//! ST7735 controller driver over a 4-wire SPI display bus. Ported from mk3's
-//! `light_display_st7735`, including the init sequence and the MiniSTM32H7's landscape
-//! orientation and BGR order.
+//! ST7735 controller driver over a 4-wire SPI display bus. Ported from the predecessor C
+//! framework, including the init sequence and the MiniSTM32H7's landscape orientation and
+//! BGR order.
 
 use crate::display::{DisplayDriver, Frame, Region};
 use light_core::hal::{Clock, SpiDisplayBus};

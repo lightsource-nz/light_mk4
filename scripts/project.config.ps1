@@ -1,8 +1,9 @@
 # Per-project defaults for the mk4 spike.
 #
-# Three trees: the touch169 firmware (BOOTSEL-flashed, the board has no SWD pads), the bare
-# Pico 2 in the po13 rig's SWD dock (flashed over SWD by debug.ps1 -Batch), and a host tree whose
-# only job is to run `cargo test` under ctest so test.ps1 and CI need no Rust-specific path.
+# Three trees: the touch169 firmware (BOOTSEL-flashed, the board has no SWD pads), a Pico 2
+# with the Waveshare Pico-OLED-1.3 display board (flashed over SWD by debug.ps1 -Batch), and a
+# host tree whose only job is to run `cargo test` under ctest so test.ps1 and CI need no
+# Rust-specific path.
 @{
         Name = 'light_mk4'
 
@@ -19,7 +20,7 @@
                 'conf-light_mk4-pico2-release'    = 'build-pico2-release'
                 # crossfire: the Pico 2 with its USB port in the host role, own tree
                 'conf-light_mk4-crossfire-debug'  = 'build-crossfire'
-                # the RP2040 Pico: the po13 demo and crossfire (the product board), each
+                # the RP2040 Pico: the pico2 demo and crossfire (the product board), each
                 # its own tree; build/flash with -Preset
                 'conf-light_mk4-pico-debug'           = 'build-pico'
                 'conf-light_mk4-crossfire-pico-debug' = 'build-crossfire-pico'
@@ -46,8 +47,9 @@
                 # the dictaphone: a second application on the 3.49, same board and tree
                 'light_mk4_dictaphone' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
                 'light_mk4_touch4'   = @{ Preset = 'conf-light_mk4-touch4-debug'; Flash = 'uf2' }
-                # the po13 rig flashes over SWD; Flash='swd' records that light-flash.ps1's
-                # BOOTSEL path is not how an image reaches it
+                # the pico2 target -- a Pico 2 with the Waveshare Pico-OLED-1.3 display board
+                # -- flashes over SWD; Flash='swd' records that light-flash.ps1's BOOTSEL path
+                # is not how an image reaches it
                 'light_mk4_pico2'    = @{ Preset = 'conf-light_mk4-pico2-debug'; Flash = 'swd' }
         }
 
@@ -143,8 +145,8 @@
                 }
         }
 
-        # which OpenOCD config and SVD belong to which board -- see screen-test's config for
-        # why getting this pairing wrong misbehaves rather than erroring
+        # which OpenOCD config and SVD belong to which board -- getting this pairing wrong
+        # misbehaves rather than erroring, so it is worth stating explicitly
         Debug = @{
                 # Chip is probe-rs's name for the part, for debug.ps1 -ProbeRs (fast
                 # flash-and-run; no openocd, no spinlock-31 contamination)

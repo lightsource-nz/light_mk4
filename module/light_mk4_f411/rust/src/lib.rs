@@ -1,5 +1,5 @@
-//! The Rust side of the Blackpill firmware: the LED, the key and the console -- mk3's demo for
-//! this board on the mk4 runtime, on the CMSIS shell's second chip. The key toggles the blink,
+//! The Rust side of the Blackpill firmware: the LED, the key and the console -- this board's
+//! demo on the mk4 runtime, on the CMSIS shell's second chip. The key toggles the blink,
 //! the console reports and steers.
 
 #![no_std]

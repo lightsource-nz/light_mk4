@@ -5,7 +5,7 @@
 //!
 //! PROVENANCE, because it changes how much the numbers below should be trusted: this map
 //! comes from third-party libraries and a register-information sheet, NOT from a datasheet we
-//! hold. Everything structural was confirmed against real hardware by mk3 on 2026-08-26 --
+//! hold. Everything structural was confirmed against real hardware --
 //! the address, the register file, and the per-voltage detect flags, which appeared on
 //! exactly the five voltages a 45W charger offers and were clear on the 18V it does not.
 //! The current-code table is corroborated arithmetically: it yields 45W at both 15V/3.0A
@@ -15,8 +15,8 @@
 //! the digits transposed.
 //!
 //! Every register is read and written ONE BYTE AT A TIME, and writes go through
-//! [`I2cBus::write_register_byte`], the strictly framed two-byte transaction. mk3 measured
-//! why that matters: the general write path sent the register address and payload as two
+//! [`I2cBus::write_register_byte`], the strictly framed two-byte transaction. Measurement
+//! showed why that matters: a general write path sent the register address and payload as two
 //! transfers separated by a repeated START, the chip acknowledged everything and stored
 //! NOTHING -- SRC_PDO_SEL took five writes of five different values and read back 0x00 after
 //! every one, so the negotiation appeared to do nothing while every return code said success.
@@ -130,7 +130,7 @@ impl<B: I2cBus> PowerSource for Husb238<B> {
                 //   ...and whether it is a NEGOTIATED contract, which PD_STATUS0 alone
                 // cannot say: it reports the voltage present, and an unattached sink sits at
                 // the USB-C 5V default. SRC_PDO_SEL distinguishes them -- zero until a PDO
-                // has actually been requested. Observed on the mk3 bench: charger attached
+                // has actually been requested. Observed on hardware: charger attached
                 // and supplying 5V, PD_STATUS0 reading 0x13, SRC_PDO_SEL 0x00 -- the two
                 // disagreeing is precisely the case this exists to get right
                 let sel = self.read_reg(REG_SRC_PDO_SEL)?;
@@ -221,7 +221,7 @@ mod tests {
                 }
         }
 
-        /// The mk3 bench's 45W charger: 5/9/12/15/20V offered, 18V present but not offered.
+        /// A real 45W charger, as measured: 5/9/12/15/20V offered, 18V present but not offered.
         /// The current codes are the arithmetic corroboration -- 15V/3.0A and 20V/2.25A are
         /// both 45W, which a wrong table would not produce.
         fn charger_45w() -> [u8; PDO_COUNT] {
@@ -244,7 +244,7 @@ mod tests {
 
         #[test]
         fn the_default_rail_is_reported_but_not_called_a_contract() {
-                //   the mk3 bench observation verbatim: PD_STATUS0 0x13 (5V present),
+                //   the hardware observation verbatim: PD_STATUS0 0x13 (5V present),
                 // SRC_PDO_SEL 0x00 (nothing ever requested)
                 let mut power = Power::new(Husb238::new(FakeBus::with(0x13, 0x00, charger_45w())));
                 power.poll(0);

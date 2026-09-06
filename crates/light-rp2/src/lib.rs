@@ -19,7 +19,7 @@
 //! is board wiring, and that belongs to the application: each app carries a `board` module
 //! that names its pins, calls the unsafe constructors below exactly once behind a taken-once
 //! gate, and hands the peripherals over as an owned set. The framework does not know or care
-//! which bench rig anyone runs.
+//! which board anyone runs.
 
 #![no_std]
 

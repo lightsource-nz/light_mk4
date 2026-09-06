@@ -1,6 +1,6 @@
 //! Board wiring for the Waveshare RP2350-Touch-LCD-4: pins from the board's vendor BSP
 //! (`bsp_st7701.h`, `bsp_gt911.h`, `bsp_battery.h`), which is the closest thing to a
-//! schematic transcription on hand. Every figure below is UNVERIFIED on this bench until
+//! schematic transcription on hand. Every figure below is UNVERIFIED on hardware until
 //! its bring-up ticks it off.
 //!
 //! An RP2350B, and the second board on the upper GPIO bank. The panel has NO GDDRAM: the
@@ -68,7 +68,7 @@ pub const IMU_AXIS_MAP: AxisMap = AxisMap { source: [imu::Y, imu::X, imu::Z], si
 pub const PIN_BAT_ADC: usize = 41;
 pub const PIN_BAT_CHRG: usize = 42;
 pub const PIN_BAT_DONE: usize = 43;
-/// MEASURED ÷2: the vendor formula says ÷3, but ÷3 read an impossible 6.6 V on the bench
+/// MEASURED ÷2: the vendor formula says ÷3, but ÷3 read an impossible 6.6 V on hardware
 /// while ÷2 reads a plausible 4.4 V charged pack. The vendor formula fits their OWN board
 /// revision, not this one.
 pub const BATTERY_DIVIDER: u32 = 2;

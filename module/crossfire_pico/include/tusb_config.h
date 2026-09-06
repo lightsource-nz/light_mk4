@@ -1,5 +1,5 @@
-// TinyUSB configuration for crossfire's host role: mk3's crossfire_main/include/tusb_config.h
-// with its findings kept and its device-role remnants dropped.
+// TinyUSB configuration for crossfire's host role: the bring-up's hard-won findings are
+// kept below; device-role remnants are dropped.
 #ifndef _TUSB_CONFIG_H_
 #define _TUSB_CONFIG_H_
 
@@ -9,7 +9,7 @@ extern "C" {
 
 //   the native controller only, never PIO-USB: Pico-PIO-USB is a submodule of nothing and
 // tinyusb fetches it from a third-party repository, so a build depending on it reproduces on no
-// clone -- mk3's light_usb learned that from CI
+// clone -- a lesson CI taught the hard way
 #if CFG_TUSB_MCU == OPT_MCU_RP2040
 #define CFG_TUH_RPI_PIO_USB   0
 #define BOARD_TUH_RHPORT      CFG_TUH_RPI_PIO_USB
@@ -52,8 +52,8 @@ extern "C" {
 
 //   HUBS IN THE WHOLE TREE, not "hubs you may plug in". A seven-port hub is usually two hub
 // chips in series, and with this at 1 the second one exhausts the hub address window and
-// enumeration retries forever with nothing mounting and nothing said -- a full session in mk3.
-// 2 covers one chained hub
+// enumeration retries forever with nothing mounting and nothing said -- a failure that cost a
+// full debugging session to root-cause. 2 covers one chained hub
 #define CFG_TUH_HUB                 2
 
 //   excluding the hub: TinyUSB sizes its table as DEVICE_MAX + HUB, so 4 means four

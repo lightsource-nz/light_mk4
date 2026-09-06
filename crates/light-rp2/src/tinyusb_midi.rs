@@ -4,8 +4,8 @@
 //! Everything here runs on core 0, in the context the shell's `light_shell_usb_host_task()` is
 //! called from: the stack's mount callbacks fire from inside `tuh_task()`, so they arrive on the
 //! same core as the packet reads and go through a mailbox only to get out of the callback and
-//! into the module's own poll -- mk3's rule that a callback the stack is still unwinding does no
-//! work of its own, kept.
+//! into the module's own poll -- keeping the rule that a callback the stack is still unwinding
+//! does no work of its own.
 //!
 //! Only meaningful in a firmware whose shell was built for the host role; the symbols resolve
 //! against `tinyusb_host` at link time.

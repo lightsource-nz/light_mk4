@@ -1,5 +1,5 @@
-//! crossfire: every USB-MIDI instrument on the host port hears every other. mk3's crossfire
-//! on the mk4 stack -- the APPLICATION, with no hardware in it.
+//! crossfire: every USB-MIDI instrument on the host port hears every other. This crate is
+//! the APPLICATION, with no hardware in it.
 //!
 //! The forwarding engine is `light_midi`, portable and host-tested; the host stack reaches
 //! this crate as a [`light_midi::Host`], the status display as a [`SpiDisplayBus`] under the
@@ -83,12 +83,12 @@ pub struct UsbMod<H: Host> {
         forwarder: Forwarder<USB_SLOTS>,
         events: Subscription,
         reset_pending: bool,
-        /// mk3 reset the controller whenever a disconnect emptied the root port, working
+        /// The controller is reset whenever a disconnect empties the root port, working
         /// around a stale buffer-control state (hathach/tinyusb#3533) -- and the RP2350 needs
         /// it too: without the reset the next enumeration panicked inside the USB IRQ. The
         /// reset itself hung in tusb_deinit(), which closed devices after tearing down the
         /// port's critical section; that is fixed in the pico-sdk TinyUSB fork. `usb autoreset
-        /// off` keeps the switch for the bench
+        /// off` keeps the switch for diagnosis
         auto_reset: bool,
         packets: u32,
         status: Status,

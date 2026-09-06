@@ -93,8 +93,8 @@ impl<B: QspiDisplayBus> Axs15231b<B> {
         /// full-frame Display(): window over everything, one RAMWR, one chip-select frame.
         /// At the PIO bus's 37.5 MHz a full 172x640x2 frame is ~12 ms -- inside the frame
         /// budget, and the price of a panel that ignores its own windowing. Windowed
-        /// partials can return if a bench session ever finds the register incantation the
-        /// vendor never used.
+        /// partials can return if anyone ever finds the register incantation the vendor
+        /// never used.
         fn band(&self) -> Region {
                 Region::full(self.width, self.height)
         }

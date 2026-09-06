@@ -1,4 +1,4 @@
-//! Gesture recognition over a stream of touch samples, ported from mk3's `light_touch`.
+//! Gesture recognition over a stream of touch samples, ported from the predecessor framework's gesture layer.
 //!
 //! A controller driver reports down/move/up samples; this tracks a touch from its down to its
 //! release and classifies the drag as a swipe when the finger lifts -- so the reported start and

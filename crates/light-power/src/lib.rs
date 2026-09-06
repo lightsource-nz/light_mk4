@@ -1,7 +1,7 @@
-//! Power supply management: mk3's `light_power`, ported with its hardest-won property
-//! intact -- SAFE BY DEFAULT. Selecting a profile moves a real rail, and what hangs off that
-//! rail is a fact about the board this layer cannot see. The failure is not theoretical and
-//! not recoverable: on the bench this was written against, the sink's output was hardwired to
+//! Power supply management, ported from the predecessor C framework with its hardest-won
+//! property intact -- SAFE BY DEFAULT. Selecting a profile moves a real rail, and what hangs off
+//! that rail is a fact about the board this layer cannot see. The failure is not theoretical and
+//! not recoverable: on the board this was written against, the sink's output was hardwired to
 //! a Pico's 5V input, and a single successful request for 9V would have ended the Pico. So a
 //! device starts with its request ceiling at the USB-C default rail, and anything more is an
 //! explicit decision made through [`Power::set_max_millivolts`] by whoever knows the wiring.
@@ -28,8 +28,8 @@ pub const MAX_PROFILES: usize = 8;
 pub const SAFE_MAX_MV: u16 = 5000;
 
 /// How long a request may stay `Pending` before it is called refused. USB PD negotiation
-/// completes in well under a second -- 12V was measured landing inside 800 ms on the mk3
-/// bench -- and a request still unanswered at this point was measured still unanswered at
+/// completes in well under a second -- 12V was measured landing inside 800 ms on real
+/// hardware -- and a request still unanswered at this point was measured still unanswered at
 /// 2 s, so waiting longer only delays the news.
 pub const REQUEST_TIMEOUT_MS: u32 = 1500;
 
@@ -78,7 +78,7 @@ pub struct Reading {
         pub active_ma: u16,
         /// Whether that is a NEGOTIATED contract as opposed to the bus's default. The two
         /// really are independent: a USB-C sink with nothing negotiated still sits at 5V,
-        /// so "5V present" is not "5V agreed". Conflating them was a bug in mk3's first cut.
+        /// so "5V present" is not "5V agreed". Conflating them was a bug in the first cut.
         pub contract_active: bool,
 }
 
@@ -116,7 +116,7 @@ pub trait PowerSource {
         }
 }
 
-/// One power device: a driver plus every judgement mk3 made once, made once again here.
+/// One power device: a driver plus every judgement that only needs making once, made here.
 pub struct Power<S: PowerSource> {
         source: S,
         profiles: [Profile; MAX_PROFILES],

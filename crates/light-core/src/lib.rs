@@ -6,7 +6,7 @@
 //! Nothing in this crate touches hardware. Everything it needs from the world comes through the
 //! traits in [`hal`], which a port crate implements, plus one `critical_section` implementation
 //! from the port -- which is what lets the same code run under `cargo test` on the host with a
-//! mocked board. The host-first rule mk3 had, made structural.
+//! mocked board. The host-first rule the predecessor C framework had, made structural.
 //!
 //! The rest of the framework is layered above: `light-draw` (the rasteriser), `light-display`
 //! (the chunked display core, the frame layer and the panel drivers), `light-input` (touch,

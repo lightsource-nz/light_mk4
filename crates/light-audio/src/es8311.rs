@@ -135,7 +135,7 @@ impl<B: I2cBus> Es8311<B> {
         /// the ADC clocks were already set by [`init`](Self::init); after this the codec's
         /// SDOUT carries live samples.
         pub fn mic_enable(&mut self) -> Result<(), I2cError> {
-                //   tuned by ear and by measured peaks on the 3.49 (2026-09-04): speech at
+                //   tuned by ear and by measured peaks on the 3.49: speech at
                 // arm's length peaks ~45% of full scale, and +2 dB more was measured
                 // clipping a deliberately loud take -- this is the hot edge of safe
                 self.mic_config(0x17, 0xE3)
@@ -143,8 +143,8 @@ impl<B: I2cBus> Es8311<B> {
 
         /// The two gain registers of the mic path, raw: `reg14` is SYSTEM14 (mic select +
         /// analog PGA gain in the low bits), `reg17` is the ADC digital volume (0xBF = 0 dB,
-        /// 0.5 dB per step). Split out from [`mic_enable`](Self::mic_enable) so a bench can
-        /// tune the pair live -- both extremes measured wrong on the 3.49: the vendor's max
+        /// 0.5 dB per step). Split out from [`mic_enable`](Self::mic_enable) so the pair can
+        /// be tuned live -- both extremes measured wrong on the 3.49: the vendor's max
         /// (0x1A/0xFF, about +62 dB total) clipped close speech in the analog PGA and
         /// amplified room noise into a loud growl, while a −40 dB overcorrection left
         /// speech at 0.5% of full scale under the amplified hiss.

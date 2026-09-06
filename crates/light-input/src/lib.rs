@@ -1,4 +1,4 @@
-//! Input: what mk3 split across `light_touch`, `light_imu` and their drivers. Gesture tracking
+//! Input: what the predecessor C framework split across separate touch and IMU modules. Gesture tracking
 //! over a controller's samples (`touch`), the CST816T that produces them, the orientation model
 //! (`imu`) and the QMI8658 behind it. Everything reaches hardware through
 //! [`light_core::hal`]; the drivers' cadence rules were re-checked against mk4's loop rate

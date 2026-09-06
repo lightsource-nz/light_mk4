@@ -1,9 +1,10 @@
-//! The acceptance suite: mk3's font-crusher CTest cases, re-expressed against the Rust crush.
+//! The acceptance suite: the C font-crusher's CTest cases, re-expressed against the Rust
+//! crush.
 //!
 //! Every case runs the real binary in its own context directory, the way a build does. The
 //! assertions are the C suite's -- the log lines a build reads, the exit codes, the echo rules
 //! of the console, the glyph-level checks on the render -- plus what the C suite could not
-//! check: that the LGF blob parses, and that the glyphs are byte-for-byte what mk3's crush
+//! check: that the LGF blob parses, and that the glyphs are byte-for-byte what the C crush
 //! renders (when a C crush is available to compare against).
 
 use std::fs;
@@ -180,7 +181,7 @@ fn rendering_needs_a_registered_font_and_display() {
         assert!(text(&out).contains("[  ERROR]"));
 }
 
-/// Byte-for-byte against mk3's crush, when one is on this machine. The C build is not part of
+/// Byte-for-byte against the C crush, when one is on this machine. The C build is not part of
 /// this workspace, so the test is skipped -- loudly -- rather than failed when it is absent.
 #[test]
 fn glyphs_match_the_c_crush_byte_for_byte() {

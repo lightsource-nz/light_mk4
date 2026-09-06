@@ -4,7 +4,7 @@
 //! tangible 2.8: the wiring (`board.rs`), the ST7789 over SPI, the CST328, the IMU, the
 //! shell ABI and the panic handler.
 //!
-//! Bring-up checklist (mk3 authored this board's support without hardware): the CST328's
+//! Bring-up checklist (this board's support was authored without hardware): the CST328's
 //! 0xCACA probe answers; coordinates track a finger; the IMU axis map is IDENTITY until the
 //! three-observation calibration is done, so orientation changes will likely be WRONG at
 //! first -- that is the measurement, not a bug; the SPI clock is 40 MHz with reported
@@ -105,7 +105,7 @@ const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 demo_pages! {
         event: AppEvent,
         title: "mk4 2.8",
-        //   mk3's demo config for this board: rows this tall need more than the OLED rigs'
+        //   rows this tall need more than the small OLED panels'
         // 2 px gap, and 56 px is the touch-target height -- the extra 40 rows of panel
         // simply show more of the list at once
         row_gap: 6,

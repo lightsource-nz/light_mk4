@@ -3,8 +3,8 @@
 //! Registration is EXPLICIT. An application constructs its modules as values and adds each one
 //! to the runtime; the runtime orders them by their declared dependencies and loads them in that
 //! order. There is no linker-section walk, no `used` attribute holding the whole thing together,
-//! and no per-port linker script -- the three things mk3's registration needed and the one that
-//! silently broke at -O1 until the attribute was found. A dependency that was never added is an
+//! and no per-port linker script -- the three things the predecessor C framework's registration
+//! needed, one of which silently broke at -O1 until the attribute was found. A dependency that was never added is an
 //! error at start-up with the name in it, not a module that quietly loads without it.
 //!
 //! Modules own their state. The runtime holds `&mut` to each for as long as it runs, which is
@@ -67,8 +67,8 @@ pub trait Module {
 
 /// The application's module set, ordered and driven.
 ///
-/// `N` is the capacity. Unlike mk3's `LF_STATIC_MODULES_MAX`, exceeding it is a value the caller
-/// sees rather than a silently dropped module.
+/// `N` is the capacity. Exceeding it is a value the caller sees rather than a silently dropped
+/// module.
 pub struct Runtime<'a, const N: usize> {
         modules: Vec<&'a mut dyn Module, N>,
         /// Indices into `modules`, in load order. Empty until `start`.

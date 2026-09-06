@@ -5,7 +5,7 @@
 //!
 //! Data is fed by PING-PONG DMA, never by polled FIFO writes: the four-word TX FIFO holds
 //! 83 us of audio at 24 kHz and a single display draw is two hundred times that, which on
-//! the bench was perfectly audible as chop. Two buffers chained through two DMA channels
+//! hardware was perfectly audible as chop. Two buffers chained through two DMA channels
 //! carry ~21 ms each; the application refills whichever one completed on its own schedule,
 //! and a stream that starves anyway is counted, not guessed about.
 //!
@@ -66,7 +66,7 @@ pub const STREAM_WORDS: usize = 2048;
 /// Samples per CAPTURE buffer: mono 16-bit, 200 ms at 24 kHz per buffer. Sized against
 /// the medium, not the poll: an SD card's occasional garbage-collection stall runs
 /// 100-250 ms, and with only 100 ms buffers those stalls cost audio (7 overruns in a
-/// 5 s bench take); 200 ms each rides them out.
+/// 5 s test take); 200 ms each rides them out.
 pub const CAP_WORDS: usize = 4800;
 
 /// The MCLK generator and the slave data-out, on PIO1 state machines 0 and 1, with the

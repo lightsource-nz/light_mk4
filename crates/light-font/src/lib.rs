@@ -1,9 +1,9 @@
 //! LGF: the light glyph font format.
 //!
 //! A rendered bitmap font as DATA, embedded in firmware with `include_bytes!` and parsed in
-//! place, instead of the generated C that mk3's crush emitted. That C hardcoded the field names
-//! of `light_draw_font_t` as printf strings, made light_display build crush as an ExternalProject,
-//! and produced files that did not exist until crush had run. A blob has a header, a version, and
+//! place, instead of the generated C that crush emitted for the predecessor framework. That C
+//! hardcoded the consumer's struct field names as printf strings, made the display library
+//! build crush as an ExternalProject, and produced files that did not exist until crush had run. A blob has a header, a version, and
 //! a reader that says no to what it does not understand.
 //!
 //! Layout (all little-endian):

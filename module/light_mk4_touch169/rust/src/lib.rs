@@ -65,11 +65,11 @@ static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0;
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel, compiled from `theme/round169.json`: the framework's default theme
 /// plus this glass's corner curvature. That screen_radius of 42 is MEASURED, not
-/// estimated, by mk3's screentest_calib169 sweep (a rounded rect at inset d closes its
+/// estimated, by a calibration sweep on the glass (a rounded rect at inset d closes its
 /// corners inside glass of radius R exactly at r = R - d; the transition sat between 36
 /// and 40 at d = 2, and the upper end taken). An estimate is exactly how this went wrong
-/// twice: mk3's first guess of 20 and mk4's port guess of 24 both left the frame's
-/// corners swallowed by the glass, invisibly in code -- judged there, 2026-09-04.
+/// twice: a first guess of 20 and a later guess of 24 both left the frame's
+/// corners swallowed by the glass, invisibly in code -- only the sweep showed it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
@@ -134,7 +134,7 @@ demo_pages! {
         backlight_dim: BACKLIGHT_DIM
 }
 
-/// Derived by mk3 and confirmed on this board: L is 270, R is 90; flat has no upright,
+/// Confirmed on this board: L is 270, R is 90; flat has no upright,
 /// so the canvas keeps whatever it had.
 fn rotation_map(o: Orientation) -> Option<Rotation> {
         match o {
@@ -319,12 +319,12 @@ static SINE: [i16; 32] = [
 const BEEP_RATE: u32 = 22_050;
 const BEEP_SAMPLES: usize = (BEEP_RATE as usize * 300) / 1000;
 
-/// The piezo -- mk3's PWM audio provider, both of its paths: resonant square-wave tones
+/// The piezo -- the PWM audio provider, both of its paths: resonant square-wave tones
 /// (what a piezo is actually good at) and the DMA-paced duty sample stream.
 struct AudioMod {
         buzzer: PwmAudio,
         events: Subscription,
-        /// Sample-path volume, per-mille -- applied at synthesis, mk3's contract.
+        /// Sample-path volume, per-mille -- applied at synthesis, the provider's contract.
         volume: u16,
         /// A timed tone's end, `now_ms`-relative; `None` while silent or untimed.
         tone_end_ms: Option<u32>,
@@ -364,7 +364,7 @@ impl Module for AudioMod {
                                                 continue;
                                         }
                                         //   synthesized at the CURRENT volume: the sample path
-                                        // converts once, up front, mk3's contract
+                                        // converts once, up front, the provider's contract
                                         let inc = ((u64::from(hz) << 32) / u64::from(BEEP_RATE)) as u32;
                                         let mut phase = 0u32;
                                         for b in self.beep.iter_mut() {

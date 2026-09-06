@@ -1,5 +1,5 @@
 //! I2C masters. Register-level port of pico-sdk's `hardware_i2c` init and blocking transfers,
-//! with the per-byte timeout mk3's ioport layered on top and the one fix it found necessary:
+//! with a per-byte timeout layered on top and the one fix experience found necessary:
 //! a held-START write that fails must clear the "restart next" flag, or the failure leaks
 //! into the next device on the bus.
 //!
@@ -12,7 +12,7 @@ use crate::pac;
 
 /// TX FIFO depth on this block.
 const TX_FIFO_DEPTH: u32 = 16;
-/// Per-transfer deadline: a base plus a per-byte allowance, the figures mk3 settled on.
+/// Per-transfer deadline: a base plus a per-byte allowance, figures settled on in practice.
 const TIMEOUT_BASE_US: u64 = 2000;
 const TIMEOUT_PER_BYTE_US: u64 = 100;
 
@@ -265,7 +265,7 @@ macro_rules! i2c_instance {
                         }
 
                         /// 16-bit register addresses go out big-endian, high byte first -- the
-                        /// CST328's convention, and mk3's `light_ioport_read_register16`.
+                        /// CST328's convention.
                         fn read_register16(&mut self, addr: u8, reg: u16, out: &mut [u8]) -> Result<(), I2cError> {
                                 self.write(addr, &[(reg >> 8) as u8, reg as u8], true)?;
                                 self.read(addr, out, false)

@@ -1,12 +1,14 @@
 //! The render job: FreeType rasterises each character of the set into a fixed cell, and the
-//! result is written as an LGF blob and, for mk3's consumers, the same C pair mk3's crush wrote.
+//! result is written as an LGF blob and, for the C consumers, the same C pair the crush this
+//! replaces wrote.
 //!
-//! Ported from mk3's `crush_render_backend`, including the parts it learned the hard way: the
-//! cell comes from the font's nominal metrics rather than from scanning glyphs; an explicit pixel
-//! size is the VERTICAL size and the horizontal one is derived through the display's pixel aspect
-//! (FreeType's width=0 shorthand silently assumes square pixels); and glyph bitmaps are placed by
-//! their bearings relative to the shared baseline, clipping pixel by pixel, since a glyph's
-//! bitmap can be larger than the cell while its ink still lands inside it.
+//! Ported from the C implementation's `crush_render_backend`, including the parts it learned
+//! the hard way: the cell comes from the font's nominal metrics rather than from scanning
+//! glyphs; an explicit pixel size is the VERTICAL size and the horizontal one is derived through
+//! the display's pixel aspect (FreeType's width=0 shorthand silently assumes square pixels); and
+//! glyph bitmaps are placed by their bearings relative to the shared baseline, clipping pixel by
+//! pixel, since a glyph's bitmap can be larger than the cell while its ink still lands inside
+//! it.
 
 use std::fmt::Write as _;
 use std::fs;
@@ -16,7 +18,7 @@ use freetype::face::LoadFlag;
 
 use crate::context::Display;
 
-/// The characters every render covers: mk3's set, unchanged.
+/// The characters every render covers: the C implementation's set, unchanged.
 pub const CHAR_SET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`1234567890-=~!@#$%^&*()_+[]\\{}|;':\",./<>?";
 
 pub struct Job {
@@ -143,7 +145,7 @@ fn c_header(ident: &str) -> String {
         format!("#ifndef {ident}_FONT_H\n#define {ident}_FONT_H\n\n#include <light_draw.h>\n\nextern const light_draw_font_t {ident}_font;\n\n#endif\n")
 }
 
-/// The C pair mk3's light_draw consumes, byte-for-byte in the shape mk3's crush wrote it.
+/// The C pair `light_draw` consumes, byte-for-byte in the shape the C crush wrote it.
 fn c_source(ident: &str, glyphs: &[(u8, Vec<u8>)], cell_width: u8, cell_height: u8, pitch: usize) -> String {
         let mut s = String::new();
         let _ = writeln!(s, "#include \"{ident}_font.h\"\n");

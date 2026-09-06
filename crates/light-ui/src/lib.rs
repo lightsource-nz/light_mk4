@@ -1,4 +1,4 @@
-//! The widget toolkit: mk3's `light_ui`, ported.
+//! The widget toolkit, ported from the predecessor C framework.
 //!
 //! A retained tree of windows, buttons and labels over the frame layer. The tree is built from
 //! `const` descriptors that live in flash; navigating tears the current page down and builds
@@ -6,16 +6,17 @@
 //! the [`Ui`] -- no allocator, and a tree too big for it is a build error at the call that adds
 //! the widget, never a silent drop.
 //!
-//! **What comes out is an event, not a callback.** mk3 buttons carried a C function pointer, a
-//! `void *` and a command string; here a button carries what it *emits* -- a value of the
-//! application's own event type -- and, optionally, where it navigates. Activation returns the
-//! emitted value for the caller to publish on its bus, which is the "command tree is the event
-//! bus" decision applied to the UI: a tap, a console line and a boot script all end up as the
-//! same event, and a handler runs on its own module's poll rather than inside the input path.
+//! **What comes out is an event, not a callback.** The predecessor's buttons carried a C
+//! function pointer, a `void *` and a command string; here a button carries what it *emits*
+//! -- a value of the application's own event type -- and, optionally, where it navigates.
+//! Activation returns the emitted value for the caller to publish on its bus, which is the
+//! "command tree is the event bus" decision applied to the UI: a tap, a console line and a
+//! boot script all end up as the same event, and a handler runs on its own module's poll
+//! rather than inside the input path.
 //!
-//! **Hardware-free**, as mk3's was: nothing here knows what a touch controller, a push button
-//! or an IMU is. The application maps its devices onto the input calls (a few lines per app),
-//! and the toolkit can be exercised entirely on the host.
+//! **Hardware-free**, as its predecessor was: nothing here knows what a touch controller, a
+//! push button or an IMU is. The application maps its devices onto the input calls (a few
+//! lines per app), and the toolkit can be exercised entirely on the host.
 //!
 //! Coordinates: every widget rect is in ABSOLUTE logical canvas coordinates, never
 //! parent-relative, so a hit test, a clip and an invalidation are the same arithmetic wherever a
@@ -1322,7 +1323,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// a small BREATHING MARGIN, not the corner radius: the curve is carried by the
         /// root window's own corner radius (the glass's measured radius minus this inset --
         /// insetting a rounded rectangle by d leaves a rounded rectangle of radius r - d).
-        /// Setting the full glass radius here is the superseded mk3 approach that gave up a
+        /// Setting the full glass radius here is the superseded approach that gave up a
         /// whole band on every edge to keep a SQUARE frame inside round glass.
         /// Install a look-and-feel; every element repaints with it. Install it BEFORE
         /// building pages: container corner radii resolve from the theme when a window is
@@ -1459,8 +1460,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
                 drop(c);
                 // linear in time: at roughly ten frames for the whole turn an eased curve is
-                // below what the eye picks out, and linear keeps the angle predictable on the
-                // bench. Shrunk to whatever still fits, or the corners are sliced off mid-turn
+                // below what the eye picks out, and linear keeps the angle predictable.
+                // Shrunk to whatever still fits, or the corners are sliced off mid-turn
                 let angle = ((self.rotate_degrees as i64 * elapsed as i64) / (i64::from(self.rotate_ms) * 1000)) as i16;
                 if let Some((front, captured)) = display.frame_and_capture() {
                         let mut c = layer.canvas(front);
@@ -1639,8 +1640,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
 
         /// Fire a button: returns what it emits, then navigates if it says to. EVERYTHING is read
         /// before navigation, because navigation destroys the tree, the button included -- found
-        /// the hard way in mk3, where reading a field after a navigating handler dereferenced
-        /// freed memory and wedged the core.
+        /// the hard way in the C implementation this replaces, where reading a field after a
+        /// navigating handler dereferenced freed memory and wedged the core.
         fn fire(&mut self, id: WidgetId) -> Option<A> {
                 let (emit, nav, label) = match self.w(id).button() {
                         Some(b) => (b.emit, b.nav, b.label),

@@ -1,5 +1,5 @@
 #   the WeAct MiniSTM32H7xx on bare CMSIS: the CMSIS shell with a Rust app on the board's
-# 160x80 ST7735, driven from its one key and the USART console. mk3's screentest_mini_stm32h7 on
+# 160x80 ST7735, driven from its one key and the USART console. This board's demo on
 # the mk4 stack, and the first target with no SDK under the shell at all.
 add_executable(light_mk4_h7)
 
@@ -13,7 +13,7 @@ light_mk4_add_font(light_mk4_h7_font
         CRATE light_app_h7 ENV LIGHT_FONT_LGF
 )
 
-#   the framework's default look-and-feel for a color board (steel), plus this rig's
+#   the framework's default look-and-feel for a color board (steel), plus this board's
 # decorative 6 px outer rounding -- carried over from the pre-theme demo
 light_mk4_add_theme(light_mk4_h7_theme
         THEME ${CMAKE_CURRENT_LIST_DIR}/theme/h7.json

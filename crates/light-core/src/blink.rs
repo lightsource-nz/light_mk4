@@ -4,7 +4,7 @@
 use crate::hal::{Clock, OutputPin};
 
 /// Toggles an output every `period_us`, driven by polling rather than blocking, so it can
-/// share a loop with everything else the way mk3's periodic tasks do.
+/// share a loop with everything else the way every periodic task here does.
 pub struct Blinker {
         period_us: u64,
         next_us: u64,

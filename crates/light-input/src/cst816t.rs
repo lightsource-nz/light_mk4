@@ -1,4 +1,4 @@
-//! CST816T capacitive touch controller, ported from mk3's `light_touch_cst816t`.
+//! CST816T capacitive touch controller, ported from the predecessor C framework's driver.
 //!
 //! Carried over: reading on a cadence rather than only on the interrupt (the INT pulse is
 //! 1-3 ms and a loaded poll loop samples past it), backing off a controller that does not
@@ -7,7 +7,7 @@
 //! release from silence while the loop was demonstrably looking -- and the non-blocking reset
 //! recovery for a controller that asserts INT but will not answer. That last one was left out
 //! of the first cut of this port, and the panel went deaf after four taps on the first run: the
-//! failure mk3 documented, reproduced on the first try. The war stories are the spec.
+//! failure the original driver documented, reproduced on the first try. The war stories are the spec.
 
 use light_core::hal::{Clock, I2cBus, InputPin, OutputPin};
 
@@ -19,8 +19,8 @@ const FRAME_LEN: usize = 6;
 
 /// Matched to the controller's own ~83 Hz report rate while a finger is down.
 const POLL_INTERVAL_MS: u32 = 10;
-/// The least time between two reads even when INT says data is ready. mk3 read "on the spot"
-/// from a ~1 kHz loop, so at most a read or two per 1-3 ms pulse; this runtime polls a few
+/// The least time between two reads even when INT says data is ready. The original driver read
+/// "on the spot" from a ~1 kHz loop, so at most a read or two per 1-3 ms pulse; this runtime polls a few
 /// hundred thousand times a second, and without a floor the same rule issued back-to-back
 /// reads for the whole pulse -- and the controller wedged every few seconds of tapping.
 const INT_READ_FLOOR_MS: u32 = 4;
@@ -95,7 +95,7 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> crate::touch::HardwareGestures for Cs
                 let code = core::mem::replace(&mut self.last_gesture, GESTURE_NONE);
                 // the vertical codes are mapped to their OPPOSITE, which is what the hardware
                 // actually does: the code the reference drivers call "swipe up" is reported for
-                // a swipe toward increasing y. Confirmed on hardware by mk3, vertical only.
+                // a swipe toward increasing y. Confirmed on hardware, vertical only.
                 match code {
                         GESTURE_SWIPE_UP => Some(Swipe::Down),
                         GESTURE_SWIPE_DOWN => Some(Swipe::Up),
@@ -230,8 +230,8 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
                 let int_asserted = self.int.is_low();
                 let quiet = self.unanswered >= QUIET_AFTER_FAILS;
                 //   two questions: may the controller be read at all, and has enough time
-                // passed. INT answers the first and used to answer both -- see mk3 for the
-                // thousand aborted transfers that shortcut cost when INT was stuck asserted
+                // passed. INT answers the first and used to answer both -- a shortcut that once
+                // cost a thousand aborted transfers when INT was stuck asserted
                 let allowed = int_asserted || !quiet;
                 let since_attempt = now_ms.wrapping_sub(self.last_attempt_ms);
                 let due = (int_asserted && self.unanswered == 0 && since_attempt >= INT_READ_FLOOR_MS)

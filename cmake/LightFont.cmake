@@ -4,10 +4,10 @@
 #           CRATE <rust crate> ENV <VAR>)
 #
 #   Renders FONT for the given display with the Rust crush and hands the resulting LGF blob to a
-# Rust crate as an environment variable, for `include_bytes!(env!("<VAR>"))`. This is mk4's
-# counterpart to mk3's crush_add_font_target(): the same one-batch console script, but the
-# product is data the firmware embeds rather than C it compiles, and the consumer is a cargo
-# build rather than a C target.
+# Rust crate as an environment variable, for `include_bytes!(env!("<VAR>"))`. This is the
+# counterpart to the C implementation's crush_add_font_target(): the same one-batch console
+# script, but the product is data the firmware embeds rather than C it compiles, and the
+# consumer is a cargo build rather than a C target.
 #
 #   Ordering is the whole point of the function. cargo cannot know a file CMake generates
 # exists, so the crate's cargo-build target is made to depend on the render, and the crate sees

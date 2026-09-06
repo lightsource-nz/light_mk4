@@ -1,7 +1,7 @@
 //! Board wiring for the Waveshare RP2350-Touch-LCD-2.8: pins from the board's official
 //! schematic, cross-checked against two independent open-source drivers for this exact board
-//! -- the same paper trail the 1.69's pinout had before ITS bring-up. mk3 committed this
-//! wiring build-verified only; this is its first board on a bench.
+//! -- the same paper trail the 1.69's pinout had before ITS bring-up. This wiring is
+//! build-verified only; it has not yet met hardware.
 //!
 //! This lives with the APPLICATION, not in the port crate: `light-rp2` knows the chip and
 //! nothing about what anyone soldered to it.

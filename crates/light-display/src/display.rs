@@ -1,6 +1,6 @@
 //! The display core: owns the frame buffer and drives updates as a sequence of chunks.
 //!
-//! This is mk3's chunk model (`light_display_chunk_model`), the most hardware-tested design in
+//! This is the predecessor C framework's chunk model, the most hardware-tested design in
 //! the stack, made host-testable. A driver answers three questions about an update -- how many
 //! chunks, how to push chunk N, has the one in flight landed -- and the core owns everything
 //! else: the in-progress state, the per-chunk deadline, the chunk index, and the spin-or-yield
@@ -9,7 +9,8 @@
 //! tick) are each a test below.
 //!
 //! What Rust adds: while an update is in flight the frame buffer cannot be mutated, because
-//! [`Display::frame_mut`] returns `None`. mk3 documented that rule; here it is the borrow.
+//! [`Display::frame_mut`] returns `None`. That rule used to be documentation; here it is the
+//! borrow.
 
 use light_draw::PixelFormat;
 pub use light_draw::Region;
@@ -143,7 +144,7 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
         /// Copy what is on the panel into the back buffer and stop swapping: drawing then goes
         /// into the FRONT buffer, frame after frame, while the back holds the captured image
         /// for a blit to sample. This is how an animation keeps the pre-rotation image, or the
-        /// outgoing page, for its duration -- mk3's `set_double_buffer(false)` after a memcpy.
+        /// outgoing page, for its duration.
         /// Refused (`false`) while an update is reading the front, or without a back buffer.
         pub fn freeze(&mut self) -> bool {
                 if self.update.is_some() {
@@ -359,8 +360,8 @@ mod tests {
                 let mut buf = [0u8; 16 * 8 * 2];
                 set_now(0);
                 //   chunks complete on the second query, so a poll that yielded on the first
-                // would move one row per pass -- the mk3 bug. with a budget of 3 it spins
-                // through three rows before handing back
+                // would move one row per pass -- the yield-on-first-wait bug. with a budget
+                // of 3 it spins through three rows before handing back
                 let mut mock = Mock::new(1);
                 mock.per_poll_narrow = 3;
                 let mut d = display(&mut buf, mock);

@@ -1,4 +1,4 @@
-//! A debounced button over any input, ported from mk3's `light_button`.
+//! A debounced button over any input, ported from the predecessor C framework.
 //!
 //! The driver only answers "is the contact closed right now"; the debounce lives here once,
 //! for the same reason the async update state machine lives in the display core rather than
