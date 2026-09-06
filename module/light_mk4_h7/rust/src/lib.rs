@@ -9,7 +9,7 @@
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::st7735::St7735;
-use light_ui::{scroll, Desc, Page, Ui};
+use light_ui::{scroll, Desc, Page, Theme, Ui};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -57,6 +57,9 @@ const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY
 static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel: the framework's default for a color board (steel), with this
+/// rig's outer rounding -- see theme/h7.json.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 fn log_sink(record: &log::Record) {
         let mut line = StackString::<160>::new();
@@ -66,11 +69,9 @@ fn log_sink(record: &log::Record) {
 
 // --- the interface, as data ---------------------------------------------------------------
 
-const CORNER_RADIUS: u8 = 6;
 const ROW_GAP: u8 = 1;
 const LIST_MIN_ROW: i32 = 16;
 const FPS: u32 = 30;
-const BG: u16 = 0x0000;
 /// A long press activates; anything shorter moves the focus.
 const HOLD_MS: u32 = 500;
 
@@ -80,14 +81,14 @@ const LABEL_ON: [&str; 2] = ["Alpha *", "Beta *"];
 static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Toggle(0)).tag(1);
 static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Toggle(1)).tag(2);
 static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 h7").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_LIST]);
+static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4 h7").stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_LIST]);
 static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Item(1)).min_size(0, LIST_MIN_ROW);
 static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Item(2)).min_size(0, LIST_MIN_ROW);
 static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Item(3)).min_size(0, LIST_MIN_ROW);
 static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Item(4)).min_size(0, LIST_MIN_ROW);
 static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Item(5)).min_size(0, LIST_MIN_ROW);
 static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> = Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &BTN_LIST_BACK]);
+static LIST_WINDOW: Desc<AppEvent> = Desc::window("List").stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &BTN_LIST_BACK]);
 static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
 static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
 const UI_WIDGETS: usize = 8;
@@ -164,9 +165,9 @@ impl Module for DisplayMod {
                 let mut clock = SysClock;
                 self.display.driver().set_offset(DISPLAY_COL_OFFSET, DISPLAY_ROW_OFFSET);
                 self.display.init(&mut clock);
-                self.display.driver().clear(BG);
+                self.display.driver().clear(self.ui.theme().bg);
                 self.layer.set_frame_rate(FPS);
-                self.layer.bg = BG;
+                self.layer.bg = self.ui.theme().bg;
                 self.ui.fit(self.layer);
                 if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
                         warn!("the main page did not build: {e:?}");
@@ -380,6 +381,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Ok(f) => f,
                 Err(e) => panic!("the embedded font does not parse: {e:?}"),
         };
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
 
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();

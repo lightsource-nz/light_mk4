@@ -108,7 +108,9 @@ pub struct Window {
         pub padding: u8,
         pub border: bool,
         /// 0 for a square frame; otherwise the frame is rounded and content keeps clear of the
-        /// curve -- see [`Ui::set_corner_radius`].
+        /// curve -- see [`Ui::set_corner_radius`]. Resolved from the theme at creation --
+        /// [`Theme::screen_radius`] for the outer window, [`Theme::radius`] inside -- unless
+        /// the descriptor names its own.
         pub corner_radius: u8,
         pub layout: Layout,
         /// `scroll::*` flags. While any is set, painting and hit-testing clip the children to the
@@ -328,6 +330,10 @@ impl<A: Copy> Desc<A> {
                 self.nav = Nav::Back;
                 self
         }
+        /// Name a window's own corner radius, overriding the theme's -- which otherwise
+        /// supplies [`Theme::screen_radius`] for the outer window and [`Theme::radius`]
+        /// inside. 0 (the unset value) means themed, so a square frame under a rounded
+        /// theme is expressed in the theme, not here.
         pub const fn rounded(mut self, radius: u8) -> Self {
                 self.corner_radius = radius;
                 self
@@ -748,8 +754,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         /// `parent` may be `None` for the root. `rect` is absolute.
+        ///
+        /// The corner radius comes from the theme: the OUTER window wears the glass's own
+        /// curvature ([`Theme::screen_radius`], zero on square screens) so the frame
+        /// parallels the screen edge, and every interior container the house radius.
         pub fn create_window(&mut self, parent: Option<WidgetId>, rect: Rect, title: Option<&'static str>) -> Result<WidgetId, Error> {
-                let win = Window { title, padding: 2, border: true, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0 };
+                let corner_radius = if parent.is_none() { self.theme.screen_radius } else { self.theme.radius };
+                let win = Window { title, padding: 2, border: true, corner_radius, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0 };
                 self.add(parent, Kind::Window(win), rect, false)
         }
 
@@ -774,9 +785,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 let id = self.create_window(parent, rect, desc.text)?;
                                 //   before the children exist: the corner clearance is then already
                                 // accounted for when the single layout pass runs; and scrolling
-                                // changes how the stack treats rows that do not fit
+                                // changes how the stack treats rows that do not fit. An unset desc
+                                // radius keeps the themed one create_window resolved
                                 let win = self.w_mut(id).window_mut().expect("a window");
-                                win.corner_radius = desc.corner_radius;
+                                if desc.corner_radius != 0 {
+                                        win.corner_radius = desc.corner_radius;
+                                }
                                 win.scroll = desc.scroll;
                                 id
                         }
@@ -1310,7 +1324,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// insetting a rounded rectangle by d leaves a rounded rectangle of radius r - d).
         /// Setting the full glass radius here is the superseded mk3 approach that gave up a
         /// whole band on every edge to keep a SQUARE frame inside round glass.
-        /// Install a look-and-feel; every element repaints with it. Typically parsed from
+        /// Install a look-and-feel; every element repaints with it. Install it BEFORE
+        /// building pages: container corner radii resolve from the theme when a window is
+        /// created, so a theme swapped under a live tree recolors it but keeps its
+        /// geometry until the next page build. Typically parsed from
         /// an embedded LTH blob ([`Theme::parse`]) -- theming is a data change, never an
         /// edit to this crate.
         pub fn set_theme(&mut self, theme: Theme) {
@@ -2063,20 +2080,29 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // list row in flight) is an ordinary square row: the frame-following
                         // corners belong to the docked position, and the old fallback --
                         // rect_rounded, whose clamp shrank and re-anchored the arc -- is the
-                        // very picture this construction replaced
-                        let radius = if flush { 0 } else { u16::from(btn.corner_radius) };
+                        // very picture this construction replaced. A button the layout gave
+                        // no corner treatment wears the theme's radius on all four instead
+                        let themed = btn.corners == light_draw::corner::NONE;
+                        let radius = if flush {
+                                0
+                        } else if themed {
+                                u16::from(self.theme.radius)
+                        } else {
+                                u16::from(btn.corner_radius)
+                        };
+                        let corners = if themed { light_draw::corner::ALL } else { btn.corners };
                         let saved_fg = c.fg;
                         if focused {
                                 //   the selection: shaded when the theme carries a focus
                                 // surface -- the cell reads as LIT -- else a solid fill in
                                 // the outline color
                                 match self.theme.focus_surface {
-                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
+                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, corners, s.from, s.to),
                                         Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
                                         None => {
                                                 c.fg = self.theme.button_outline;
                                                 if radius != 0 {
-                                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
+                                                        c.rect_rounded(p0, p1, radius, corners, true);
                                                 } else {
                                                         c.rect(p0, p1, true);
                                                 }
@@ -2088,12 +2114,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 // or the flat background -- so a draw-over frame leaves
                                 // nothing of the previous image inside the outline
                                 match btn.shade.or(self.theme.button_surface) {
-                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, btn.corners, s.from, s.to),
+                                        Some(s) if radius != 0 => c.rect_rounded_shaded(p0, p1, radius, corners, s.from, s.to),
                                         Some(s) => c.rect_shaded(p0, p1, s.from, s.to),
                                         None => {
                                                 c.fg = c.bg;
                                                 if radius != 0 {
-                                                        c.rect_rounded(p0, p1, radius, btn.corners, true);
+                                                        c.rect_rounded(p0, p1, radius, corners, true);
                                                 } else {
                                                         c.rect(p0, p1, true);
                                                 }
@@ -2101,7 +2127,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 }
                                 c.fg = self.theme.button_outline;
                                 if radius != 0 {
-                                        c.rect_rounded(p0, p1, radius, btn.corners, false);
+                                        c.rect_rounded(p0, p1, radius, corners, false);
                                 } else {
                                         c.rect(p0, p1, false);
                                 }

@@ -11,7 +11,7 @@
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::sh1107::Sh1107;
-use light_ui::{scroll, Desc, Page, Ui};
+use light_ui::{scroll, Desc, Page, Theme, Ui};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -58,6 +58,9 @@ static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 /// 64x128 at 1 bpp: one kilobyte.
 static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel: the framework's MONO default (this panel is 1 bpp), with this
+/// rig's outer rounding -- see theme/po13.json.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 fn log_sink(record: &log::Record) {
         let mut line = StackBuf::<160> { buf: [0; 160], len: 0 };
@@ -82,7 +85,6 @@ pub extern "C" fn light_app_core1_service() {
 // The same shape as the touch169's, cut to what 128x64 logical pixels hold: three rows per
 // page. The list page overflows on purpose, and KEY0 cycling focus through it is what scrolls it.
 
-const CORNER_RADIUS: u8 = 6;
 const ROW_GAP: u8 = 1;
 const LIST_MIN_ROW: i32 = 14;
 const FPS: u32 = 20;
@@ -93,7 +95,7 @@ const LABEL_ON: [&str; 2] = ["Alpha *", "Beta *"];
 static BTN_ALPHA: Desc<AppEvent> = Desc::button(LABEL_OFF[0]).emit(AppEvent::Toggle(0)).tag(1);
 static BTN_BETA: Desc<AppEvent> = Desc::button(LABEL_OFF[1]).emit(AppEvent::Toggle(1)).tag(2);
 static BTN_LIST: Desc<AppEvent> = Desc::button("List >").navigate(&PAGE_LIST);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_LIST]);
+static MAIN_WINDOW: Desc<AppEvent> = Desc::window("mk4").stack(ROW_GAP).children(&[&BTN_ALPHA, &BTN_BETA, &BTN_LIST]);
 
 static ITEM_1: Desc<AppEvent> = Desc::button("Item 1").emit(AppEvent::Item(1)).min_size(0, LIST_MIN_ROW);
 static ITEM_2: Desc<AppEvent> = Desc::button("Item 2").emit(AppEvent::Item(2)).min_size(0, LIST_MIN_ROW);
@@ -101,7 +103,7 @@ static ITEM_3: Desc<AppEvent> = Desc::button("Item 3").emit(AppEvent::Item(3)).m
 static ITEM_4: Desc<AppEvent> = Desc::button("Item 4").emit(AppEvent::Item(4)).min_size(0, LIST_MIN_ROW);
 static ITEM_5: Desc<AppEvent> = Desc::button("Item 5").emit(AppEvent::Item(5)).min_size(0, LIST_MIN_ROW);
 static BTN_LIST_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
-static LIST_WINDOW: Desc<AppEvent> = Desc::window("List").rounded(CORNER_RADIUS).stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &BTN_LIST_BACK]);
+static LIST_WINDOW: Desc<AppEvent> = Desc::window("List").stack(ROW_GAP).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5, &BTN_LIST_BACK]);
 
 static PAGE_MAIN: Page<AppEvent> = Page::new(&MAIN_WINDOW, None);
 static PAGE_LIST: Page<AppEvent> = Page::new(&LIST_WINDOW, Some(&PAGE_MAIN));
@@ -353,6 +355,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
         let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
         static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
         let oled_mod = OLED_MOD.init(OledMod { display, layer, font, ui, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });

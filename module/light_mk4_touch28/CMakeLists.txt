@@ -20,10 +20,9 @@ light_mk4_add_font(light_mk4_touch28_font
         CRATE light_app_touch28 ENV LIGHT_FONT_LGF
 )
 
-#   the demo's look-and-feel: a data file compiled to a blob the firmware embeds --
-# restyling this app is an edit to theme/steel.json, nothing else
+#   the framework's default look-and-feel for a color board (steel); a board override
+# would be a local THEME file extending "default"
 light_mk4_add_theme(light_mk4_touch28_theme
-        THEME ${CMAKE_CURRENT_LIST_DIR}/theme/steel.json
         CRATE light_app_touch28 ENV LIGHT_THEME_LTH
 )
 

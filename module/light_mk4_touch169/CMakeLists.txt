@@ -22,4 +22,11 @@ light_mk4_add_font(light_mk4_touch169_font
         CRATE light_app_touch169 ENV LIGHT_FONT_LGF
 )
 
+#   the demo's look-and-feel: the framework's mono theme plus this GLASS's measured
+# corner curvature -- see theme/round169.json and the THEME_BLOB note in the Rust app
+light_mk4_add_theme(light_mk4_touch169_theme
+        THEME ${CMAKE_CURRENT_LIST_DIR}/theme/round169.json
+        CRATE light_app_touch169 ENV LIGHT_THEME_LTH
+)
+
 light_mk4_shell_configure(light_mk4_touch169)

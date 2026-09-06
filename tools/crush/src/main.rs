@@ -65,10 +65,16 @@ pub enum Command {
 pub enum ThemeCmd {
         /// Compile a JSON theme into the binary blob the firmware embeds
         Compile {
-                /// The theme source (JSON)
+                /// The theme source (JSON), possibly extending a base
                 input: PathBuf,
                 /// Where the LTH blob goes
                 output: PathBuf,
+                /// Where `extends: "<name>"` finds framework themes
+                #[arg(long = "themes")]
+                themes: Option<PathBuf>,
+                /// The theme `extends: "default"` aliases -- the board's default
+                #[arg(long = "default")]
+                default: Option<String>,
         },
 }
 
@@ -231,7 +237,7 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                         }
                 },
                 Command::Theme { cmd } => match cmd {
-                        ThemeCmd::Compile { input, output } => theme::compile(&input, &output),
+                        ThemeCmd::Compile { input, output, themes, default } => theme::compile(&input, &output, themes.as_deref(), default.as_deref()),
                 },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }

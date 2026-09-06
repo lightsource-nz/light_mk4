@@ -38,6 +38,13 @@ pub mod key {
         /// Every button's unfocused surface, a vertical shade (u16 from, u16 to); a
         /// widget's own [`crate::Desc::shaded`] overrides it.
         pub const BUTTON_SURFACE: u16 = 0x0011;
+        /// Corner radius on every container and control (u16 pixels); a widget's own
+        /// [`crate::Desc::rounded`] overrides it.
+        pub const RADIUS: u16 = 0x0020;
+        /// The GLASS's corner curvature (u16 pixels), worn by the outer container --
+        /// and, through it, by the bottom row of a scrolling stack, which sits flush
+        /// and follows the curve. Zero on rectangular screens.
+        pub const SCREEN_RADIUS: u16 = 0x0021;
 }
 
 /// A complete look-and-feel: what every element paints with. Colors are RGB565; on a
@@ -53,10 +60,17 @@ pub struct Theme {
         pub focus_text: u16,
         pub focus_surface: Option<Shade>,
         pub button_surface: Option<Shade>,
+        /// Corner radius every container and control wears unless a descriptor says
+        /// otherwise. Small by default: gently rounded is the house look.
+        pub radius: u8,
+        /// The glass's own corner curvature, taken by the outer container so the frame
+        /// parallels the screen edge; zero (square) by default, set per board.
+        pub screen_radius: u8,
 }
 
 impl Theme {
-        /// The pre-theme look, exactly: white on black, solid inverted focus.
+        /// The house look: white on black, solid inverted focus, gently rounded
+        /// controls, square glass.
         pub const DEFAULT: Theme = Theme {
                 bg: 0x0000,
                 frame: 0xFFFF,
@@ -67,6 +81,8 @@ impl Theme {
                 focus_text: 0x0000,
                 focus_surface: None,
                 button_surface: None,
+                radius: 3,
+                screen_radius: 0,
         };
 
         /// Parse an LTH blob. Unknown keys are skipped; known keys with the wrong length
@@ -105,6 +121,15 @@ impl Theme {
                                 *field = Some(Shade { from: u16le(payload, 0), to: u16le(payload, 2) });
                                 Ok(())
                         };
+                        //   metrics travel as u16 like colors; the toolkit's radii are u8, so
+                        // an outlandish value saturates rather than wrapping into a small one
+                        let metric = |field: &mut u8| -> Result<(), ThemeError> {
+                                if payload.len() != 2 {
+                                        return Err(ThemeError::BadEntry(k));
+                                }
+                                *field = u16le(payload, 0).min(255) as u8;
+                                Ok(())
+                        };
                         match k {
                                 key::BG => color(&mut theme.bg)?,
                                 key::FRAME => color(&mut theme.frame)?,
@@ -115,6 +140,8 @@ impl Theme {
                                 key::FOCUS_TEXT => color(&mut theme.focus_text)?,
                                 key::FOCUS_SURFACE => shade(&mut theme.focus_surface)?,
                                 key::BUTTON_SURFACE => shade(&mut theme.button_surface)?,
+                                key::RADIUS => metric(&mut theme.radius)?,
+                                key::SCREEN_RADIUS => metric(&mut theme.screen_radius)?,
                                 //   a key from a future format: skipped, styled by default
                                 _ => {}
                         }
@@ -176,6 +203,21 @@ mod tests {
                 assert_eq!(t.bg, 0x1082);
                 assert_eq!(t.focus_surface, Some(Shade { from: 0x4C5D, to: 0x090E }));
                 assert_eq!(t.frame, 0xFFFF, "untouched fields keep the default");
+        }
+
+        #[test]
+        fn metrics_apply_and_saturate() {
+                let t = Theme::parse(&blob(&[
+                        (key::RADIUS, &6u16.to_le_bytes()),
+                        (key::SCREEN_RADIUS, &42u16.to_le_bytes()),
+                ]))
+                .unwrap();
+                assert_eq!(t.radius, 6);
+                assert_eq!(t.screen_radius, 42);
+                assert_eq!(Theme::parse(&blob(&[])).unwrap().screen_radius, 0, "screens are square until a theme says otherwise");
+                //   a u16 metric past the toolkit's u8 saturates instead of wrapping small
+                let t = Theme::parse(&blob(&[(key::RADIUS, &1000u16.to_le_bytes())])).unwrap();
+                assert_eq!(t.radius, 255);
         }
 
         #[test]

@@ -1,0 +1,20 @@
+{
+        "name": "mono",
+        "colors": {
+                "bg": "0000",
+                "frame": "FFFF",
+                "title": "FFFF",
+                "text": "FFFF",
+                "button_outline": "FFFF",
+                "button_text": "FFFF",
+                "focus_text": "0000"
+        },
+        "surfaces": {
+                "focus": null,
+                "button": null
+        },
+        "metrics": {
+                "radius": 3,
+                "screen_radius": 0
+        }
+}

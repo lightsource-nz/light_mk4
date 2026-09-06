@@ -1,0 +1,5 @@
+{
+        "name": "h7",
+        "extends": "default",
+        "metrics": { "screen_radius": 6 }
+}

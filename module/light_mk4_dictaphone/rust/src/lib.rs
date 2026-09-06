@@ -20,7 +20,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::{Gesture, Tracker};
-use light_ui::{scroll, Desc, Page, SwipeDir, TextSlot, Touch, Ui};
+use light_ui::{scroll, Desc, Page, SwipeDir, TextSlot, Theme, Touch, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Outcome, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -291,6 +291,9 @@ static FRAME_FRONT: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0
 static FRAME_BACK: ConstStaticCell<[u8; FRAME_BYTES]> = ConstStaticCell::new([0; FRAME_BYTES]);
 
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
+/// The look-and-feel: the framework's steel theme, the default for every board with
+/// color support. A board-specific override would be a local theme file extending it.
+static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -470,13 +473,12 @@ pub extern "C" fn light_app_core1_service() {
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// Bar glass, corners unmeasured: 0 until the glass says otherwise.
-const CORNER_RADIUS: u8 = 0;
+//   Bar glass, corners unmeasured: the theme's screen_radius keeps its default of 0
+// until the glass says otherwise.
 const ROW_GAP: u8 = 6;
 /// A 640-tall list has room; rows sized for a finger on the narrow bar.
 const LIST_MIN_ROW: i32 = 56;
 const FPS: u32 = 30;
-const BG: u16 = 0x0000;
 
 /// Widget tags: how a module finds a widget again to rewrite its text at runtime.
 const TAG_STATUS: u8 = 1;
@@ -493,7 +495,7 @@ static LBL_STATUS: Desc<AppEvent> = Desc::label("ready").tag(TAG_STATUS).min_siz
 static BTN_REC: Desc<AppEvent> = Desc::button("* Record").emit(AppEvent::Ui(UiAction::RecToggle)).tag(TAG_REC).min_size(0, 88);
 static BTN_PLAY: Desc<AppEvent> = Desc::button("Play last").emit(AppEvent::Ui(UiAction::PlayToggle)).tag(TAG_PLAY).min_size(0, LIST_MIN_ROW);
 static BTN_FILES: Desc<AppEvent> = Desc::button("Recordings >").emit(AppEvent::Ui(UiAction::FilesOpen)).navigate(&PAGE_FILES).min_size(0, LIST_MIN_ROW);
-static MAIN_WINDOW: Desc<AppEvent> = Desc::window("Dictaphone").rounded(CORNER_RADIUS).stack(ROW_GAP).children(&[&LBL_STATUS, &BTN_REC, &BTN_PLAY, &BTN_FILES]);
+static MAIN_WINDOW: Desc<AppEvent> = Desc::window("Dictaphone").stack(ROW_GAP).children(&[&LBL_STATUS, &BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
 static ROW_0: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::PlayRow(0))).tag(TAG_ROW_BASE).min_size(0, LIST_MIN_ROW);
 static ROW_1: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::PlayRow(1))).tag(TAG_ROW_BASE + 1).min_size(0, LIST_MIN_ROW);
@@ -505,7 +507,6 @@ static ROW_6: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::Pla
 static ROW_7: Desc<AppEvent> = Desc::button("-").emit(AppEvent::Ui(UiAction::PlayRow(7))).tag(TAG_ROW_BASE + 7).min_size(0, LIST_MIN_ROW);
 static BTN_FILES_BACK: Desc<AppEvent> = Desc::button("< Back").back().min_size(0, LIST_MIN_ROW);
 static FILES_WINDOW: Desc<AppEvent> = Desc::window("Recordings")
-        .rounded(CORNER_RADIUS)
         .stack(ROW_GAP)
         .scroll(scroll::VERTICAL)
         .children(&[&ROW_0, &ROW_1, &ROW_2, &ROW_3, &ROW_4, &ROW_5, &ROW_6, &ROW_7, &BTN_FILES_BACK]);
@@ -708,7 +709,7 @@ impl Module for DisplayMod {
                 let mut clock = SysClock;
                 self.display.init(&mut clock);
                 self.layer.set_frame_rate(FPS);
-                self.layer.bg = BG;
+                self.layer.bg = self.ui.theme().bg;
                 self.ui.fit(self.layer);
                 if let Err(e) = self.ui.navigate(&PAGE_MAIN) {
                         warn!("the main page did not build: {e:?}");
@@ -2068,7 +2069,14 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static UI: ConstStaticCell<Ui<AppEvent, UI_WIDGETS>> = ConstStaticCell::new(Ui::new());
         let layer: &'static mut FrameLayer = LAYER.take();
         let ui: &'static mut Ui<AppEvent, UI_WIDGETS> = UI.take();
-        layer.bg = BG;
+        //   the look-and-feel, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, not styling to guess past
+        let theme = match Theme::parse(THEME_BLOB) {
+                Ok(t) => t,
+                Err(e) => panic!("the embedded theme does not parse: {e:?}"),
+        };
+        layer.bg = theme.bg;
+        ui.set_theme(theme);
         ui.set_font(&font);
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod {

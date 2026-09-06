@@ -41,4 +41,10 @@ target_compile_definitions(light_mk4_touch4 PRIVATE
         PLL_SYS_POSTDIV2=1
 )
 
+#   the framework's default look-and-feel for a color board (steel); a board override
+# would be a local THEME file extending "default"
+light_mk4_add_theme(light_mk4_touch4_theme
+        CRATE light_app_touch4 ENV LIGHT_THEME_LTH
+)
+
 light_mk4_shell_configure(light_mk4_touch4)

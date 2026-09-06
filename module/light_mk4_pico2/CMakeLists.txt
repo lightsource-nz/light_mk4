@@ -20,4 +20,11 @@ light_mk4_add_font(light_mk4_pico2_font
         CRATE light_app_pico2 ENV LIGHT_FONT_LGF
 )
 
+#   the framework's default look-and-feel for a MONO board (steel's focused fill
+# collapses illegibly at 1 bpp), plus this rig's decorative 6 px outer rounding
+light_mk4_add_theme(light_mk4_pico2_theme MONO
+        THEME ${CMAKE_CURRENT_LIST_DIR}/theme/po13.json
+        CRATE light_app_pico2 ENV LIGHT_THEME_LTH
+)
+
 light_mk4_shell_configure(light_mk4_pico2)
