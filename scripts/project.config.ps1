@@ -45,7 +45,7 @@
                 'light_mk4_touch28'  = @{ Preset = 'conf-light_mk4-touch28-debug'; Flash = 'uf2' }
                 'light_mk4_touch349' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
                 # the dictaphone: a second application on the 3.49, same board and tree
-                'light_mk4_dictaphone' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
+                'dictaphone_touch349' = @{ Preset = 'conf-light_mk4-touch349-debug'; Flash = 'uf2' }
                 'light_mk4_touch4'   = @{ Preset = 'conf-light_mk4-touch4-debug'; Flash = 'uf2' }
                 # the pico2 target -- a Pico 2 with the Waveshare Pico-OLED-1.3 display board
                 # -- flashes over SWD; Flash='swd' records that light-flash.ps1's BOOTSEL path

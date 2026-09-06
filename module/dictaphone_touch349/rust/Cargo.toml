@@ -1,14 +1,18 @@
 [package]
-name = "light_app_dictaphone"
+#   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module
+# directory -- light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target
+# names are one namespace with Corrosion's crate targets
+name = "dictaphone_touch349_app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the Rust half of the dictaphone firmware: a voice recorder with a touch interface on the RP2350-Touch-LCD-3.49"
+description = "the dictaphone on the Waveshare RP2350-Touch-LCD-3.49: the hardware-bound instantiation -- pins, QSPI panel, codec transport, TF slot, shell glue -- around the light_app_dictaphone application"
 
 [lib]
 crate-type = ["staticlib"]
 
 [dependencies]
+light_app_dictaphone = { path = "../../../crates/light_app_dictaphone" }
 light-core = { path = "../../../crates/light-core" }
 light-draw = { path = "../../../crates/light-draw" }
 light-display = { path = "../../../crates/light-display" }
@@ -18,5 +22,4 @@ light-audio = { path = "../../../crates/light-audio" }
 light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350"] }
 light-rtc = { path = "../../../crates/light-rtc" }
 light-sd = { path = "../../../crates/light-sd" }
-light-fs = { path = "../../../crates/light-fs" }
 light-font = { path = "../../../crates/light-font" }

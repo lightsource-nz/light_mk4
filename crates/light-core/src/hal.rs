@@ -33,6 +33,44 @@ pub trait OutputPin {
         fn set(&mut self, high: bool);
 }
 
+/// A synchronous-audio stream: a continuously running DAC output refilled by callback --
+/// silence when the callback writes none -- and an optional capture path draining filled
+/// buffers by callback. The port owns the buffers, their sizes and the transport (DMA
+/// ping-pong, typically); the application owns only the samples.
+///
+/// Formats: the OUTPUT buffer is one `u32` word per frame -- the fill callback places a
+/// 16-bit sample in both halves to play it on both slots. CAPTURE buffers are mono `u16`
+/// samples in the machine's byte order.
+pub trait AudioStream {
+        /// Start the output stream. Called once, at the owning module's load.
+        fn start(&mut self);
+
+        /// Start (or resume) capture into the stream's own buffers.
+        fn capture_start(&mut self);
+
+        fn capture_stop(&mut self);
+
+        /// Drain filled capture buffers, invoking `sink` once per buffer.
+        fn capture_take(&mut self, sink: &mut dyn FnMut(&[u16]));
+
+        /// Refill any output buffers the transport has emptied, invoking `fill` once per
+        /// buffer. Call every poll while anything plays; a starved stream underruns.
+        fn refill(&mut self, fill: &mut dyn FnMut(&mut [u32]));
+
+        /// Output buffers the transport re-sent for want of a refill, since the last reset.
+        fn underruns(&self) -> u32;
+
+        /// Capture buffers dropped for want of draining, since the last reset.
+        fn cap_overruns(&self) -> u32;
+
+        /// Zero both counters, so each reading covers the interval since the last.
+        fn reset_stats(&mut self);
+
+        /// A port-specific capture-path probe for bring-up diagnostics, logging whatever it
+        /// finds; the default has nothing to say.
+        fn debug_probe(&mut self) {}
+}
+
 /// A digital input, for interrupt/data-ready lines that are polled as levels.
 pub trait InputPin {
         fn is_low(&self) -> bool;

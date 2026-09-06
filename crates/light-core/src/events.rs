@@ -133,6 +133,35 @@ impl<E: Copy, const N: usize, const S: usize> EventBus<E, N, S> {
         }
 }
 
+/// The event bus with its capacity constants ERASED: what lets a portable application
+/// crate hold `&'static dyn Bus<E>` while the bus itself stays a board static -- its depth
+/// and subscriber count are facts about how many board modules ride it.
+pub trait Bus<E: Copy>: Sync {
+        fn subscribe(&self) -> Option<Subscription>;
+        fn publish(&self, event: E) -> Result<(), E>;
+        fn poll(&self, sub: &Subscription) -> Option<E>;
+        fn refused(&self) -> u32;
+        fn backlog(&self) -> usize;
+}
+
+impl<E: Copy + Send, const N: usize, const S: usize> Bus<E> for EventBus<E, N, S> {
+        fn subscribe(&self) -> Option<Subscription> {
+                EventBus::subscribe(self)
+        }
+        fn publish(&self, event: E) -> Result<(), E> {
+                EventBus::publish(self, event)
+        }
+        fn poll(&self, sub: &Subscription) -> Option<E> {
+                EventBus::poll(self, sub)
+        }
+        fn refused(&self) -> u32 {
+                EventBus::refused(self)
+        }
+        fn backlog(&self) -> usize {
+                EventBus::backlog(self)
+        }
+}
+
 #[cfg(test)]
 mod tests {
         use super::*;

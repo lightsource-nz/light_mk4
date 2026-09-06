@@ -203,6 +203,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictaphone_touch349_app"
+version = "0.1.0"
+dependencies = [
+ "light-audio",
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-input",
+ "light-rp2",
+ "light-rtc",
+ "light-sd",
+ "light-ui",
+ "light_app_dictaphone",
+]
+
+[[package]]
 name = "embedded-hal"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -446,9 +463,6 @@ dependencies = [
  "light-font",
  "light-fs",
  "light-input",
- "light-rp2",
- "light-rtc",
- "light-sd",
  "light-ui",
 ]
 

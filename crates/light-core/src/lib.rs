@@ -27,8 +27,8 @@ pub mod module;
 
 pub use blink::Blinker;
 pub use console::LineReader;
-pub use events::{EventBus, Subscription};
-pub use hal::{Clock, I2cBus, I2cError, Idle, InputPin, OutputPin, SpiDisplayBus};
+pub use events::{Bus, EventBus, Subscription};
+pub use hal::{AudioStream, Clock, I2cBus, I2cError, Idle, InputPin, OutputPin, SpiDisplayBus};
 pub use mailbox::Mailbox;
 pub use module::{Error, Module, Poll, Runtime};
 //   the one blessed way to own a large object in .bss: built in place by a const initialiser,

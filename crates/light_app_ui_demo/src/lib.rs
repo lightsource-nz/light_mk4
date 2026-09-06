@@ -23,7 +23,7 @@
 #![no_std]
 
 use light_core::cli::{Cli, Outcome, Parsed, Words};
-use light_core::{debug, info, log, warn, Clock, EventBus, LineReader, Mailbox, Module, Poll, Subscription};
+use light_core::{debug, info, log, warn, Clock, LineReader, Mailbox, Module, Poll, Subscription};
 use light_display::{Display, DisplayDriver, FrameLayer, Region, UpdateError};
 use light_draw::Rotation;
 use light_font::Font;
@@ -102,34 +102,10 @@ pub enum UiAction {
         DragConsumed,
 }
 
-/// The event bus as the demo sees it. The bus itself is a BOARD static -- its depth and
-/// subscriber count depend on how many board modules ride it -- and this erases those
-/// constants so the demo's modules need not carry them.
-pub trait Bus<E: Copy>: Sync {
-        fn subscribe(&self) -> Option<Subscription>;
-        fn publish(&self, event: E) -> Result<(), E>;
-        fn poll(&self, sub: &Subscription) -> Option<E>;
-        fn refused(&self) -> u32;
-        fn backlog(&self) -> usize;
-}
-
-impl<E: Copy + Send, const N: usize, const S: usize> Bus<E> for EventBus<E, N, S> {
-        fn subscribe(&self) -> Option<Subscription> {
-                EventBus::subscribe(self)
-        }
-        fn publish(&self, event: E) -> Result<(), E> {
-                EventBus::publish(self, event)
-        }
-        fn poll(&self, sub: &Subscription) -> Option<E> {
-                EventBus::poll(self, sub)
-        }
-        fn refused(&self) -> u32 {
-                EventBus::refused(self)
-        }
-        fn backlog(&self) -> usize {
-                EventBus::backlog(self)
-        }
-}
+/// The event bus as the demo sees it: `light_core::Bus`, the capacity-erased view of a
+/// bus that stays a BOARD static -- its depth and subscriber count depend on how many
+/// board modules ride it.
+pub use light_core::Bus;
 
 // --- shared state --------------------------------------------------------------------------
 
