@@ -814,7 +814,8 @@ impl AudioMod {
                                         return;
                                 }
                                 let data_end = file.pos().saturating_add(len).min(file.size());
-                                let ms = (data_end - file.pos()) / (u32::from(channels) * 2) * 1000 / AUDIO_SAMPLE_HZ;
+                                //   u64: frames * 1000 overflows u32 past ~4.5 min of audio
+                                let ms = ((u64::from(data_end - file.pos()) / (u64::from(channels) * 2)) * 1000 / u64::from(AUDIO_SAMPLE_HZ)) as u32;
                                 info!("play: {} -- {} ch, ~{} ms", path, channels, ms);
                                 *self.play = Some(Playback { fs, file, channels: channels as u8, data_end });
                                 return;
@@ -859,6 +860,8 @@ impl Module for AudioMod {
                 let _ = self.codec.set_adc_to_dac(false);
                 static STREAM_A: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
                 static STREAM_B: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
+                //   the POLLED path (no IRQ ring): this board is too RAM-tight for the
+                // prefetch ring and its audio is light -- beeps and tones a poll keeps fed
                 self.i2s.start_stream([STREAM_A.take(), STREAM_B.take()]);
                 self.pa.set(true);
                 info!("audio up: es8311 master at {} Hz, PIO1 mclk+dout; the UART console pins now carry audio", AUDIO_SAMPLE_HZ);

@@ -3,14 +3,7 @@ name = "light_app_dictaphone"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "a voice recorder with a dedicated touch interface: WAV capture and playback over a FAT card -- the hardware-independent application, instantiated by a board module"
+description = "the dictaphone with its portrait interface: a stacked page of status line, big record button, play-last and recordings list, over the light_dictaphone_core engine"
 
 [dependencies]
-light-core = { path = "../light-core" }
-light-draw = { path = "../light-draw" }
-light-display = { path = "../light-display" }
-light-font = { path = "../light-font" }
-light-input = { path = "../light-input" }
-light-ui = { path = "../light-ui" }
-light-fs = { path = "../light-fs" }
-light-audio = { path = "../light-audio" }
+light_dictaphone_core = { path = "../light_dictaphone_core" }

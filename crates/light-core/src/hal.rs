@@ -53,11 +53,31 @@ pub trait AudioStream {
         /// Drain filled capture buffers, invoking `sink` once per buffer.
         fn capture_take(&mut self, sink: &mut dyn FnMut(&[u16]));
 
-        /// Refill any output buffers the transport has emptied, invoking `fill` once per
-        /// buffer. Call every poll while anything plays; a starved stream underruns.
-        fn refill(&mut self, fill: &mut dyn FnMut(&mut [u32]));
+        /// Free words in the output PREFETCH ring right now. The producer tops the ring up
+        /// toward full each poll; the transport drains it into its DMA buffers from an
+        /// interrupt, so poll timing no longer bounds the audio -- only the ring's depth does.
+        fn stream_free(&self) -> usize;
 
-        /// Output buffers the transport re-sent for want of a refill, since the last reset.
+        /// Hand `fill` the ring's contiguous free region; it writes up to that many output
+        /// words and returns how many, which the ring then commits. Call in a loop while
+        /// [`stream_free`](Self::stream_free) is non-zero and there is data to play.
+        fn stream_push(&mut self, fill: &mut dyn FnMut(&mut [u32]) -> usize);
+
+        /// Whether the stream is meant to be producing sound: gates underrun accounting, so
+        /// an idle ring draining to silence is not counted as starvation.
+        fn set_active(&mut self, active: bool);
+
+        /// Words still queued in the ring, not yet drained by the transport. Zero means the
+        /// last sample has been handed to the DMA -- what tells a finishing track its tail
+        /// has played before it stops.
+        fn stream_pending(&self) -> usize;
+
+        /// Discard everything queued in the ring at once, so the transport falls to silence
+        /// immediately -- what makes a Stop stop now, rather than after the buffered lead.
+        fn stream_clear(&mut self);
+
+        /// Output buffers the transport played as silence for want of data, since the last
+        /// reset -- genuine starvation, counted only while [`set_active`](Self::set_active).
         fn underruns(&self) -> u32;
 
         /// Capture buffers dropped for want of draining, since the last reset.

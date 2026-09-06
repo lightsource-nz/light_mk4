@@ -1,17 +1,18 @@
-//! The dictaphone on the Waveshare RP2350-Touch-LCD-3.49 -- a 172x640 QSPI bar of glass
-//! with the ES8311 codec, an analog microphone and a TF slot: the hardware-bound
-//! instantiation. The application is `light_app_dictaphone` -- the portrait interface
-//! over the `light_dictaphone_core` engine, with no hardware in either; this
-//! crate is everything tangible -- the wiring, the AXS15231B panel and its touch half, the
-//! PIO I2S transport and its buffers, the card, the battery latch, the shell ABI and the
-//! panic handler -- constructed here and handed to the app's modules.
+//! The LANDSCAPE dictaphone on the Waveshare RP2350-Touch-LCD-3.49 -- a 172x640 QSPI bar
+//! of glass with the ES8311 codec, an analog microphone and a TF slot: the hardware-bound
+//! instantiation. The application is `light_app_dictaphone_wide` -- the sideways
+//! interface over the same `light_dictaphone_core` engine as the portrait app, with no
+//! hardware in either; this crate is everything tangible -- the wiring, the AXS15231B
+//! panel and its touch half, the PIO I2S transport and its buffers, the card, the battery
+//! latch, the shell ABI and the panic handler -- constructed here and handed to the app's
+//! modules. Same board, same shell, its own UF2.
 
 #![no_std]
 
 use core::cell::RefCell;
 use core::fmt::Write;
-use light_app_dictaphone as dict;
-use dict::{dictaphone_commands, dictaphone_pages, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FsPath, StackString};
+use light_app_dictaphone_wide as dict;
+use dict::{dictaphone_commands, dictaphone_wide_pages, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FsPath, StackString};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -142,22 +143,26 @@ pub extern "C" fn light_app_core1_service() {
 // until the glass says otherwise.
 const FPS: u32 = 30;
 
-dictaphone_pages! {
+dictaphone_wide_pages! {
         event: AppEvent,
-        row_gap: 6,
-        //   a 640-tall list has room; rows sized for a finger on the narrow bar
-        list_min_row: 56,
-        rec_min_h: 88
+        gap: 6,
+        //   across the 640 with the 16 px font's 13 px cell: the record button is pinned
+        // at its 8-character label (8*13 + the 1 px insets, plus slack), and a recordings
+        // column prints a 12-character file name ("REC_0007.WAV") in full. The freed
+        // width lands on the play and recordings columns -- "Recordings >" needs 158.
+        // "< Back" is 6 characters, pinned left of the scrolling recordings strip
+        rec_w: 108,
+        list_col_w: 160,
+        back_w: 84
 }
 
-/// Portrait only, MEASURED: the bar rests near-landscape on its long edge, so ordinary
-/// handling flapped LandscapeL/R -- a 180-degree relayout per touch, and every tap then
-/// landed where a widget used to be. The bar rotates end-for-end (a deliberate gesture,
-/// nowhere near the resting pose) and otherwise holds still.
+/// Landscape only: the two horizontal poses follow the IMU end-for-end; the portrait
+/// poses are ignored, so tilting the bar upright never leaves the sideways layout.
+/// The pairing is MEASURED on the glass -- L->R90 rendered both poses upside down.
 fn rotation_map(o: Orientation) -> Option<Rotation> {
         match o {
-                Orientation::Portrait => Some(Rotation::R0),
-                Orientation::PortraitFlip => Some(Rotation::R180),
+                Orientation::LandscapeL => Some(Rotation::R270),
+                Orientation::LandscapeR => Some(Rotation::R90),
                 _ => None,
         }
 }
@@ -737,9 +742,11 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         width: DISPLAY_WIDTH,
                         height: DISPLAY_HEIGHT,
                         fps: FPS,
-                        desc: "AXS15231B over PIO-QSPI, double-buffered",
+                        desc: "AXS15231B over PIO-QSPI, double-buffered, sideways",
                         rotation_map,
-                        initial_rotation: Rotation::R0,
+                        //   the resting pose is LandscapeL (R270): boot in it, or the
+                        // first frames flash upside down until the IMU's first report
+                        initial_rotation: Rotation::R270,
                         main_page: &PAGE_MAIN,
                 },
         ));

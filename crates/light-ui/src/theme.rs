@@ -33,6 +33,9 @@ pub mod key {
         pub const BUTTON_TEXT: u16 = 0x0006;
         /// Button label text on the focused fill (u16).
         pub const FOCUS_TEXT: u16 = 0x0007;
+        /// A status indicator dot in the title bar, e.g. a recording light (u16); a
+        /// vivid red by default so it reads on any ground.
+        pub const INDICATOR: u16 = 0x0008;
         /// The focused widget's fill, a vertical shade (u16 from, u16 to).
         pub const FOCUS_SURFACE: u16 = 0x0010;
         /// Every button's unfocused surface, a vertical shade (u16 from, u16 to); a
@@ -58,6 +61,8 @@ pub struct Theme {
         pub button_outline: u16,
         pub button_text: u16,
         pub focus_text: u16,
+        /// The title-bar status dot's colour (e.g. the recording light).
+        pub indicator: u16,
         pub focus_surface: Option<Shade>,
         pub button_surface: Option<Shade>,
         /// Corner radius every container and control wears unless a descriptor says
@@ -79,6 +84,7 @@ impl Theme {
                 button_outline: 0xFFFF,
                 button_text: 0xFFFF,
                 focus_text: 0x0000,
+                indicator: 0xF800,
                 focus_surface: None,
                 button_surface: None,
                 radius: 3,
@@ -138,6 +144,7 @@ impl Theme {
                                 key::BUTTON_OUTLINE => color(&mut theme.button_outline)?,
                                 key::BUTTON_TEXT => color(&mut theme.button_text)?,
                                 key::FOCUS_TEXT => color(&mut theme.focus_text)?,
+                                key::INDICATOR => color(&mut theme.indicator)?,
                                 key::FOCUS_SURFACE => shade(&mut theme.focus_surface)?,
                                 key::BUTTON_SURFACE => shade(&mut theme.button_surface)?,
                                 key::RADIUS => metric(&mut theme.radius)?,

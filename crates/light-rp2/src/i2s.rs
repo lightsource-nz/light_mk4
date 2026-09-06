@@ -43,6 +43,150 @@
 
 use crate::gpio::{self, Input};
 use crate::pac;
+use light_core::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+
+//   THE OUTPUT PREFETCH RING, drained from the DMA-completion INTERRUPT. The two ping-pong
+// DMA buffers still carry the audio to the codec, but they are refilled by the IRQ from this
+// ring rather than by the poll loop -- so a blocked main loop (a card read, a display push)
+// no longer starves the codec: only the ring running dry does, and the ring is topped up
+// toward full each poll with a lead that rides such gaps out. Single-producer (the poll
+// loop, via `stream_push`) / single-consumer (the IRQ) on ONE core, so monotonic head/tail
+// with acquire/release ordering is the whole synchronisation -- each index is written by
+// exactly one side. The board supplies the backing store (so a board with no audio links
+// none of it); its pointer and length are published here for the IRQ once, at start.
+struct StreamRing {
+        buf: AtomicU32,
+        cap: AtomicUsize,
+        /// Producer cursor (the poll loop): monotonic, wrapping; index is `head % cap`.
+        head: AtomicUsize,
+        /// Consumer cursor (the IRQ): monotonic, wrapping; index is `tail % cap`.
+        tail: AtomicUsize,
+        /// The two DMA buffers and their channels, for the IRQ to refill and re-arm.
+        dma_buf: [AtomicU32; 2],
+        dma_ch: [AtomicUsize; 2],
+        /// Silence-filled output buffers while `active`, since the last reset.
+        underruns: AtomicU32,
+        /// The IRQ is live and the pointers above are valid.
+        armed: AtomicBool,
+        /// Gate on underrun accounting: an idle ring draining to silence is not starvation.
+        active: AtomicBool,
+}
+// SAFETY: the ring is a single-producer/single-consumer queue on one core; every field is
+// an atomic and each cursor is written by exactly one side (see the type's doc).
+unsafe impl Sync for StreamRing {}
+
+static STREAM: StreamRing = StreamRing {
+        buf: AtomicU32::new(0),
+        cap: AtomicUsize::new(0),
+        head: AtomicUsize::new(0),
+        tail: AtomicUsize::new(0),
+        dma_buf: [AtomicU32::new(0), AtomicU32::new(0)],
+        dma_ch: [AtomicUsize::new(0), AtomicUsize::new(0)],
+        underruns: AtomicU32::new(0),
+        armed: AtomicBool::new(false),
+        active: AtomicBool::new(false),
+};
+
+/// RP2350 NVIC line for the DMA's IRQ 0 output (`DMA_IRQ_0`, from the SDK's intctrl regs).
+const DMA_IRQ_0: u32 = 10;
+
+unsafe extern "C" {
+        //   the SDK owns the RAM vector table; install the handler through it rather than a
+        // cortex-m-rt vector this shell does not have. `irq_handler_t` is `void(*)(void)`.
+        fn irq_set_exclusive_handler(num: u32, handler: extern "C" fn());
+        fn irq_set_enabled(num: u32, enabled: bool);
+}
+
+impl StreamRing {
+        fn free(&self) -> usize {
+                let cap = self.cap.load(Ordering::Relaxed);
+                if cap == 0 {
+                        return 0;
+                }
+                let head = self.head.load(Ordering::Relaxed);
+                let tail = self.tail.load(Ordering::Acquire);
+                cap - head.wrapping_sub(tail)
+        }
+
+        /// Producer: fill the contiguous free region and commit what `fill` wrote.
+        fn push(&self, fill: &mut dyn FnMut(&mut [u32]) -> usize) {
+                let cap = self.cap.load(Ordering::Relaxed);
+                let base = self.buf.load(Ordering::Relaxed) as *mut u32;
+                if cap == 0 || base.is_null() {
+                        return;
+                }
+                let head = self.head.load(Ordering::Relaxed);
+                let tail = self.tail.load(Ordering::Acquire);
+                let free = cap - head.wrapping_sub(tail);
+                if free == 0 {
+                        return;
+                }
+                let widx = head % cap;
+                let contig = (cap - widx).min(free);
+                // SAFETY: [widx, widx+contig) is the free region, disjoint from the consumer's
+                // [tail, head); the IRQ reads only the latter until head advances below.
+                let slice = unsafe { core::slice::from_raw_parts_mut(base.add(widx), contig) };
+                let n = fill(slice).min(contig);
+                self.head.store(head.wrapping_add(n), Ordering::Release);
+        }
+
+        fn pending(&self) -> usize {
+                let head = self.head.load(Ordering::Relaxed);
+                let tail = self.tail.load(Ordering::Acquire);
+                head.wrapping_sub(tail)
+        }
+
+        /// Consumer (IRQ): copy one DMA buffer's worth from the ring, silence past the end.
+        fn drain_into(&self, dst: *mut u32) {
+                let cap = self.cap.load(Ordering::Relaxed);
+                let base = self.buf.load(Ordering::Relaxed) as *const u32;
+                let head = self.head.load(Ordering::Acquire);
+                let mut tail = self.tail.load(Ordering::Relaxed);
+                let avail = if cap == 0 { 0 } else { head.wrapping_sub(tail).min(STREAM_WORDS) };
+                for i in 0..STREAM_WORDS {
+                        let w = if i < avail {
+                                // SAFETY: base/cap are valid while armed; idx is in bounds
+                                let v = unsafe { *base.add(tail % cap) };
+                                tail = tail.wrapping_add(1);
+                                v
+                        } else {
+                                0
+                        };
+                        // SAFETY: dst is one of the two DMA buffers, each STREAM_WORDS long
+                        unsafe { *dst.add(i) = w };
+                }
+                self.tail.store(tail, Ordering::Release);
+                if avail < STREAM_WORDS && self.active.load(Ordering::Relaxed) {
+                        self.underruns.fetch_add(1, Ordering::Relaxed);
+                }
+        }
+}
+
+/// The DMA-completion handler for the output ring's two channels: refill each finished
+/// buffer from the ring and re-arm it for the chain. Installed on `DMA_IRQ_0` at stream
+/// start. Nothing here touches the card or the FS -- it is a pure RAM copy plus two register
+/// writes, so it is safe to run at interrupt time.
+#[unsafe(no_mangle)]
+pub extern "C" fn light_i2s_dma_irq() {
+        if !STREAM.armed.load(Ordering::Acquire) {
+                return;
+        }
+        let dma = unsafe { &*pac::DMA::ptr() };
+        let ints = dma.ints0().read().bits();
+        for i in 0..2 {
+                let ch = STREAM.dma_ch[i].load(Ordering::Relaxed);
+                if ints & (1 << ch) == 0 {
+                        continue;
+                }
+                // clear this channel's IRQ (write-1-to-clear) before re-arming
+                dma.ints0().write(|w| unsafe { w.bits(1 << ch) });
+                let buf = STREAM.dma_buf[i].load(Ordering::Relaxed) as *mut u32;
+                STREAM.drain_into(buf);
+                let c = dma.ch(ch);
+                c.ch_read_addr().write(|w| unsafe { w.bits(buf as u32) });
+                c.ch_trans_count().write(|w| unsafe { w.bits(STREAM_WORDS as u32) });
+        }
+}
 
 const SM_MCLK: usize = 0;
 const SM_DOUT: usize = 1;
@@ -80,8 +224,10 @@ pub struct PioI2sOut {
         pin_lrclk: usize,
         ch: [usize; 2],
         bufs: Option<[&'static mut [u32; STREAM_WORDS]; 2]>,
+        //   the POLLED path's state; the IRQ path keeps its ring/drain/underruns in the
+        // `STREAM` static instead (the interrupt reaches them without a handle)
         last_busy: [bool; 2],
-        /// Times the whole stream starved (both buffers drained before a refill).
+        /// Times the whole stream starved on the POLLED path (both buffers drained).
         pub underruns: u32,
         //   the capture (microphone) side, present after `attach_capture`
         _din: Option<Input>,
@@ -422,9 +568,10 @@ impl PioI2sOut {
                 });
         }
 
-        /// Hand over the two stream buffers (their current content plays first -- zeros are
-        /// silence) and start the ring: A drains, chains to B, and each completed buffer
-        /// waits for [`refill`](Self::refill).
+        /// Hand over the two DMA buffers and start the chained ring for the POLLED path: each
+        /// completed buffer waits for [`refill`](Self::refill) on the poll loop. No interrupt,
+        /// no prefetch ring -- for a board too RAM-tight for [`start_stream_irq`]'s ring and
+        /// with only light audio (a beep, a tone) that a poll can keep fed.
         pub fn start_stream(&mut self, bufs: [&'static mut [u32; STREAM_WORDS]; 2]) {
                 self.configure_channel(self.ch[0], self.ch[1], bufs[0]);
                 self.configure_channel(self.ch[1], self.ch[0], bufs[1]);
@@ -434,9 +581,10 @@ impl PioI2sOut {
                 dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
         }
 
-        /// Refill whichever buffer the ring has finished with: `fill` is called with each
-        /// such buffer, and the channel is re-armed for the chain to trigger. Both channels
-        /// idle means the stream starved -- counted, refilled and restarted.
+        /// Refill whichever buffer the polled ring has finished with (see [`start_stream`]):
+        /// `fill` is called with each completed buffer and the channel is re-armed. Both idle
+        /// means the stream starved -- counted, refilled and restarted. Not used with the IRQ
+        /// path, which re-arms from the interrupt instead.
         pub fn refill(&mut self, mut fill: impl FnMut(&mut [u32; STREAM_WORDS])) {
                 let Some(bufs) = self.bufs.as_mut() else { return };
                 let dma = unsafe { &*pac::DMA::ptr() };
@@ -452,16 +600,95 @@ impl PioI2sOut {
                         self.last_busy[i] = busy[i];
                 }
                 if !busy[0] && !busy[1] {
-                        //   the whole ring drained before this poll: restart it rather than
-                        // leave the codec clocking silence out of a stalled FIFO forever.
-                        // Logged with a timestamp because the COUNT alone misled a tuning
-                        // session: poll gaps measured ~18 ms against 53 ms buffers cannot
-                        // drain the ring, so a lone increment is a transition-boundary
-                        // artifact -- the log line says WHEN, which says which
                         light_core::warn!("i2s: stream ring drained; restarted");
                         self.underruns = self.underruns.wrapping_add(1);
                         self.last_busy = [true, false];
                         dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
                 }
+        }
+
+        /// Underruns on the POLLED path; the IRQ path uses [`stream_underruns`](Self::stream_underruns).
+        pub fn underruns(&self) -> u32 {
+                self.underruns
+        }
+
+        /// Zero the polled-path underrun count.
+        pub fn reset_polled_underruns(&mut self) {
+                self.underruns = 0;
+        }
+
+        /// Hand over the two DMA buffers (their content plays first -- zeros are silence) and
+        /// the PREFETCH `ring` (the board's backing store), then start: the ring's channels
+        /// raise `DMA_IRQ_0` on each buffer's completion, and [`light_i2s_dma_irq`] refills
+        /// that buffer from `ring` and re-arms it. The poll loop only keeps `ring` fed via
+        /// [`stream_push`](Self::stream_push), so a blocked loop cannot starve the codec.
+        pub fn start_stream_irq(&mut self, bufs: [&'static mut [u32; STREAM_WORDS]; 2], ring: &'static mut [u32]) {
+                self.configure_channel(self.ch[0], self.ch[1], bufs[0]);
+                self.configure_channel(self.ch[1], self.ch[0], bufs[1]);
+                //   publish the ring and the DMA buffers/channels for the IRQ, THEN arm: the
+                // handler bails until `armed`, so it never reads a half-written pointer set
+                STREAM.buf.store(ring.as_mut_ptr() as u32, Ordering::Relaxed);
+                STREAM.cap.store(ring.len(), Ordering::Relaxed);
+                STREAM.head.store(0, Ordering::Relaxed);
+                STREAM.tail.store(0, Ordering::Relaxed);
+                STREAM.dma_buf[0].store(bufs[0].as_mut_ptr() as u32, Ordering::Relaxed);
+                STREAM.dma_buf[1].store(bufs[1].as_mut_ptr() as u32, Ordering::Relaxed);
+                STREAM.dma_ch[0].store(self.ch[0], Ordering::Relaxed);
+                STREAM.dma_ch[1].store(self.ch[1], Ordering::Relaxed);
+                self.bufs = Some(bufs);
+                let dma = unsafe { &*pac::DMA::ptr() };
+                //   raise IRQ 0 when either stream channel completes a buffer
+                dma.inte0().modify(|r, w| unsafe { w.bits(r.bits() | (1 << self.ch[0]) | (1 << self.ch[1])) });
+                STREAM.armed.store(true, Ordering::Release);
+                // SAFETY: install our handler on the SDK's vector table and enable the line
+                unsafe {
+                        irq_set_exclusive_handler(DMA_IRQ_0, light_i2s_dma_irq);
+                        irq_set_enabled(DMA_IRQ_0, true);
+                }
+                dma.multi_chan_trigger().write(|w| unsafe { w.bits(1 << self.ch[0]) });
+        }
+
+        /// Free words in the prefetch ring; see [`stream_push`](Self::stream_push).
+        pub fn stream_free(&self) -> usize {
+                STREAM.free()
+        }
+
+        /// Top the prefetch ring up: `fill` is handed the contiguous free region and returns
+        /// how many words it wrote. Call in a loop while [`stream_free`](Self::stream_free)
+        /// is non-zero; the IRQ drains what is committed here into the DMA buffers.
+        pub fn stream_push(&mut self, fill: &mut dyn FnMut(&mut [u32]) -> usize) {
+                STREAM.push(fill);
+        }
+
+        /// Gate underrun accounting: `true` while sound is intended, `false` when idle so a
+        /// ring draining to silence is not miscounted as starvation.
+        pub fn set_active(&mut self, active: bool) {
+                STREAM.active.store(active, Ordering::Relaxed);
+        }
+
+        /// Words still queued in the ring; see [`stream_pending`](crate::i2s) contract.
+        pub fn stream_pending(&self) -> usize {
+                STREAM.pending()
+        }
+
+        /// Drop everything queued so the codec falls to silence at once. Done in a brief
+        /// IRQ-off window so the drain cannot observe the two cursors mid-reset (the only
+        /// place either cursor is written by the other side's owner).
+        pub fn stream_clear(&mut self) {
+                // SAFETY: disable then re-enable this crate's own DMA IRQ line
+                unsafe { irq_set_enabled(DMA_IRQ_0, false) };
+                STREAM.head.store(0, Ordering::Relaxed);
+                STREAM.tail.store(0, Ordering::Relaxed);
+                unsafe { irq_set_enabled(DMA_IRQ_0, true) };
+        }
+
+        /// Buffers the IRQ played as silence for want of data while active, since reset.
+        pub fn stream_underruns(&self) -> u32 {
+                STREAM.underruns.load(Ordering::Relaxed)
+        }
+
+        /// Zero the underrun counter.
+        pub fn reset_underruns(&mut self) {
+                STREAM.underruns.store(0, Ordering::Relaxed);
         }
 }

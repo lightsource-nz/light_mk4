@@ -46,6 +46,12 @@ pub type Rect = LogicalRegion;
 /// own jitter, so taps were dropped or turned into 1 px scrolls. Still below any swipe threshold.
 pub const DRAG_SLOP: i32 = 16;
 
+/// How long a contact must rest -- within [`DRAG_SLOP`] of where it landed -- before its
+/// release counts as a TAP. A brush or a jittered graze is shorter than this and is dropped
+/// rather than fired as a press: the deliberateness filter. A small fraction of a second, so
+/// an ordinary tap (~100 ms) clears it comfortably while an accidental flick does not.
+pub const TAP_MIN_HOLD_US: u64 = 50_000;
+
 /// Longest label the toolkit renders. Labels are truncated to their widget anyway; this bounds
 /// the work a single draw does.
 pub const TEXT_MAX: usize = 64;
@@ -82,6 +88,9 @@ pub enum Layout {
         None,
         /// Equal-height rows, one per visible child, `gap` pixels apart.
         Stack { gap: u8 },
+        /// Equal-width columns, one per visible child, `gap` pixels apart: the horizontal
+        /// counterpart of `Stack`, for an interface on glass wider than it is tall.
+        Row { gap: u8 },
 }
 
 /// Where a button takes the interface when activated, after emitting its event.
@@ -127,6 +136,12 @@ pub struct Window {
         /// stack layout; measured from the children on demand for a hand-placed window.
         pub content_w: i32,
         pub content_h: i32,
+        /// A status dot drawn INLINE in the title bar -- a recording light and the like --
+        /// `Some((lit, col))` centres it on title character cell `col`, so the caller leaves
+        /// a blank there for it (e.g. the space in `REC 0:12`). `lit` false is the dark
+        /// phase of a flash; `None` is off. Because it sits on a space the title already
+        /// holds, blinking never reflows the text. See [`Ui::set_indicator`].
+        pub indicator: Option<(bool, u16)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -349,6 +364,10 @@ impl<A: Copy> Desc<A> {
                 self.layout = Layout::Stack { gap };
                 self
         }
+        pub const fn row(mut self, gap: u8) -> Self {
+                self.layout = Layout::Row { gap };
+                self
+        }
         pub const fn scroll(mut self, flags: u8) -> Self {
                 self.scroll = flags;
                 self
@@ -539,6 +558,10 @@ pub struct Ui<A: 'static, const N: usize> {
         drag_window: Option<WidgetId>,
         touch_start: (i32, i32),
         touch_last: (i32, i32),
+        /// When the contact landed, and whether it has EVER strayed beyond the slop since --
+        /// a tap must both rest long enough (see [`TAP_MIN_HOLD_US`]) and never have wandered.
+        touch_start_us: u64,
+        touch_moved: bool,
         pub drag_slop: i32,
         // --- navigation ---
         page: Option<&'static Page<A>>,
@@ -572,6 +595,11 @@ pub struct Ui<A: 'static, const N: usize> {
         /// Which way the outgoing image leaves: forward pushes it toward logical -x so the new
         /// page arrives from the right; a return sends it the other way.
         page_move_back: bool,
+        /// A page laid out as a `Row` runs sideways, so its transition runs the OTHER axis:
+        /// entering one drops it in from the top, leaving one reveals the parent upward.
+        /// The child page of the pair decides -- the incoming page going forward, the
+        /// outgoing one coming back -- so one page's arrival and departure mirror.
+        page_move_vertical: bool,
         /// No back buffer to capture the outgoing page into: the incoming tree slides in
         /// OVER the old image, which survives in the live buffer wherever a step has not yet
         /// overdrawn it. Chosen at the first step, from what the display can hold.
@@ -581,6 +609,9 @@ pub struct Ui<A: 'static, const N: usize> {
         /// through the canvas transform and never leaves logical space.
         page_move_dx: i32,
         page_move_dy: i32,
+        /// The travel of the last DRAWN capture-mode step: the incoming page is static in
+        /// that mode, so each step paints only the band uncovered since this mark.
+        page_move_travel: i32,
         /// How far it travels to leave: the buffer's extent along that axis.
         page_move_span: i32,
         page_move_start_us: u64,
@@ -611,6 +642,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         drag_window: None,
                         touch_start: (0, 0),
                         touch_last: (0, 0),
+                        touch_start_us: 0,
+                        touch_moved: false,
                         drag_slop: DRAG_SLOP,
                         page: None,
                         return_page: None,
@@ -624,9 +657,11 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page_moving: false,
                         page_move_started: false,
                         page_move_back: false,
+                        page_move_vertical: false,
                         page_move_over: false,
                         page_move_dx: 0,
                         page_move_dy: 0,
+                        page_move_travel: 0,
                         page_move_span: 0,
                         page_move_start_us: 0,
                         page_move_ms: PAGE_MOVE_MS,
@@ -761,7 +796,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// parallels the screen edge, and every interior container the house radius.
         pub fn create_window(&mut self, parent: Option<WidgetId>, rect: Rect, title: Option<&'static str>) -> Result<WidgetId, Error> {
                 let corner_radius = if parent.is_none() { self.theme.screen_radius } else { self.theme.radius };
-                let win = Window { title, padding: 2, border: true, corner_radius, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0 };
+                let win = Window { title, padding: 2, border: true, corner_radius, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0, indicator: None };
                 self.add(parent, Kind::Window(win), rect, false)
         }
 
@@ -816,8 +851,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         self.build_desc(Some(id), child)?;
                 }
                 // after the children, since a stack divides the content area between them
-                if let Layout::Stack { gap } = desc.layout {
-                        self.layout_stack(id, gap);
+                match desc.layout {
+                        Layout::Stack { gap } => self.layout_stack(id, gap),
+                        Layout::Row { gap } => self.layout_row(id, gap),
+                        Layout::None => {}
                 }
                 Ok(id)
         }
@@ -949,6 +986,11 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         self.page_moving = true;
                         self.page_move_started = false;
                         self.page_move_back = back;
+                        //   the CHILD of the pair picks the axis -- the page being entered
+                        // going forward, the one being left coming back -- so a Row page
+                        // drops in and lifts out along the same axis
+                        let child = if back { self.page.map(|p| p.content) } else { Some(page.content) };
+                        self.page_move_vertical = matches!(child.map(|c| c.layout), Some(Layout::Row { .. }));
                 }
                 // the old tree goes before the new one is built: only one page's widgets exist
                 if let Some(root) = self.root {
@@ -1170,7 +1212,102 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         }
                         y += h + gap;
                 }
+                // a child that is itself a laid-out window was arranged against the rect it
+                // had BEFORE this pass moved it: re-lay its interior against the new one
+                for &c in kids.iter() {
+                        self.relayout_window(c);
+                }
                 self.invalidate_widget(id);
+        }
+
+        /// Divide the window's content area into equal-width columns, one per visible
+        /// child, `gap` pixels apart: [`layout_stack`](Self::layout_stack) turned on its
+        /// side, for an interface on glass wider than it is tall. Columns take the full
+        /// content height; a child's `min_w`/`max_w` pins its width. A non-scrolling row's
+        /// last column absorbs the division remainder; a row marked
+        /// [`scroll::HORIZONTAL`] instead lets its columns run past the frame and drags
+        /// sideways, the clamp working exactly as the stack's vertical one does. No
+        /// corner-flush treatment either way. Vertical scrolling is pinned off: a row is
+        /// never taller than its window.
+        pub fn layout_row(&mut self, id: WidgetId, gap: u8) {
+                let gap = i32::from(gap);
+                {
+                        let win = self.w_mut(id).window_mut().expect("a window");
+                        win.layout = Layout::Row { gap: gap as u8 };
+                }
+                let content = self.viewport(id);
+                let scroll_h = {
+                        let win = self.w(id).window().expect("a window");
+                        win.scroll & scroll::HORIZONTAL != 0
+                };
+                let count = self.children(id).filter(|c| self.w(*c).visible).count() as i32;
+                if count == 0 || rect_empty(&content) {
+                        return;
+                }
+                let total_w = content.x1 - content.x0 + 1;
+                let mut col_w = (total_w - gap * (count - 1)) / count;
+                if col_w < 1 {
+                        if !scroll_h {
+                                warn!("ui: window content ({} px) too narrow for {} columns", total_w, count);
+                        }
+                        col_w = 1;
+                }
+                let viewport_h = content.y1 - content.y0 + 1;
+                let kids: Vec<WidgetId, N> = self.children(id).filter(|c| self.w(*c).visible).collect();
+                // the content's extent, measured before anything is placed, so the offset
+                // is clamped against it FIRST and columns are laid against a legal offset
+                let mut content_w = 0;
+                for &c in kids.iter() {
+                        content_w += Self::row_width(self.w(c), col_w);
+                }
+                content_w += gap * (count - 1);
+                let scroll_x = {
+                        let win = self.w_mut(id).window_mut().expect("a window");
+                        win.content_w = content_w;
+                        win.content_h = viewport_h;
+                        let mut max_sx = content_w - total_w;
+                        if !scroll_h || max_sx < 0 {
+                                max_sx = 0;
+                        }
+                        win.scroll_x = win.scroll_x.clamp(0, max_sx);
+                        win.scroll_y = 0;
+                        win.scroll_x
+                };
+                let mut x = content.x0 - scroll_x;
+                for (index, &c) in kids.iter().enumerate() {
+                        let last = index as i32 + 1 == count;
+                        let mut w = Self::row_width(self.w(c), col_w);
+                        let h = Self::row_height(self.w(c), viewport_h);
+                        // the last column of a non-scrolling row absorbs the division
+                        // remainder; a scrolling row's columns keep their measured widths
+                        if last && !scroll_h {
+                                w = Self::row_width(self.w(c), content.x1 - x + 1);
+                        }
+                        let cw = self.w_mut(c);
+                        cw.rect = Rect::new(x, content.y0, x + w - 1, content.y0 + h - 1);
+                        cw.hit_slop_y1 = 0;
+                        if let Kind::Button(b) = &mut cw.kind {
+                                b.corner_radius = 0;
+                                b.corners = light_draw::corner::NONE;
+                        }
+                        x += w + gap;
+                }
+                // a child that is itself a laid-out window was arranged against the rect it
+                // had BEFORE this pass moved it: re-lay its interior against the new one
+                for &c in kids.iter() {
+                        self.relayout_window(c);
+                }
+                self.invalidate_widget(id);
+        }
+
+        /// Re-run whichever layout the window recorded. A no-op for hand-placed children.
+        fn relayout_window(&mut self, id: WidgetId) {
+                let Some(win) = self.w(id).window() else { return };
+                match win.layout {
+                        Layout::Stack { gap } => self.layout_stack(id, gap),
+                        Layout::Row { gap } => self.layout_row(id, gap),
+                        Layout::None => {}
+                }
         }
 
         /// Round the window's frame and keep its content clear of the curve. The clearance is NOT
@@ -1184,9 +1321,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return;
                 }
                 win.corner_radius = radius;
-                if let Layout::Stack { gap } = win.layout {
-                        self.layout_stack(id, gap);
-                }
+                self.relayout_window(id);
                 self.invalidate_widget(id);
         }
 
@@ -1198,9 +1333,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return;
                 }
                 win.scroll = flags;
-                if let Layout::Stack { gap } = win.layout {
-                        self.layout_stack(id, gap);
-                }
+                self.relayout_window(id);
                 self.invalidate_widget(id);
         }
 
@@ -1373,11 +1506,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let mut cur = Some(root);
                 while let Some(id) = cur {
                         cur = self.next(id, root);
-                        if let Some(win) = self.w(id).window() {
-                                if let Layout::Stack { gap } = win.layout {
-                                        self.layout_stack(id, gap);
-                                }
-                        }
+                        self.relayout_window(id);
                 }
         }
 
@@ -1486,24 +1615,60 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         if self.page_move_over {
                                 //   logical space end to end -- the canvas transform does the
                                 // physical mapping -- so direction is just the arrival side:
-                                // forward from logical +x, back from -x, like the capture mode
-                                let (w, _) = layer.logical_size();
-                                self.page_move_dx = if self.page_move_back { -1 } else { 1 };
-                                self.page_move_dy = 0;
-                                self.page_move_span = i32::from(w);
+                                // forward from logical +x, back from -x, like the capture mode.
+                                // The vertical pair mirrors it a quarter-turn: forward drops in
+                                // from logical -y, back rises from +y
+                                let (w, h) = layer.logical_size();
+                                if self.page_move_vertical {
+                                        //   over mode only ever slides the INCOMING in (no capture
+                                        // to move the outgoing), so it approximates the cover: the
+                                        // incoming enters from logical DOWN (+y) forward, from the
+                                        // top on the way back
+                                        self.page_move_dx = 0;
+                                        self.page_move_dy = if self.page_move_back { -1 } else { 1 };
+                                        self.page_move_span = i32::from(h);
+                                } else {
+                                        self.page_move_dx = if self.page_move_back { -1 } else { 1 };
+                                        self.page_move_dy = 0;
+                                        self.page_move_span = i32::from(w);
+                                }
                         } else {
-                                if !display.freeze() {
+                                //   a forward vertical (Row-page) transition COVERS: the new page
+                                // slides up over the old one, which stays put. Render the incoming
+                                // into the back buffer ONCE and leave the front (the outgoing) as
+                                // the static background; each step blits the incoming up over it.
+                                // Every other capture-mode transition REVEALS: freeze the outgoing
+                                // into the back and slide it off the live incoming.
+                                let cover = self.page_move_vertical && !self.page_move_back;
+                                if cover {
+                                        let Some(back) = display.freeze_render() else {
+                                                return Step::Waiting; // busy: try next pass
+                                        };
+                                        let mut c = layer.canvas(back);
+                                        c.clear();
+                                        self.paint(&mut c, font);
+                                        drop(c);
+                                } else if !display.freeze() {
                                         return Step::Waiting; // busy: capture next pass
                                 }
                                 //   the direction is chosen in LOGICAL terms and converted here,
                                 // because the blit works in physical space: the transform's a and
-                                // c are the physical components of logical +x, exactly one of
-                                // them non-zero for a pure rotation, so this picks the axis the
-                                // viewer calls horizontal whatever the board's orientation
+                                // c are the physical components of logical +x (b and d of +y),
+                                // exactly one of each pair non-zero for a pure rotation, so this
+                                // picks the axis the viewer calls horizontal -- or, for a Row
+                                // page's vertical transition, vertical -- whatever the board's
+                                // orientation. Reveal-forward pushes the outgoing toward -x so the
+                                // child arrives from the right; cover-forward's +y unit is the
+                                // logical DOWN the incoming rises from, offset shrinking to zero.
                                 let m = layer.transform();
-                                let ux = m.a.signum();
-                                let uy = m.c.signum();
-                                let sign = if self.page_move_back { 1 } else { -1 };
+                                let (ux, uy, sign) = if self.page_move_vertical {
+                                        //   both directions run the logical-DOWN axis (+y): forward
+                                        // the incoming rises from it (cover), back the outgoing
+                                        // sinks to it (reveal) -- the one is the other reversed
+                                        (m.b.signum(), m.d.signum(), 1)
+                                } else {
+                                        (m.a.signum(), m.c.signum(), if self.page_move_back { 1 } else { -1 })
+                                };
                                 let (pw, ph) = layer.physical_size();
                                 self.page_move_dx = sign * ux;
                                 self.page_move_dy = sign * uy;
@@ -1511,6 +1676,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         }
                         self.page_move_started = true;
                         self.page_move_start_us = now_us;
+                        self.page_move_travel = 0;
                 }
                 let elapsed = now_us.saturating_sub(self.page_move_start_us);
                 if elapsed >= u64::from(self.page_move_ms) * 1000 {
@@ -1527,24 +1693,63 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return Step::Finished;
                 }
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
+                let cover = !self.page_move_over && self.page_move_vertical && !self.page_move_back;
                 if self.page_move_over {
                         //   no clear: the outgoing image IS the ground the incoming page
                         // slides in over
                         let Some(mut c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
-                        c.set_offset(self.page_move_dx * (self.page_move_span - travel), 0);
+                        c.set_offset(self.page_move_dx * (self.page_move_span - travel), self.page_move_dy * (self.page_move_span - travel));
                         self.paint(&mut c, font);
                         drop(c);
-                } else {
-                        let Some(c) = layer.frame_begin(display, now_us) else { return Step::Waiting };
+                } else if cover {
+                        //   COVER: the incoming page (already rendered into the back buffer at
+                        // setup) slides up over the static outgoing (the untouched front). Blit
+                        // it at a SHRINKING offset along the logical-down axis: at full span it
+                        // sits off-screen past the bottom, at zero it fully covers. The front
+                        // keeps showing the outgoing wherever the incoming has not yet reached.
+                        // Just a blit per step -- the incoming is drawn only once.
+                        let Some(c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
                         drop(c);
-                        //   the incoming page first, as an ordinary repaint of the live tree,
-                        // then the outgoing image over the top: the blit leaves the band it no
-                        // longer covers untouched, so what shows through is the new page
-                        // already drawn beneath
+                        if let Some((front, incoming)) = display.frame_and_capture() {
+                                let off = self.page_move_span - travel;
+                                let mut c = layer.canvas(front);
+                                c.blit_offset(incoming, self.page_move_dx * off, self.page_move_dy * off);
+                        }
+                } else {
+                        //   over, not cleared: the buffer holds the previous step's frame, and
+                        // the incoming page is STATIC in this mode -- only the strip the
+                        // outgoing image has uncovered since the last drawn step needs
+                        // painting, then the capture is re-blitted at its new offset. A full
+                        // tree paint here cost ~70 ms a step on the big panels: a 300 ms
+                        // transition landed in three visible jumps, and every one starved the
+                        // audio ring into a click
+                        let Some(c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
+                        drop(c);
                         if let Some((front, captured)) = display.frame_and_capture() {
                                 let mut c = layer.canvas(front);
-                                self.paint(&mut c, font);
+                                //   the outgoing image's LOGICAL motion sign along the axis (== the
+                                // setup's `sign`): new rows of the incoming appear at the low end
+                                // when it moves positive, the high end otherwise. Vertical always
+                                // runs +y (down); horizontal is +x back, -x forward
+                                let s = if !self.page_move_vertical && !self.page_move_back { -1 } else { 1 };
+                                let prev = self.page_move_travel;
+                                if travel > prev {
+                                        let (lw, lh) = layer.logical_size();
+                                        let (lw, lh) = (i32::from(lw), i32::from(lh));
+                                        let extent = if self.page_move_vertical { lh } else { lw };
+                                        let (b0, b1) = if s > 0 { (prev, travel - 1) } else { (extent - travel, extent - prev - 1) };
+                                        let band = if self.page_move_vertical {
+                                                Rect::new(0, b0, lw - 1, b1)
+                                        } else {
+                                                Rect::new(b0, 0, b1, lh - 1)
+                                        };
+                                        if let Some(root) = self.root {
+                                                self.paint_clipped(&mut c, font, root, band);
+                                        }
+                                        c.clear_clip();
+                                }
                                 c.blit_offset(captured, self.page_move_dx * travel, self.page_move_dy * travel);
+                                self.page_move_travel = travel;
                         }
                 }
                 layer.invalidate_all();
@@ -1761,20 +1966,25 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         fn touch_reset(&mut self) {
                 self.touch_down = false;
                 self.touch_dragging = false;
+                self.touch_moved = false;
                 self.drag_window = None;
         }
 
         /// The stateful entry point: feed it the panel's CURRENT state every tick -- position and
         /// whether a finger is down -- and it runs the whole tap-versus-drag interaction.
         ///
-        /// - A touch that ends within `drag_slop` of where it began is a TAP, delivered on RELEASE
-        ///   at the point it STARTED: release, because with scrollable content a down-edge fires
-        ///   on every drag's first contact; the start point, because that is where the intent was.
+        /// - A TAP fires on RELEASE only when the contact never strayed beyond `drag_slop` from
+        ///   where it landed AND rested there at least [`TAP_MIN_HOLD_US`] -- a deliberate press,
+        ///   not a brush or a jittered graze. It is delivered at the START point (with scrollable
+        ///   content a down-edge fires on every drag's first contact, so the start is the intent).
         /// - A touch that moves beyond the slop over a scrollable window becomes a DRAG: the window
         ///   under the START point scrolls to follow the finger until release.
         /// - A touch that travels with nothing scrollable under it commits to neither, and the
         ///   release is left for the gesture pipeline -- a swipe on a non-scrolling page navigates.
-        pub fn touch(&mut self, x: u16, y: u16, touching: bool) -> Touch<A> {
+        ///
+        /// `now_us` is the current time (the same clock the animations run on); the caller passes
+        /// it every sample so the hold can be measured without the toolkit owning a clock.
+        pub fn touch(&mut self, x: u16, y: u16, touching: bool, now_us: u64) -> Touch<A> {
                 // mid-rotation samples reset the tracker rather than being remembered: the
                 // layout the touch began against is being replaced
                 if self.rotating {
@@ -1786,18 +1996,24 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 return Touch::None;
                         }
                         let was_drag = self.touch_dragging;
+                        let moved = self.touch_moved;
+                        let held_us = now_us.saturating_sub(self.touch_start_us);
                         let (sx, sy) = self.touch_start;
                         let adx = (self.touch_last.0 - sx).abs();
                         let ady = (self.touch_last.1 - sy).abs();
                         self.touch_reset();
-                        let travelled = adx > self.drag_slop || ady > self.drag_slop;
+                        //   a tap must have stayed put (never beyond the slop, start to last) AND
+                        // rested long enough. Too brief or wandered = intent unclear, dropped
+                        let strayed = moved || adx > self.drag_slop || ady > self.drag_slop;
+                        let too_brief = held_us < TAP_MIN_HOLD_US;
+                        let verdict = if was_drag { "drag" } else if strayed { "strayed" } else if too_brief { "too brief" } else { "tap" };
                         // the verdict and the numbers, because "taps sometimes don't work" is
                         // otherwise undiagnosable; TRACE, since it fires on every touch
-                        trace!("ui: touch release moved ({adx}, {ady}), slop {} -> {}", self.drag_slop, if was_drag { "drag" } else if travelled { "neither" } else { "tap" });
+                        trace!("ui: release moved ({adx}, {ady}) slop {}, held {} us -> {}", self.drag_slop, held_us, verdict);
                         if was_drag {
                                 return Touch::DragEnd;
                         }
-                        if travelled {
+                        if strayed || too_brief {
                                 return Touch::None;
                         }
                         let hit = self.root.and_then(|root| self.hit_test(root, self.canvas_rect(), sx, sy, None));
@@ -1814,9 +2030,11 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if !self.touch_down {
                         self.touch_down = true;
                         self.touch_dragging = false;
+                        self.touch_moved = false;
                         self.drag_window = None;
                         self.touch_start = (lx, ly);
                         self.touch_last = (lx, ly);
+                        self.touch_start_us = now_us;
                         return Touch::Pending;
                 }
 
@@ -1824,6 +2042,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         let adx = (lx - self.touch_start.0).abs();
                         let ady = (ly - self.touch_start.1).abs();
                         if adx > self.drag_slop || ady > self.drag_slop {
+                                //   strayed beyond the slop: no longer a tap, whatever happens next
+                                self.touch_moved = true;
                                 let (sx, sy) = self.touch_start;
                                 let target = self.root.and_then(|root| self.scroll_window_at(root, self.canvas_rect(), sx, sy, None));
                                 if let Some(t) = target {
@@ -1933,6 +2153,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         pub fn set_text(&mut self, id: WidgetId, text: &str) {
                 self.w_mut(id).text.set(text);
                 self.invalidate_widget(id);
+        }
+
+        /// The title-bar status dot on a window: `Some((lit, col))` places it on title
+        /// character cell `col`, `lit` choosing drawn or dark; `None` is off. A flashing
+        /// light toggles `lit` at a fixed `col`, and since the dot sits on a blank cell the
+        /// title already holds the text never reflows. A no-op on a non-window.
+        pub fn set_indicator(&mut self, id: WidgetId, state: Option<(bool, u16)>) {
+                if let Kind::Window(w) = &mut self.w_mut(id).kind {
+                        if w.indicator == state {
+                                return;
+                        }
+                        w.indicator = state;
+                        self.invalidate_widget(id);
+                }
         }
 
         // --- painting ---
@@ -2047,7 +2281,23 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let indent = corner_indent(win.corner_radius, i32::from(win.corner_radius) - inset);
                 let tx = f.x0 + indent + inset + 1;
                 c.fg = self.theme.title;
-                self.draw_text_fitted(c, font, tx, ty, title, (f.x1 - indent - inset) - tx + 1);
+                let text_right = f.x1 - indent - inset;
+                self.draw_text_fitted(c, font, tx, ty, title, text_right - tx + 1);
+                //   an INLINE status dot, centred on the title cell the caller left blank
+                // for it (e.g. the space in "REC 0:12"); sized to sit inside one cell so it
+                // never touches the glyphs either side. Only drawn when lit -- the dark
+                // phase shows the blank cell, so the flash never reflows the title
+                if let Some((true, col)) = win.indicator {
+                        let dot_d = (self.cell_h * 3 / 5).clamp(3, self.cell_w);
+                        let cx = tx + i32::from(col) * self.cell_w + self.cell_w / 2;
+                        let cy = ty + self.cell_h / 2;
+                        let (dx0, dy0) = (cx - dot_d / 2, cy - dot_d / 2);
+                        let (dx1, dy1) = (dx0 + dot_d - 1, dy0 + dot_d - 1);
+                        if dx0 >= 0 && dy0 >= 0 && dx1 <= text_right {
+                                c.fg = self.theme.indicator;
+                                c.rect_rounded(Point::new(dx0, dy0), Point::new(dx1, dy1), (dot_d / 2) as u16, light_draw::corner::ALL, true);
+                        }
+                }
                 // the separator sits a cell lower, where the arc has come most of the way out
                 c.fg = self.theme.frame;
                 let sep_y = ty + self.cell_h;
@@ -2474,6 +2724,19 @@ mod tests {
         static LIST: Desc<Ev> = Desc::frame().stack(0).scroll(scroll::VERTICAL).children(&[&ITEM_1, &ITEM_2, &ITEM_3, &ITEM_4, &ITEM_5]);
         static PAGE_LIST: Page<Ev> = Page::new(&LIST, None);
 
+        static COL_1: Desc<Ev> = Desc::button("C1").emit(Ev::Item(1)).min_size(20, 0);
+        static COL_2: Desc<Ev> = Desc::button("C2").emit(Ev::Item(2)).min_size(20, 0);
+        static COL_3: Desc<Ev> = Desc::button("C3").emit(Ev::Item(3)).min_size(20, 0);
+        static COL_4: Desc<Ev> = Desc::button("C4").emit(Ev::Item(4)).min_size(20, 0);
+        static COL_5: Desc<Ev> = Desc::button("C5").emit(Ev::Item(5)).min_size(20, 0);
+        static ROW_LIST: Desc<Ev> = Desc::frame().row(0).scroll(scroll::HORIZONTAL).children(&[&COL_1, &COL_2, &COL_3, &COL_4, &COL_5]);
+        static PAGE_ROW: Page<Ev> = Page::new(&ROW_LIST, None);
+
+        static PIN: Desc<Ev> = Desc::button("<").emit(Ev::Beta).min_size(12, 0).max_size(12, 0);
+        static STRIP: Desc<Ev> = Desc::frame().row(0).scroll(scroll::HORIZONTAL).children(&[&COL_1, &COL_2, &COL_3, &COL_4, &COL_5]);
+        static PINNED: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &STRIP]);
+        static PAGE_PINNED: Page<Ev> = Page::new(&PINNED, None);
+
         fn font_blob() -> StdVec<u8> {
                 let mut e = Encoder::new(4, 6, 5, 6);
                 for c in 0x20u8..0x7f {
@@ -2586,18 +2849,21 @@ mod tests {
                 let beta = ui.children(root).nth(1).unwrap();
                 let r = ui.get(beta).unwrap().rect;
                 let (cx, cy) = (((r.x0 + r.x1) / 2) as u16, ((r.y0 + r.y1) / 2) as u16);
-                assert_eq!(ui.touch(cx, cy, true), Touch::Pending);
-                // a wobble within the slop is still a tap
-                assert_eq!(ui.touch(cx + 3, cy + 2, true), Touch::Pending);
-                assert_eq!(ui.touch(cx + 3, cy + 2, false), Touch::Tap { hit: true, emitted: Some(Ev::Beta) });
+                assert_eq!(ui.touch(cx, cy, true, 0), Touch::Pending);
+                // a wobble within the slop, held past the minimum, is still a tap
+                assert_eq!(ui.touch(cx + 3, cy + 2, true, 10_000), Touch::Pending);
+                assert_eq!(ui.touch(cx + 3, cy + 2, false, 60_000), Touch::Tap { hit: true, emitted: Some(Ev::Beta) });
                 assert_eq!(ui.focused(), Some(beta));
                 // travel beyond the slop with nothing scrollable underneath: neither tap nor drag
-                assert_eq!(ui.touch(cx, cy, true), Touch::Pending);
-                assert_eq!(ui.touch(cx + 30, cy, true), Touch::Pending);
-                assert_eq!(ui.touch(cx + 30, cy, false), Touch::None);
-                // and a tap on empty space (the header) is reported, not swallowed
-                assert_eq!(ui.touch(30, 2, true), Touch::Pending);
-                assert_eq!(ui.touch(30, 2, false), Touch::Tap { hit: false, emitted: None });
+                assert_eq!(ui.touch(cx, cy, true, 100_000), Touch::Pending);
+                assert_eq!(ui.touch(cx + 30, cy, true, 110_000), Touch::Pending);
+                assert_eq!(ui.touch(cx + 30, cy, false, 200_000), Touch::None);
+                // a press too brief to be deliberate is dropped, even dead on the widget
+                assert_eq!(ui.touch(cx, cy, true, 300_000), Touch::Pending);
+                assert_eq!(ui.touch(cx, cy, false, 300_000 + TAP_MIN_HOLD_US / 2), Touch::None);
+                // and a real tap on empty space (the header) is reported, not swallowed
+                assert_eq!(ui.touch(30, 2, true, 400_000), Touch::Pending);
+                assert_eq!(ui.touch(30, 2, false, 460_000), Touch::Tap { hit: false, emitted: None });
         }
 
         #[test]
@@ -2617,10 +2883,10 @@ mod tests {
                 let first = ui.children(root).next().unwrap();
                 let y_before = ui.get(first).unwrap().rect.y0;
                 // a drag upward from the middle of the list
-                assert_eq!(ui.touch(32, 30, true), Touch::Pending);
-                assert_eq!(ui.touch(32, 10, true), Touch::Drag);
+                assert_eq!(ui.touch(32, 30, true, 0), Touch::Pending);
+                assert_eq!(ui.touch(32, 10, true, 10_000), Touch::Drag);
                 assert_eq!(ui.get(first).unwrap().rect.y0, y_before - 20);
-                assert_eq!(ui.touch(32, 10, false), Touch::DragEnd);
+                assert_eq!(ui.touch(32, 10, false, 20_000), Touch::DragEnd);
                 // scrolling past the end is clamped: the content's far edge never passes the stop
                 assert!(ui.scroll_by(root, 0, 1000));
                 let vp_y1 = ui.viewport(root).y1;
@@ -2630,12 +2896,209 @@ mod tests {
                 // the part of a widget above the viewport is untouchable even though its rect
                 // covers the point (row 3 spans y = -15..4 here; the viewport starts at 3), and
                 // focusing a widget scrolled out brings it in
-                assert_eq!(ui.touch(32, 2, true), Touch::Pending);
-                assert_eq!(ui.touch(32, 2, false), Touch::Tap { hit: false, emitted: None });
-                assert_eq!(ui.touch(32, 4, true), Touch::Pending);
-                assert_eq!(ui.touch(32, 4, false), Touch::Tap { hit: true, emitted: Some(Ev::Item(3)) });
+                assert_eq!(ui.touch(32, 2, true, 100_000), Touch::Pending);
+                assert_eq!(ui.touch(32, 2, false, 160_000), Touch::Tap { hit: false, emitted: None });
+                assert_eq!(ui.touch(32, 4, true, 200_000), Touch::Pending);
+                assert_eq!(ui.touch(32, 4, false, 260_000), Touch::Tap { hit: true, emitted: Some(Ev::Item(3)) });
                 ui.set_focus(Some(first));
                 assert_eq!(ui.get(first).unwrap().rect.y0, ui.viewport(root).y0);
+        }
+
+        #[test]
+        fn a_scrolling_row_overflows_sideways_and_a_drag_moves_it_within_the_clamp() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PAGE_ROW).unwrap();
+                let root = ui.root().unwrap();
+                let win = ui.get(root).unwrap().window().unwrap().clone();
+                // five columns pinned at 20 px in a 64 px frame: the content overflows
+                assert_eq!(win.content_w, 100);
+                // a scrolling row's columns keep their measured widths: no absorbed remainder
+                let last = ui.children(root).last().unwrap();
+                let last_rect = ui.get(last).unwrap().rect;
+                assert_eq!(last_rect.x1 - last_rect.x0 + 1, 20);
+                let first = ui.children(root).next().unwrap();
+                let x_before = ui.get(first).unwrap().rect.x0;
+                // a drag leftward from the middle of the row pulls the content with it
+                assert_eq!(ui.touch(40, 24, true, 0), Touch::Pending);
+                assert_eq!(ui.touch(20, 24, true, 10_000), Touch::Drag);
+                assert_eq!(ui.get(first).unwrap().rect.x0, x_before - 20);
+                assert_eq!(ui.touch(20, 24, false, 20_000), Touch::DragEnd);
+                // scrolling past the end is clamped: the last column rests at the frame's edge
+                assert!(ui.scroll_by(root, 1000, 0));
+                assert_eq!(ui.get(last).unwrap().rect.x1, ui.viewport(root).x1);
+                assert!(!ui.scroll_by(root, 1, 0), "nothing left to scroll");
+                // and the row never scrolls vertically, whatever a drag asks for
+                assert!(!ui.scroll_by(root, 0, 10));
+                // the part of a column left of the viewport is untouchable even though its
+                // rect covers the point
+                let vp_x0 = ui.viewport(root).x0;
+                if vp_x0 > 0 {
+                        assert_eq!(ui.touch((vp_x0 - 1) as u16, 24, true, 100_000), Touch::Pending);
+                        assert_eq!(ui.touch((vp_x0 - 1) as u16, 24, false, 160_000), Touch::Tap { hit: false, emitted: None });
+                }
+        }
+
+        #[test]
+        fn a_column_pinned_beside_a_scrolling_strip_holds_still_while_the_strip_drags() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PAGE_PINNED).unwrap();
+                let root = ui.root().unwrap();
+                let (pin, strip) = {
+                        let mut kids = ui.children(root);
+                        (kids.next().unwrap(), kids.next().unwrap())
+                };
+                // the strip's interior was laid out against its PLACED rect, not the
+                // placeholder it was built with: its first column starts inside it
+                let strip_rect = ui.get(strip).unwrap().rect;
+                let first = ui.children(strip).next().unwrap();
+                assert!(ui.get(first).unwrap().rect.x0 > strip_rect.x0);
+                assert!(strip_rect.x0 > ui.get(pin).unwrap().rect.x1);
+                // the strip overflows and scrolls; the outer row does not
+                assert!(ui.get(strip).unwrap().window().unwrap().content_w > strip_rect.x1 - strip_rect.x0 + 1);
+                assert!(!ui.scroll_by(root, 10, 0));
+                // a drag over the strip pulls its columns and leaves the pinned column alone
+                let pin_rect = ui.get(pin).unwrap().rect;
+                let x_before = ui.get(first).unwrap().rect.x0;
+                let sx = (strip_rect.x0 + 4) as u16;
+                assert_eq!(ui.touch(sx + 17, 24, true, 0), Touch::Pending);
+                assert_eq!(ui.touch(sx, 24, true, 10_000), Touch::Drag);
+                assert_eq!(ui.get(first).unwrap().rect.x0, x_before - 17);
+                assert_eq!(ui.get(pin).unwrap().rect, pin_rect);
+                assert_eq!(ui.touch(sx, 24, false, 20_000), Touch::DragEnd);
+                // the pinned column still answers a tap
+                let (px, py) = (pin_rect.x0 as u16, (pin_rect.y0 + 2) as u16);
+                assert_eq!(ui.touch(px, py, true, 100_000), Touch::Pending);
+                assert_eq!(ui.touch(px, py, false, 160_000), Touch::Tap { hit: true, emitted: Some(Ev::Beta) });
+        }
+
+        #[test]
+        fn a_row_page_drops_in_vertically_and_lifts_out_while_a_stack_page_slides() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                let mut now = 0u64;
+                let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, now: &mut u64| {
+                        let mut frames = 0;
+                        while ui.is_animating() {
+                                *now += 50_000;
+                                ui.render(layer, display, &font, *now);
+                                while layer.poll(display).unwrap() {}
+                                frames += 1;
+                                assert!(frames < 100, "a transition that never ends");
+                        }
+                };
+                ui.navigate(&PAGE_MAIN).unwrap();
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                // forward into a Row page: the incoming enters from logical DOWN (+y), cover-style
+                ui.navigate_returning(&PAGE_PINNED, &PAGE_MAIN).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1));
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                // back OUT of the Row page: mirrored -- the motion reverses to the other end
+                assert!(ui.navigate_back());
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, -1));
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                // forward into a Stack page: the horizontal slide as ever
+                ui.navigate(&PAGE_DETAIL).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0));
+        }
+
+        /// The COVER transition (forward into a Row page), at the rotation the landscape apps
+        /// run: the incoming page is rendered into the back buffer and slid up over the static
+        /// outgoing, which stays in the front. Mid-step, the covered region must be the incoming
+        /// image displaced along the viewer's vertical, and the uncovered region the outgoing.
+        #[test]
+        fn a_row_page_covers_by_sliding_the_incoming_up_over_the_static_outgoing() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut front = std::vec![0u8; 64 * 48 * 2];
+                let mut back = std::vec![0u8; 64 * 48 * 2];
+                let mut display = Display::new(Mock { pushed: StdVec::new() }, &mut front, 64, 48, PixelFormat::Rgb565, now);
+                display.set_back_buffer(&mut back);
+                let mut layer = FrameLayer::new(64, 48, PixelFormat::Rgb565);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PAGE_MAIN).unwrap();
+                let mut t = 0u64;
+                let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| loop {
+                        ui.render(layer, display, &font, *t);
+                        while layer.poll(display).unwrap() {}
+                        *t += 50_000;
+                        if !ui.is_animating() && !ui.is_dirty() {
+                                break;
+                        }
+                };
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+                ui.set_rotation(&mut layer, Rotation::R270);
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+                //   keep a copy of the outgoing (PAGE_MAIN) as it stands in the front before the
+                // transition -- the cover must preserve it in the uncovered region. Freeze to
+                // reach the front, copy it, thaw; the transition below freezes for itself.
+                let outgoing: StdVec<u8> = {
+                        assert!(display.freeze());
+                        let (f, _) = display.frame_and_capture().unwrap();
+                        let v = f.to_vec();
+                        display.thaw();
+                        v
+                };
+                ui.navigate(&PAGE_PINNED).unwrap();
+                // the first step freezes (render-mode) and renders the incoming into the back
+                let t0 = t;
+                assert!(ui.render(&mut layer, &mut display, &font, t0));
+                assert!(display.is_frozen());
+                while layer.poll(&mut display).unwrap() {}
+                let m = layer.transform();
+                let (ux, uy) = (m.b.signum(), m.d.signum());
+                assert_ne!((ux, uy), (0, 0));
+                let span = if ux != 0 { 64 } else { 48 };
+                // at the midpoint the blit offset is span/2 (span - travel, travel = span/2)
+                assert!(ui.render(&mut layer, &mut display, &font, t0 + u64::from(ui.page_move_ms) * 500));
+                while layer.poll(&mut display).unwrap() {}
+                let off = span / 2;
+                let (off_x, off_y) = (ux * off, uy * off);
+                let (f, incoming) = display.frame_and_capture().expect("frozen mid-transition");
+                let mut covered = 0;
+                for dy in 0..48i32 {
+                        for dx in 0..64i32 {
+                                let (sx, sy) = (dx - off_x, dy - off_y);
+                                let d = ((dy * 64 + dx) * 2) as usize;
+                                if !(0..64).contains(&sx) || !(0..48).contains(&sy) {
+                                        //   uncovered: the front still holds the outgoing, untouched
+                                        assert_eq!(&f[d..d + 2], &outgoing[d..d + 2], "uncovered ({dx},{dy}) is not the static outgoing");
+                                        continue;
+                                }
+                                //   covered: the incoming (in the back buffer) displaced up
+                                let s = ((sy * 64 + sx) * 2) as usize;
+                                assert_eq!(&f[d..d + 2], &incoming[s..s + 2], "covered ({dx},{dy}) is not the incoming image displaced by ({off_x},{off_y})");
+                                covered += 1;
+                        }
+                }
+                assert_eq!(covered, 64 * 48 / 2);
+                // run out: thawed, and the settled tree is the Row page
+                settle(&mut ui, &mut layer, &mut display, &mut t);
+                assert!(!display.is_frozen());
         }
 
         #[test]
@@ -2779,11 +3242,11 @@ mod tests {
                 assert!(core::ptr::eq(ui.page().unwrap(), &T_PAGE_LIST));
                 assert!(ui.is_animating());
                 assert!(settle(&mut ui, &mut layer, &mut display, &mut t) >= 3);
-                assert_eq!(ui.touch(120, 200, true), Touch::Pending);
+                assert_eq!(ui.touch(120, 200, true, t), Touch::Pending);
                 let mut dragged = false;
                 for y in (20..200).rev().step_by(10) {
                         // pending until the finger has travelled the slop, a drag from then on
-                        match ui.touch(120, y, true) {
+                        match ui.touch(120, y, true, t) {
                                 Touch::Pending => assert!(!dragged && 200 - y <= DRAG_SLOP as u16),
                                 Touch::Drag => dragged = true,
                                 other => panic!("unexpected {other:?}"),
@@ -2791,14 +3254,14 @@ mod tests {
                         settle(&mut ui, &mut layer, &mut display, &mut t);
                 }
                 assert!(dragged);
-                assert_eq!(ui.touch(120, 20, false), Touch::DragEnd);
+                assert_eq!(ui.touch(120, 20, false, t), Touch::DragEnd);
                 let root = ui.root().unwrap();
                 let _ = ui.scroll_by(root, 0, 1000);
                 let back = ui.children(root).last().unwrap();
                 let r = ui.get(back).unwrap().rect;
                 let (cx, cy) = (((r.x0 + r.x1) / 2) as u16, ((r.y0 + r.y1) / 2) as u16);
-                assert_eq!(ui.touch(cx, cy, true), Touch::Pending);
-                assert_eq!(ui.touch(cx, cy, false), Touch::Tap { hit: true, emitted: None });
+                assert_eq!(ui.touch(cx, cy, true, t), Touch::Pending);
+                assert_eq!(ui.touch(cx, cy, false, t + 100_000), Touch::Tap { hit: true, emitted: None });
                 assert!(core::ptr::eq(ui.page().unwrap(), &T_PAGE_MAIN));
                 // a tap during the return transition still lands: only rotation blocks input
                 assert!(ui.is_animating());
@@ -2834,7 +3297,7 @@ mod tests {
                 assert_eq!(flush(&mut layer, &mut display), [Region::full(240, 280)], "an animation frame is a whole-panel push");
                 // taps are refused mid-turn
                 assert_eq!(ui.press_at(120, 100), (false, None));
-                assert_eq!(ui.touch(120, 100, true), Touch::None);
+                assert_eq!(ui.touch(120, 100, true, 0), Touch::None);
                 assert!(ui.render(&mut layer, &mut display, &font, 150_000));
                 let _ = flush(&mut layer, &mut display);
                 // past the duration: thawed, committed, the settled tree drawn in one call

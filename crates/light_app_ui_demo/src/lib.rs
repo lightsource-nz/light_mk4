@@ -299,9 +299,10 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                                                 }
                                         }
                                 }
+                                let now = log::now_us();
                                 let outcome = match t {
-                                        TouchSample::Down { x, y } | TouchSample::Move { x, y } => self.ui.touch(x, y, true),
-                                        TouchSample::Up => self.ui.touch(0, 0, false),
+                                        TouchSample::Down { x, y } | TouchSample::Move { x, y } => self.ui.touch(x, y, true, now),
+                                        TouchSample::Up => self.ui.touch(0, 0, false, now),
                                         TouchSample::Reset => return,
                                 };
                                 match outcome {

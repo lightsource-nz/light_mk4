@@ -1,0 +1,9 @@
+[package]
+name = "light_app_dictaphone_wide"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the dictaphone with a landscape interface: status and actions side by side across glass held sideways, over the same light_dictaphone_core engine as the portrait app"
+
+[dependencies]
+light_dictaphone_core = { path = "../light_dictaphone_core" }

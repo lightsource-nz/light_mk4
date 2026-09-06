@@ -157,6 +157,20 @@ impl<'b, D: DisplayDriver> Display<'b, D> {
                 true
         }
 
+        /// Freeze WITHOUT capturing: lock swapping and hand back the back buffer for the caller
+        /// to render a fresh image into, leaving the FRONT (the last frame) untouched as a
+        /// static background. The mirror of [`freeze`](Self::freeze) -- there the back holds the
+        /// image that moves and the front is redrawn; here the front stays put and the back's
+        /// rendered image is what a blit slides over it (a page covering the one beneath).
+        /// Refused (`None`) while an update is reading, or without a back buffer.
+        pub fn freeze_render(&mut self) -> Option<&mut [u8]> {
+                if self.update.is_some() || self.back.is_none() {
+                        return None;
+                }
+                self.frozen = true;
+                self.back.as_deref_mut()
+        }
+
         /// Swapping resumes; the next `swap` exchanges the buffers again.
         pub fn thaw(&mut self) {
                 self.frozen = false;
