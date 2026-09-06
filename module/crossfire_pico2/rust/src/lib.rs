@@ -1,7 +1,8 @@
-//! crossfire on a Pico 2 in the po13 dock: the hardware-bound instantiation. The
-//! application is `light_app_crossfire`, with no hardware in it; this crate is everything
-//! tangible -- the board wiring, the RP2350 chip feature, the TinyUSB host stack, the
-//! shell ABI, the panic handler -- constructed here and handed to [`app::serve`].
+//! crossfire on a Pico 2 with the Waveshare Pico-OLED-1.3 display board: the
+//! hardware-bound instantiation. The application is `light_app_crossfire`, with no
+//! hardware in it; this crate is everything tangible -- the board wiring, the RP2350 chip
+//! feature, the TinyUSB host stack, the shell ABI, the panic handler -- constructed here
+//! and handed to [`app::serve`].
 
 #![no_std]
 

@@ -1,7 +1,7 @@
-//! Board wiring for crossfire on a Pico 2: the LED, and -- when the board sits in the po13
-//! dock -- the Waveshare Pico-OLED-1.3 (SH1107, 64x128 portrait glass, 1 bpp) on SPI1 as the
-//! status display, pins from mk3's `light_display_po13.h`. The OLED and keys are the bench
-//! rig's.
+//! Board wiring for crossfire on a Pico 2 with the Waveshare Pico-OLED-1.3 display board:
+//! the OLED (SH1107, 64x128 portrait glass, 1 bpp) on SPI1 as the status display, its two
+//! keys, and the Pico 2's own LED. The pin assignments are the Pico-OLED-1.3's as it plugs
+//! onto the Pico header.
 //!
 //! This lives with the HARDWARE MODULE, not in the port crate or the application:
 //! `light-rp2` knows the chip and nothing about what anyone soldered to it, and
@@ -26,9 +26,10 @@ pub const PIN_OLED_RESET: usize = 12;
 /// The glass is physically portrait: 64 wide, 128 tall.
 pub const OLED_WIDTH: u16 = 64;
 pub const OLED_HEIGHT: u16 = 128;
-/// The controller's RAM offset the panel sits at (0xD3), mk3's verified value.
+/// The controller's RAM offset the panel sits at (SH1107 command 0xD3), verified on the
+/// glass: without it the image lands wrapped around the controller's 128-row RAM.
 pub const OLED_DISPLAY_OFFSET: u8 = 96;
-/// mk3's `SPI_BAUDRATE` for the OLED rigs; this panel was never re-clocked.
+/// The rate this panel is qualified at; it has not been pushed further.
 pub const OLED_SPI_HZ: u32 = 10_000_000;
 /// The display bus's DMA channel: the top of the RP2350's 16, where pico-sdk's
 /// dma_claim_unused_channel (counting up from 0) will not reach.
