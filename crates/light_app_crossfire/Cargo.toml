@@ -1,0 +1,13 @@
+[package]
+name = "light_app_crossfire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "crossfire: USB-MIDI forwarding between every instrument on the host port, with an SH1107 status display -- the hardware-independent application, instantiated by a board module"
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+light-display = { path = "../light-display" }
+light-midi = { path = "../light-midi" }
+light-font = { path = "../light-font" }

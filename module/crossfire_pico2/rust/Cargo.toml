@@ -1,0 +1,22 @@
+[package]
+#   _app suffix: the plain name is the CMake EXECUTABLE (which must match the module
+# directory -- light-flash.ps1 finds module/<target>/<target>.uf2), and CMake target
+# names are one namespace with Corrosion's crate targets
+name = "crossfire_pico2_app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "crossfire on a Pico 2: the hardware-bound instantiation -- pins, chip features, shell glue -- around the light_app_crossfire application"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+light_app_crossfire = { path = "../../../crates/light_app_crossfire" }
+light-core = { path = "../../../crates/light-core" }
+light-draw = { path = "../../../crates/light-draw" }
+light-display = { path = "../../../crates/light-display" }
+light-font = { path = "../../../crates/light-font" }
+#   the chip is THIS module's identity: the feature is pinned here, not switched by the
+# build system -- a crossfire_pico2 is an RP2350 or it is nothing
+light-rp2 = { path = "../../../crates/light-rp2", features = ["usb-host", "rp2350"] }

@@ -10,7 +10,7 @@
 //! Only meaningful in a firmware whose shell was built for the host role; the symbols resolve
 //! against `tinyusb_host` at link time.
 
-use light_midi::{BusInfo, Mount, Packet, Transport};
+use light_midi::{BusInfo, Host, MidiEvent, Mount, Packet, Transport};
 use light_core::Mailbox;
 
 #[repr(C)]
@@ -38,13 +38,6 @@ unsafe extern "C" {
         fn tuh_midi_packet_write_n(idx: u8, buffer: *const u8, bufsize: u32) -> u32;
         fn tuh_midi_write_flush(idx: u8) -> u32;
         fn tuh_bus_info_get(daddr: u8, bus_info: *mut TuhBusInfo) -> bool;
-}
-
-/// A mount or unmount the stack reported, waiting for the application's poll.
-#[derive(Clone, Copy, Debug)]
-pub enum MidiEvent {
-        Mounted { idx: u8, mount: Mount, bus: Option<BusInfo> },
-        Unmounted { idx: u8 },
 }
 
 /// Mount events from the callbacks to the module. Eight deep: a hub coming up mounts its
@@ -78,24 +71,28 @@ impl UsbMidiHost {
                 unsafe { light_shell_usb_host_init() };
                 Self { _private: () }
         }
+}
 
+//   the portable half of the contract: an application drives the stack through
+// light_midi::Host and never names TinyUSB
+impl Host for UsbMidiHost {
         /// Run the stack: enumeration, transfers, and the callbacks above. Every pass.
-        pub fn task(&mut self) {
+        fn task(&mut self) {
                 unsafe { light_shell_usb_host_task() }
         }
 
         /// What the callbacks reported since the last poll.
-        pub fn next_event(&mut self) -> Option<MidiEvent> {
+        fn next_event(&mut self) -> Option<MidiEvent> {
                 EVENTS.pop()
         }
 
-        pub fn dropped_events(&self) -> u32 {
+        fn dropped_events(&self) -> u32 {
                 EVENTS.dropped()
         }
 
         /// Tear the controller down and bring it back: the root-port-empty workaround. Blocks
         /// for the settle delay.
-        pub fn reset(&mut self) {
+        fn reset(&mut self) {
                 unsafe { light_shell_usb_host_reset() }
         }
 }

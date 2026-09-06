@@ -59,6 +59,27 @@ pub trait Transport {
         fn flush(&mut self, idx: u8);
 }
 
+/// A mount or unmount a host stack reported, waiting for the application's poll.
+#[derive(Clone, Copy, Debug)]
+pub enum MidiEvent {
+        Mounted { idx: u8, mount: Mount, bus: Option<BusInfo> },
+        Unmounted { idx: u8 },
+}
+
+/// A USB host stack driving MIDI devices: the packet path plus the lifecycle around it.
+/// What lets an application own its forwarding loop without naming the stack -- the port
+/// crate implements this for the real controller, a test mock for the bench.
+pub trait Host: Transport {
+        /// Run the stack: enumeration, transfers, callbacks. Every pass.
+        fn task(&mut self);
+        /// What the stack reported since the last poll.
+        fn next_event(&mut self) -> Option<MidiEvent>;
+        /// Tear the controller down and bring it back. May block for a settle delay.
+        fn reset(&mut self);
+        /// Mount reports lost to a full queue since boot.
+        fn dropped_events(&self) -> u32;
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
         Usb,

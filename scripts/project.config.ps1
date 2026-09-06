@@ -34,8 +34,11 @@
         Targets = @{
                 'light_mk4_h7'   = @{ Preset = 'conf-light_mk4-mini-stm32h7-debug'; Flash = 'swd' }
                 'light_mk4_f411' = @{ Preset = 'conf-light_mk4-blackpill-debug'; Flash = 'swd' }
-                # the po13 rig again, flashed over SWD like the pico2 demo
-                'light_mk4_crossfire' = @{ Preset = 'conf-light_mk4-crossfire-debug'; Flash = 'swd' }
+                # crossfire's two tangible boards: the Pico 2 in the po13 dock (SWD like the
+                # pico2 demo) and the stock RP2040 Pico product board -- one hardware module
+                # each, both instantiating the light_app_crossfire crate
+                'crossfire_pico2' = @{ Preset = 'conf-light_mk4-crossfire-debug'; Flash = 'swd' }
+                'crossfire_pico'  = @{ Preset = 'conf-light_mk4-crossfire-pico-debug'; Flash = 'swd' }
                 # uf2 because the 1.69 exposes no SWD pads
                 'light_mk4_touch169' = @{ Preset = 'conf-light_mk4-touch169-debug'; Flash = 'uf2' }
                 'light_mk4_touch28'  = @{ Preset = 'conf-light_mk4-touch28-debug'; Flash = 'uf2' }

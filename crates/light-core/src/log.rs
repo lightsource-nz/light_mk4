@@ -133,6 +133,13 @@ pub fn set_clock(clock: fn() -> u64) {
         critical_section::with(|cs| STATE.borrow_ref_mut(cs).clock = Some(clock));
 }
 
+/// The installed clock's reading, in microseconds; zero before [`set_clock`]. Here so
+/// PORTABLE code -- an app crate with no port dependency -- can timestamp its own logic
+/// (activity timeouts, uptime) with the same clock its log lines carry.
+pub fn now_us() -> u64 {
+        critical_section::with(|cs| STATE.borrow_ref(cs).clock.map_or(0, |c| c()))
+}
+
 pub fn set_max_level(level: Level) {
         critical_section::with(|cs| STATE.borrow_ref_mut(cs).max_level = level);
 }

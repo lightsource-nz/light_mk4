@@ -16,6 +16,9 @@ members = [
         "crates/light-rp2",
         "crates/light-stm32h7",
         "crates/light-stm32f4",
+        #   hardware-independent applications: the logic of an app as a portable crate,
+        # instantiated by a hardware-bound module/ crate per tangible board
+        "crates/light_app_crossfire",
         "tools/crush",
         "module/light_mk4_touch169/rust",
         "module/light_mk4_touch28/rust",
@@ -23,7 +26,8 @@ members = [
         "module/light_mk4_dictaphone/rust",
         "module/light_mk4_touch4/rust",
         "module/light_mk4_pico2/rust",
-        "module/light_mk4_crossfire/rust",
+        "module/crossfire_pico/rust",
+        "module/crossfire_pico2/rust",
         "module/light_mk4_h7/rust",
         "module/light_mk4_f411/rust",
 ]

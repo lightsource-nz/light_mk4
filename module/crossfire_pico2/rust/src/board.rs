@@ -1,11 +1,12 @@
-//! Board wiring for crossfire's Pico: the LED, and -- when the Pico sits in the po13 dock --
-//! the Waveshare Pico-OLED-1.3 (SH1107, 64x128 portrait glass, 1 bpp) on SPI1 as the status
-//! display, pins from mk3's `light_display_po13.h`. The product board is a stock Pico; the
-//! OLED and keys are the bench rig's.
+//! Board wiring for crossfire on a Pico 2: the LED, and -- when the board sits in the po13
+//! dock -- the Waveshare Pico-OLED-1.3 (SH1107, 64x128 portrait glass, 1 bpp) on SPI1 as the
+//! status display, pins from mk3's `light_display_po13.h`. The OLED and keys are the bench
+//! rig's.
 //!
-//! This lives with the APPLICATION, not in the port crate: `light-rp2` knows the chip and
-//! nothing about what anyone soldered to it. A crossfire built for different status hardware
-//! changes this file and nothing else.
+//! This lives with the HARDWARE MODULE, not in the port crate or the application:
+//! `light-rp2` knows the chip and nothing about what anyone soldered to it, and
+//! `light_app_crossfire` knows neither. A crossfire on different hardware is another module
+//! with another copy of this file.
 
 use light_core::atomic::{AtomicBool, Ordering};
 use light_rp2::gpio::{Input, Output};
@@ -29,13 +30,8 @@ pub const OLED_HEIGHT: u16 = 128;
 pub const OLED_DISPLAY_OFFSET: u8 = 96;
 /// mk3's `SPI_BAUDRATE` for the OLED rigs; this panel was never re-clocked.
 pub const OLED_SPI_HZ: u32 = 10_000_000;
-/// The display bus's DMA channel: the top of the range, where pico-sdk's
-/// dma_claim_unused_channel (counting up from 0) will not reach -- and the top is a CHIP
-/// fact: the RP2040 has 12 channels, the RP2350 16 (channel 15 here panicked the pico2
-/// demo's first RP2040 boot).
-#[cfg(feature = "rp2040")]
-pub const OLED_DMA_CH: usize = 11;
-#[cfg(feature = "rp2350")]
+/// The display bus's DMA channel: the top of the RP2350's 16, where pico-sdk's
+/// dma_claim_unused_channel (counting up from 0) will not reach.
 pub const OLED_DMA_CH: usize = 15;
 
 pub struct Peripherals {

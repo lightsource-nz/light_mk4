@@ -57,7 +57,7 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
         #   one staticlib per board application; only the one the executable links is built
         corrosion_import_crate(
                 MANIFEST_PATH ${CMAKE_CURRENT_LIST_DIR}/Cargo.toml
-                CRATES light_app_touch169 light_app_touch28 light_app_touch349 light_app_dictaphone light_app_touch4 light_app_pico2 light_app_crossfire light_app_h7 light_app_f411
+                CRATES light_app_touch169 light_app_touch28 light_app_touch349 light_app_dictaphone light_app_touch4 light_app_pico2 crossfire_pico_app crossfire_pico2_app light_app_h7 light_app_f411
                 NO_STD
         )
         #   crush is a host tool the firmware build runs, so it is built for the host inside the
@@ -77,15 +77,16 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 # -- the layout every mk3 project shares, and worth matching rather than forking
                 # the script
                 #   the RP2 port crate is one source for both chips behind a feature; the
-                # two apps that run on either Pico forward it, and the tree's platform
-                # settles it here. The touch169 app names rp2350 itself: it runs nowhere else
+                # po13 demo runs on either Pico and forwards it, so the tree's platform
+                # settles it here. The other apps name their chip themselves: a hardware
+                # module is one tangible board (crossfire_pico IS an RP2040), and the
+                # touch169 app runs nowhere but the RP2350
                 if(PICO_PLATFORM MATCHES "^rp2040")
                         set(_light_rp2_chip rp2040)
                 else()
                         set(_light_rp2_chip rp2350)
                 endif()
                 corrosion_set_features(light_app_pico2 FEATURES ${_light_rp2_chip})
-                corrosion_set_features(light_app_crossfire FEATURES ${_light_rp2_chip})
                 if(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_1.69")
                         add_subdirectory(module/light_mk4_touch169)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_2.8")
@@ -103,7 +104,13 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                         # configure the shell differently -- chosen by the preset
                         set(LIGHT_MK4_PICO2_APP "pico2" CACHE STRING "which application a Pico tree builds: pico2 (the po13 demo) or crossfire")
                         if(LIGHT_MK4_PICO2_APP STREQUAL "crossfire")
-                                add_subdirectory(module/light_mk4_crossfire)
+                                #   the app is one portable crate; the module is the
+                                # TANGIBLE crossfire this tree's chip names
+                                if(PICO_BOARD STREQUAL "pico")
+                                        add_subdirectory(module/crossfire_pico)
+                                else()
+                                        add_subdirectory(module/crossfire_pico2)
+                                endif()
                         else()
                                 add_subdirectory(module/light_mk4_pico2)
                         endif()
@@ -138,7 +145,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_touch28 --exclude light_app_touch349 --exclude light_app_dictaphone --exclude light_app_touch4 --exclude light_app_pico2 --exclude light_app_crossfire --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_touch169 --exclude light_app_touch28 --exclude light_app_touch349 --exclude light_app_dictaphone --exclude light_app_touch4 --exclude light_app_pico2 --exclude crossfire_pico_app --exclude crossfire_pico2_app --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-stm32h7 --exclude light-stm32f4
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

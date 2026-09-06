@@ -1,50 +1,37 @@
-//! crossfire: every USB-MIDI instrument on the host port hears every other. mk3's crossfire on
-//! the mk4 stack, on the po13 rig: a Pico 2 whose native USB port hosts the instruments (one,
-//! or a hub of them), the Pico-OLED-1.3 as the status display, the console on the UART.
+//! crossfire: every USB-MIDI instrument on the host port hears every other. mk3's crossfire
+//! on the mk4 stack -- the APPLICATION, with no hardware in it.
 //!
-//! The forwarding engine is `light_midi`, portable and host-tested; the transport is
-//! TinyUSB through the shell's host role (`light_rp2::tinyusb_midi`); this file is the wiring:
-//! a module that drives the stack and the engine, a module that draws the status, the LED, and
-//! the console.
+//! The forwarding engine is `light_midi`, portable and host-tested; the host stack reaches
+//! this crate as a [`light_midi::Host`], the status display as a [`SpiDisplayBus`] under the
+//! SH1107 driver, the LED as an [`OutputPin`], time as `light_core::log`'s clock. A tangible
+//! crossfire -- a Pico, a Pico 2, whatever comes later -- is a hardware-bound module that
+//! constructs those concrete parts, hands them to [`serve`], and owns everything this crate
+//! must not: pins, chip features, the TinyUSB configuration, the shell ABI, the panic
+//! handler.
 
 #![no_std]
 
 use core::fmt::Write;
-use light_midi::{Forwarder, HUB_PORT_NONE};
-use light_display::sh1107::Sh1107;
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
-use light_core::{info, log, warn, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, Clock, EventBus, LineReader, Mailbox, Module, OutputPin, Poll, Runtime, SpiDisplayBus, Subscription};
+use light_display::sh1107::Sh1107;
 use light_display::{Display, FrameLayer, LogicalRegion, UpdateError};
-use light_draw::{Flip, PixelFormat, Point, Rotation};
+use light_draw::{Flip, Point, Rotation};
 use light_font::Font;
-mod board;
-use board::*;
-use light_rp2::gpio::Output;
-use light_rp2::spi::Spi1Display;
-use light_rp2::tinyusb_midi::{MidiEvent, UsbMidiHost};
-use light_rp2::{now_us, Breathe, Clocks, SysClock};
+use light_midi::{Forwarder, Host, MidiEvent};
 
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
-
-/// USB device slots the engine tracks: TinyUSB's CFG_TUH_MIDI, which tusb_config.h sets to the
-/// same four. The engine indexes its table with the mount index directly, so the two must agree.
-const USB_SLOTS: usize = 4;
+/// USB device slots the engine tracks: TinyUSB's CFG_TUH_MIDI, which every hardware
+/// module's tusb_config.h sets to the same four. The engine indexes its table with the
+/// mount index directly, so the two must agree.
+pub const USB_SLOTS: usize = 4;
 
 #[derive(Clone, Copy, Debug)]
 enum AppEvent {
         /// The mounted set changed: the display's text is stale.
         Status,
-        /// The RX/TX indicators changed.
+        /// The RX/TX indicators changed. The fields ride along for `Debug` -- the display
+        /// reads the levels from the published status, not the event.
+        #[allow(dead_code)]
         Indicators { rx: bool, tx: bool },
         /// Whether anything is mounted, for the LED.
         Mounted(bool),
@@ -58,32 +45,19 @@ enum AppEvent {
 static EVENTS: EventBus<AppEvent, 8, 3> = EventBus::new();
 static CONSOLE_BYTES: Mailbox<u8, 128> = Mailbox::new();
 
-/// 64x128 at 1 bpp: one kilobyte.
-static FRAME: ConstStaticCell<[u8; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]> = ConstStaticCell::new([0; PixelFormat::Mono1.buffer_len(OLED_WIDTH, OLED_HEIGHT)]);
-static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
-
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
+/// A console byte from the transport the hardware module owns. Never blocks; a full
+/// mailbox drops the byte, and the line it belonged to will fail to parse and say so.
+pub fn push_console_byte(b: u8) {
+        let _ = CONSOLE_BYTES.push(b);
 }
 
-/// Core 1: the UART log drain and console read. No USB here -- the host stack is core 0's.
-#[unsafe(no_mangle)]
-pub extern "C" fn light_app_core1_service() {
+/// The core 1 heartbeat, bumped by the hardware module's service hook -- see [`Stats`].
+pub fn core1_heartbeat() {
         CORE1_PASSES.fetch_add(1, light_core::atomic::Ordering::Relaxed);
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                let _ = CONSOLE_BYTES.push(b as u8);
-        }
 }
 
-/// The status the display shows, published by the USB module and read by the OLED module: the
-/// engine itself stays private to the module that drives it.
+/// The status the display shows, published by the USB module and read by the OLED module:
+/// the engine itself stays private to the module that drives it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Status {
         mounted: u8,
@@ -94,7 +68,7 @@ struct Status {
         tx: bool,
 }
 
-static STATUS: light_core::Mailbox<Status, 1> = light_core::Mailbox::new();
+static STATUS: Mailbox<Status, 1> = Mailbox::new();
 
 /// Heartbeats, one per core, for a post-mortem that reads memory without halting anything:
 /// whether each core is still executing its loop is the first question, and it should not
@@ -104,8 +78,8 @@ static CORE1_PASSES: light_core::atomic::AtomicU32 = light_core::atomic::AtomicU
 
 /// Owns the host stack and the forwarding engine. Every pass: run the stack, apply what it
 /// reported, forward what arrived, and say what changed.
-struct UsbMod {
-        host: UsbMidiHost,
+pub struct UsbMod<H: Host> {
+        host: H,
         forwarder: Forwarder<USB_SLOTS>,
         events: Subscription,
         reset_pending: bool,
@@ -120,7 +94,11 @@ struct UsbMod {
         status: Status,
 }
 
-impl UsbMod {
+impl<H: Host> UsbMod<H> {
+        pub fn new(host: H) -> Self {
+                Self { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("subscriber slot"), reset_pending: false, auto_reset: true, packets: 0, status: Status::default() }
+        }
+
         fn publish_status(&mut self) {
                 let mut s = Status { mounted: self.forwarder.usb_mounted_count() as u8, hub_addr: self.forwarder.hub_addr(), ports: [false; USB_SLOTS], rx: self.status.rx, tx: self.status.tx };
                 for (i, p) in s.ports.iter_mut().enumerate() {
@@ -133,7 +111,7 @@ impl UsbMod {
         }
 }
 
-impl Module for UsbMod {
+impl<H: Host> Module for UsbMod<H> {
         fn name(&self) -> &'static str {
                 "usb"
         }
@@ -194,7 +172,7 @@ impl Module for UsbMod {
                         self.publish_status();
                         let _ = EVENTS.publish(AppEvent::Status);
                 }
-                let now_ms = (now_us() / 1000) as u32;
+                let now_ms = (log::now_us() / 1000) as u32;
                 let activity = self.forwarder.service(&mut self.host, now_ms);
                 if activity.forwarded {
                         self.packets += 1;
@@ -217,10 +195,13 @@ impl Module for UsbMod {
 /// The indicator band is pushed on its own when only an indicator changed -- under the rotation
 /// it is a handful of the panel's columns, and pushing the whole panel for it would visibly wipe
 /// across the glass on every burst.
-struct OledMod {
-        display: Display<'static, Sh1107<Spi1Display>>,
+pub struct OledMod<B: SpiDisplayBus, C: Clock> {
+        display: Display<'static, Sh1107<B>>,
         layer: &'static mut FrameLayer,
         font: Font<'static>,
+        clock: C,
+        /// The controller's RAM offset the panel sits at -- a board fact, handed in.
+        display_offset: u8,
         events: Subscription,
         status: Status,
         dirty: bool,
@@ -230,7 +211,11 @@ struct OledMod {
 const INDICATOR_SIZE: i32 = 12;
 const INDICATOR_TX_X: i32 = 20;
 
-impl OledMod {
+impl<B: SpiDisplayBus, C: Clock> OledMod<B, C> {
+        pub fn new(display: Display<'static, Sh1107<B>>, layer: &'static mut FrameLayer, font: Font<'static>, clock: C, display_offset: u8) -> Self {
+                Self { display, layer, font, clock, display_offset, events: EVENTS.subscribe().expect("subscriber slot"), status: Status::default(), dirty: true, indicators_only: false }
+        }
+
         fn indicator_y(&self) -> i32 {
                 2 * i32::from(self.font.cell_height()) + 4
         }
@@ -239,7 +224,7 @@ impl OledMod {
                 let font = self.font;
                 let s = self.status;
                 let y = self.indicator_y();
-                let Some(mut c) = self.layer.frame_begin(&mut self.display, now_us()) else { return false };
+                let Some(mut c) = self.layer.frame_begin(&mut self.display, log::now_us()) else { return false };
                 c.text(&font, Point::new(0, 0), "Crossfire");
                 let mut line = StackString::<16>::new();
                 if s.hub_addr != 0 {
@@ -272,20 +257,19 @@ impl OledMod {
         }
 }
 
-impl Module for OledMod {
+impl<B: SpiDisplayBus, C: Clock> Module for OledMod<B, C> {
         fn name(&self) -> &'static str {
                 "oled"
         }
         fn load(&mut self) -> Result<(), ()> {
-                let mut clock = SysClock;
-                self.display.driver().set_display_offset(OLED_DISPLAY_OFFSET);
-                self.display.init(&mut clock);
+                self.display.driver().set_display_offset(self.display_offset);
+                self.display.init(&mut self.clock);
                 self.display.driver().clear(false);
                 self.layer.set_orientation(Rotation::R90, Flip::None);
                 self.dirty = true;
                 self.indicators_only = false;
                 self.frame();
-                info!("status display up: {}x{} logical, {}px font", OLED_HEIGHT, OLED_WIDTH, self.font.pixel_size());
+                info!("status display up: {}px font", self.font.pixel_size());
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
@@ -320,12 +304,18 @@ impl Module for OledMod {
 }
 
 /// The LED: lit while anything is mounted.
-struct LedMod {
-        led: Output,
+pub struct LedMod<P: OutputPin> {
+        led: P,
         events: Subscription,
 }
 
-impl Module for LedMod {
+impl<P: OutputPin> LedMod<P> {
+        pub fn new(led: P) -> Self {
+                Self { led, events: EVENTS.subscribe().expect("subscriber slot") }
+        }
+}
+
+impl<P: OutputPin> Module for LedMod<P> {
         fn name(&self) -> &'static str {
                 "led"
         }
@@ -347,7 +337,7 @@ impl Module for LedMod {
 //   the console: the shared CLI owns the grammar and the built-ins (help, loglevel, quit);
 // this table is everything this application adds
 fn parse_stats(_w: &mut Words) -> Parsed<AppEvent> {
-        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), CORE1_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
+        info!("uptime {} s; console: {} bytes dropped; bus: {} refused; passes core0 {} core1 {}; log dropped {}", log::now_us() / 1_000_000, CONSOLE_BYTES.dropped(), EVENTS.refused(), CORE0_PASSES.load(light_core::atomic::Ordering::Relaxed), CORE1_PASSES.load(light_core::atomic::Ordering::Relaxed), log::pending());
         Parsed::Event(AppEvent::Stats)
 }
 
@@ -366,11 +356,15 @@ static COMMANDS: &[Command<AppEvent>] = &[
 ];
 static CLI: Cli<AppEvent> = Cli::new(COMMANDS);
 
-struct ConsoleMod {
+pub struct ConsoleMod {
         reader: LineReader<96>,
 }
 
 impl ConsoleMod {
+        pub fn new() -> Self {
+                Self { reader: LineReader::new() }
+        }
+
         fn dispatch(&mut self, line: &str) -> Poll {
                 match CLI.dispatch(line) {
                         Outcome::Quiet => Poll::Idle,
@@ -381,6 +375,12 @@ impl ConsoleMod {
                         }
                         Outcome::Handled => Poll::Busy,
                 }
+        }
+}
+
+impl Default for ConsoleMod {
+        fn default() -> Self {
+                Self::new()
         }
 }
 
@@ -402,41 +402,24 @@ impl Module for ConsoleMod {
         }
 }
 
-#[unsafe(no_mangle)]
-pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
-        log::set_clock(now_us);
-        let clocks = Clocks { sys_hz: info.clk_sys_hz, peri_hz: info.clk_peri_hz };
-        let p = take(&clocks).expect("the board's peripherals are taken once");
-        let frame: &'static mut [u8] = FRAME.take();
-        static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1));
-        let layer: &'static mut FrameLayer = LAYER.take();
-        let display = Display::new(Sh1107::new(p.oled_bus), frame, OLED_WIDTH, OLED_HEIGHT, PixelFormat::Mono1, now_us);
-        let font = match Font::parse(FONT_BLOB) {
-                Ok(f) => f,
-                Err(e) => panic!("the embedded font does not parse: {e:?}"),
-        };
-        info!("crossfire: sys {} Hz; host stack on core 0, console on the UART", clocks.sys_hz);
-        // the host stack, on THIS core -- see the shell
-        let host = UsbMidiHost::init();
-        info!("USB host stack up: {} MIDI slots, hub aware", USB_SLOTS);
-
-        static USB_MOD: StaticCell<UsbMod> = StaticCell::new();
-        let usb_mod = USB_MOD.init(UsbMod { host, forwarder: Forwarder::new(), events: EVENTS.subscribe().expect("slot"), reset_pending: false, auto_reset: true, packets: 0, status: Status::default() });
-        static OLED_MOD: StaticCell<OledMod> = StaticCell::new();
-        let oled_mod = OLED_MOD.init(OledMod { display, layer, font, events: EVENTS.subscribe().expect("slot"), status: Status::default(), dirty: true, indicators_only: false });
-        let mut led_mod = LedMod { led: p.led, events: EVENTS.subscribe().expect("slot") };
-        let mut console_mod = ConsoleMod { reader: LineReader::new() };
-        let _ = (p.key0, p.key1, HUB_PORT_NONE);
-
+/// Run crossfire on the parts a hardware module built, forever. The module allocates the
+/// big pieces where its memory map wants them (statics, not this core's stack) and hands
+/// in mutable borrows; this seals them into the runtime.
+pub fn serve<H: Host, B: SpiDisplayBus, C: Clock, P: OutputPin>(
+        usb: &mut UsbMod<H>,
+        oled: &mut OledMod<B, C>,
+        led: &mut LedMod<P>,
+        console: &mut ConsoleMod,
+        idle: impl FnMut(),
+) -> ! {
         let mut rt: Runtime<4> = Runtime::new();
-        rt.add(usb_mod).expect("capacity");
-        rt.add(oled_mod).expect("capacity");
-        rt.add(&mut led_mod).expect("capacity");
-        rt.add(&mut console_mod).expect("capacity");
+        rt.add(usb).expect("capacity");
+        rt.add(oled).expect("capacity");
+        rt.add(led).expect("capacity");
+        rt.add(console).expect("capacity");
         rt.start().expect("start");
         info!("runtime started; plug an instrument in");
-        let mut idle = Breathe;
-        let result = rt.run(|| light_core::Idle::idle(&mut idle));
+        let result = rt.run(idle);
         match result {
                 Ok(()) => info!("runtime stopped cleanly; core 0 idle"),
                 Err(e) => warn!("runtime stopped with {e:?}; core 0 idle"),
@@ -446,17 +429,29 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 }
 
-struct StackString<const N: usize> {
+/// A tiny fixed write target for text assembled at runtime: log lines for a sink, the
+/// panic message, the display's second line. Public because the hardware modules need the
+/// same thing for their shell glue.
+pub struct StackString<const N: usize> {
         buf: [u8; N],
         len: usize,
 }
 
 impl<const N: usize> StackString<N> {
-        const fn new() -> Self {
+        pub const fn new() -> Self {
                 Self { buf: [0; N], len: 0 }
         }
-        fn as_str(&self) -> &str {
+        pub fn as_str(&self) -> &str {
                 core::str::from_utf8(&self.buf[..self.len]).unwrap_or("")
+        }
+        pub fn as_bytes(&self) -> &[u8] {
+                &self.buf[..self.len]
+        }
+}
+
+impl<const N: usize> Default for StackString<N> {
+        fn default() -> Self {
+                Self::new()
         }
 }
 
@@ -467,12 +462,4 @@ impl<const N: usize> Write for StackString<N> {
                 self.len += take;
                 Ok(())
         }
-}
-
-#[cfg(target_os = "none")]
-#[panic_handler]
-fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
 }
