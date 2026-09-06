@@ -1,20 +1,23 @@
-# light mk4 — spike
+# light mk4 — the Light Framework
 
-The feasibility spike for the next iteration of the light framework, per the 2026-08-29
-assessment: **Rust framework code linked as a `no_std` staticlib into a firmware executable that
-pico-sdk's CMake still owns.** The C shell keeps crt0, boot2, the linker script, multicore launch,
-PIO and TinyUSB; Rust owns everything above the runtime. CMake stays the outer build driver so the
-shared `light-*.ps1` script layer keeps working unchanged.
+The current, primary version of the **Light Framework** by lightsource aotearoa. It began as the
+feasibility spike from the 2026-08-29 assessment; that spike succeeded, and this is now the
+framework the lightsource projects build on.
 
-This is a spike, not the framework. It exists to retire specific unknowns before any commitment:
+The architecture it proved out and runs on: **Rust framework code linked as a `no_std` staticlib
+into a firmware executable that pico-sdk's CMake still owns.** The C shell keeps crt0, boot2, the
+linker script, multicore launch, PIO and TinyUSB; Rust owns everything above the runtime. CMake
+stays the outer build driver so the shared `light-*.ps1` script layer keeps working unchanged. The
+same shape carries the bare-CMSIS STM32 ports, where a small C shell stands in for pico-sdk.
 
-1. Can a Rust staticlib be linked into a pico-sdk executable through Corrosion, driven by the
-   existing presets and scripts? (milestone 1: this repo blinks the touch169 backlight from Rust)
-2. Can Rust drive peripherals through `rp235x-pac` while pico-sdk owns the runtime, and how often
-   is a C shim needed instead?
-3. Does the host-first test story hold — `cargo test` on the same crates with a mocked board?
-4. Later milestones: explicit module registration, a bounded log queue that never blocks, the
-   ST7789 async chunk protocol over SPI+DMA, CST816T touch, TinyUSB CDC console crossing into Rust.
+It runs today on the RP2040 and the RP2350 (both its Arm and Hazard3 cores), and on the STM32H743
+and STM32F411 over bare CMSIS; a host build exercises the portable crates under `cargo test`
+against a mocked board. It is hardware-verified across the Waveshare RP2350 touch boards (1.69,
+2.8, 3.49, 4.0), a Pico-OLED rig, and the crossfire USB-MIDI host.
+
+## Licence
+
+MIT — see [LICENSE](LICENSE). Every crate carries `license = "MIT"` from the workspace.
 
 ## Layout
 
