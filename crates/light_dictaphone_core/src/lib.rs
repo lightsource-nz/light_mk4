@@ -900,7 +900,9 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 if let Some(mut fs) = self.mount() {
                         let list = &mut *self.list;
                         let _ = fs.list_dir("/", |e| {
-                                if e.is_dir || rec_number(e.name()).is_none() {
+                                //   skip header-only takes (44 B, no PCM): an empty recording
+                                // has nothing to play, so it never earns a row
+                                if e.is_dir || e.size <= 44 || rec_number(e.name()).is_none() {
                                         return;
                                 }
                                 let Some(p) = FsPath::new(e.name()) else { return };
@@ -1020,8 +1022,24 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                         info!("rec: not recording");
                         return;
                 };
-                //   the header written blind at start now learns the real length
                 let data = rec.file.size().saturating_sub(44);
+                if data == 0 {
+                        //   nothing captured -- a record/stop faster than one buffer fills.
+                        // Discard the take rather than leave a header-only WAV that would list
+                        // as an unplayable row (the file handle is a plain index, nothing to
+                        // close). Clearing last_name lets the next "play last"/files scan
+                        // repopulate it from the real recordings.
+                        match self.last_name {
+                                Some(p) => match rec.fs.remove(p.as_str()) {
+                                        Ok(()) => info!("rec: discarded empty take {}", p.as_str()),
+                                        Err(e) => warn!("rec: could not remove empty take {}: {e:?}", p.as_str()),
+                                },
+                                None => warn!("rec: empty take with no name to remove"),
+                        }
+                        self.last_name = None;
+                        return;
+                }
+                //   the header written blind at start now learns the real length
                 let patch = rec.file.seek(&mut rec.fs, 0).and_then(|()| rec.file.write(&mut rec.fs, &wav_header(self.sample_hz, data)).map(|_| ()));
                 match patch {
                         Ok(()) => info!("rec: stopped -- {} B of audio, ~{} ms", data, (u64::from(data) / 2 * 1000 / u64::from(self.sample_hz)) as u32),
