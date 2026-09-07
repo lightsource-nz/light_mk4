@@ -12,7 +12,7 @@
 //! defaults standing. Every field starts from [`Theme::DEFAULT`], which reproduces the
 //! monochrome white-on-black look the demos had before themes existed.
 
-use crate::Shade;
+use crate::{Descent, Shade};
 
 /// The blob's magic: "LTH1", Light THeme, format 1.
 pub const MAGIC: [u8; 4] = *b"LTH1";
@@ -48,6 +48,10 @@ pub mod key {
         /// and, through it, by the bottom row of a scrolling stack, which sits flush
         /// and follows the curve. Zero on rectangular screens.
         pub const SCREEN_RADIUS: u16 = 0x0021;
+        /// The edge child pages enter from, seeding the tree's default descent (u16:
+        /// 0 top, 1 bottom, 2 left, 3 right). Behavioural, not a colour -- a theme that
+        /// omits it leaves the flow to the application. See [`crate::Descent`].
+        pub const DESCENT: u16 = 0x0040;
 }
 
 /// A complete look-and-feel: what every element paints with. Colors are RGB565; on a
@@ -71,6 +75,10 @@ pub struct Theme {
         /// The glass's own corner curvature, taken by the outer container so the frame
         /// parallels the screen edge; zero (square) by default, set per board.
         pub screen_radius: u8,
+        /// The edge child pages enter from, seeding [`crate::Ui::set_default_descent`]. `None`
+        /// -- the default -- leaves the flow to the application; an explicit
+        /// `set_default_descent` always wins over this seed.
+        pub descent: Option<Descent>,
 }
 
 impl Theme {
@@ -89,7 +97,20 @@ impl Theme {
                 button_surface: None,
                 radius: 3,
                 screen_radius: 0,
+                descent: None,
         };
+
+        /// Decode a [`key::DESCENT`] payload: `0` top, `1` bottom, `2` left, `3` right --
+        /// the wire numbers crush emits. Any other value is unrecognised.
+        const fn descent_from_u16(v: u16) -> Option<Descent> {
+                match v {
+                        0 => Some(Descent::FromTop),
+                        1 => Some(Descent::FromBottom),
+                        2 => Some(Descent::FromLeft),
+                        3 => Some(Descent::FromRight),
+                        _ => None,
+                }
+        }
 
         /// Parse an LTH blob. Unknown keys are skipped; known keys with the wrong length
         /// are an error (a corrupt blob, not a future format).
@@ -149,6 +170,14 @@ impl Theme {
                                 key::BUTTON_SURFACE => shade(&mut theme.button_surface)?,
                                 key::RADIUS => metric(&mut theme.radius)?,
                                 key::SCREEN_RADIUS => metric(&mut theme.screen_radius)?,
+                                key::DESCENT => {
+                                        if payload.len() != 2 {
+                                                return Err(ThemeError::BadEntry(k));
+                                        }
+                                        //   a value crush would never emit is corruption, like a
+                                        // bad length -- crush validates the spelling at authoring
+                                        theme.descent = Some(Self::descent_from_u16(u16le(payload, 0)).ok_or(ThemeError::BadEntry(k))?);
+                                }
                                 //   a key from a future format: skipped, styled by default
                                 _ => {}
                         }
@@ -225,6 +254,16 @@ mod tests {
                 //   a u16 metric past the toolkit's u8 saturates instead of wrapping small
                 let t = Theme::parse(&blob(&[(key::RADIUS, &1000u16.to_le_bytes())])).unwrap();
                 assert_eq!(t.radius, 255);
+        }
+
+        #[test]
+        fn descent_decodes_and_defaults_to_unset() {
+                assert_eq!(Theme::parse(&blob(&[])).unwrap().descent, None, "a theme that omits it leaves the flow to the app");
+                assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &1u16.to_le_bytes())])).unwrap().descent, Some(Descent::FromBottom));
+                assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &0u16.to_le_bytes())])).unwrap().descent, Some(Descent::FromTop));
+                //   a value crush would never emit, and a wrong length, are both corruption
+                assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &9u16.to_le_bytes())])), Err(ThemeError::BadEntry(key::DESCENT)));
+                assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &[1])])), Err(ThemeError::BadEntry(key::DESCENT)));
         }
 
         #[test]

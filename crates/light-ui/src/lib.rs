@@ -646,6 +646,9 @@ pub struct Ui<A: 'static, const N: usize> {
         /// everything else from the right ([`Descent::FromRight`]). An app or board sets this to point the whole interface
         /// one way, and may change it live, e.g. from an orientation sensor. See [`Descent`].
         default_descent: Option<Descent>,
+        /// Whether [`set_default_descent`](Self::set_default_descent) was called: an explicit
+        /// application choice a theme's descent seed must not overwrite.
+        default_descent_explicit: bool,
         /// The axis every [`Layout::Linear`] window runs along. `Vertical` by default; a
         /// landscape tree sets `Horizontal`. `Stack`/`Row` windows ignore it. See [`Axis`].
         layout_axis: Axis,
@@ -729,6 +732,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page: None,
                         return_page: None,
                         default_descent: None,
+                        default_descent_explicit: false,
                         layout_axis: Axis::Vertical,
                         rotating: false,
                         rotate_started: false,
@@ -1129,6 +1133,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// orientation sensor. See [`Descent`].
         pub fn set_default_descent(&mut self, descend: Option<Descent>) {
                 self.default_descent = descend;
+                self.default_descent_explicit = true;
         }
 
         /// The tree-wide default set by [`set_default_descent`](Self::set_default_descent),
@@ -1626,6 +1631,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return;
                 }
                 self.theme = theme;
+                //   a theme may seed the tree's descent -- but only as a starting value: an
+                // application that called set_default_descent has spoken, and keeps its choice
+                if !self.default_descent_explicit {
+                        if let Some(d) = theme.descent {
+                                self.default_descent = Some(d);
+                        }
+                }
                 self.invalidate_all();
         }
 
@@ -3278,6 +3290,36 @@ mod tests {
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &font, now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "cleared default falls back to the seed");
+        }
+
+        /// A theme seeds the tree's default descent, but only as a starting value: an
+        /// application that set one explicitly keeps it across any theme change.
+        #[test]
+        fn a_theme_seeds_the_descent_but_an_explicit_choice_wins() {
+                //   a theme with a descent seeds a tree that has not chosen
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                assert_eq!(ui.default_descent(), None);
+                let mut t = Theme::DEFAULT;
+                t.descent = Some(Descent::FromBottom);
+                ui.set_theme(t);
+                assert_eq!(ui.default_descent(), Some(Descent::FromBottom));
+
+                //   an explicit choice wins, and survives a later theme that also names one
+                ui.set_default_descent(Some(Descent::FromLeft));
+                let mut t2 = Theme::DEFAULT;
+                t2.descent = Some(Descent::FromTop);
+                t2.bg = 0x1234; // distinct, so set_theme does not early-return
+                ui.set_theme(t2);
+                assert_eq!(ui.default_descent(), Some(Descent::FromLeft), "the app's choice outlives a restyle");
+
+                //   and an explicit choice made FIRST blocks the seed entirely
+                let mut ui2: Ui<Ev, 8> = Ui::new();
+                ui2.set_default_descent(None);
+                let mut t3 = Theme::DEFAULT;
+                t3.descent = Some(Descent::FromBottom);
+                t3.bg = 0x0001;
+                ui2.set_theme(t3);
+                assert_eq!(ui2.default_descent(), None, "an explicit None is a choice, not an absence");
         }
 
         /// A generic `Linear` window lays out along the tree's `Axis`, and the SAME window

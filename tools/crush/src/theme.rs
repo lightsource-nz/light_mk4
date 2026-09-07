@@ -35,6 +35,7 @@ const KEY_FOCUS_SURFACE: u16 = 0x0010;
 const KEY_BUTTON_SURFACE: u16 = 0x0011;
 const KEY_RADIUS: u16 = 0x0020;
 const KEY_SCREEN_RADIUS: u16 = 0x0021;
+const KEY_DESCENT: u16 = 0x0040;
 
 #[derive(Deserialize, Debug, Default)]
 #[serde(deny_unknown_fields)]
@@ -62,6 +63,11 @@ struct ThemeSource {
         /// curvature, worn by the outer container -- zero means a square screen).
         #[serde(default)]
         metrics: BTreeMap<String, u16>,
+        /// The edge child pages enter from, seeding the interface's default flow: `top`,
+        /// `bottom`, `left` or `right`. Behavioural, not a colour; an application that sets
+        /// its own descent overrides this seed at runtime. Omitted leaves the flow to the app.
+        #[serde(default)]
+        descent: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -117,12 +123,24 @@ fn metric_key(name: &str) -> Result<u16, String> {
         })
 }
 
+/// The wire number for a descent edge, matching light-ui's `Theme::descent_from_u16`.
+fn descent_value(name: &str) -> Result<u16, String> {
+        Ok(match name {
+                "top" => 0,
+                "bottom" => 1,
+                "left" => 2,
+                "right" => 3,
+                _ => return Err(format!("unknown descent '{name}' (top, bottom, left, right)")),
+        })
+}
+
 /// The flattened result of an `extends` chain: base first, each level overriding.
 #[derive(Default)]
 struct Resolved {
         colors: BTreeMap<String, String>,
         surfaces: BTreeMap<String, Option<ShadeSource>>,
         metrics: BTreeMap<String, u16>,
+        descent: Option<String>,
 }
 
 /// Load `path` and everything it extends, deepest base first, child entries overriding.
@@ -176,6 +194,12 @@ fn resolve(path: &Path, themes_dir: Option<&Path>, default: Option<&str>, depth:
                 }
                 out.metrics.insert(name, value);
         }
+        //   descent is a scalar, not a map: a child that names one overrides the base's,
+        // and a child that omits it inherits
+        if let Some(descent) = src.descent {
+                descent_value(&descent).map_err(|e| format!("'{}' descent: {e}", path.display()))?;
+                out.descent = Some(descent);
+        }
         Ok(out)
 }
 
@@ -205,6 +229,10 @@ pub fn compile(input: &Path, output: &Path, themes_dir: Option<&Path>, default: 
         for (name, value) in &src.metrics {
                 let key = metric_key(name)?;
                 entries.push((key, value.to_le_bytes().to_vec()));
+        }
+        if let Some(descent) = &src.descent {
+                let value = descent_value(descent)?;
+                entries.push((KEY_DESCENT, value.to_le_bytes().to_vec()));
         }
 
         let mut blob = Vec::with_capacity(6 + entries.len() * 8);
@@ -318,6 +346,37 @@ mod tests {
                 assert!(compile(&dir.join("typo.json"), &dir.join("typo.lth"), None, None).is_err());
                 std::fs::write(dir.join("huge.json"), r##"{ "metrics": { "radius": 300 } }"##).unwrap();
                 assert!(compile(&dir.join("huge.json"), &dir.join("huge.lth"), None, None).is_err());
+        }
+
+        #[test]
+        fn descent_compiles_inherits_overrides_and_validates() {
+                let dir = std::env::temp_dir().join("crush_theme_test_descent");
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("base.json"), r##"{ "descent": "bottom" }"##).unwrap();
+                std::fs::write(dir.join("child.json"), r##"{ "extends": "base", "colors": { "bg": "1082" } }"##).unwrap();
+                let out = dir.join("child.lth");
+                compile(&dir.join("child.json"), &out, Some(&dir), None).unwrap();
+                let blob = std::fs::read(&out).unwrap();
+                //   entries are 6 bytes each here (2-byte payloads): a color plus the
+                // inherited descent, colors emitted before descent
+                assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), 2);
+                let entry = |b: &[u8], i: usize| {
+                        let at = 6 + i * 6;
+                        (u16::from_le_bytes([b[at], b[at + 1]]), u16::from_le_bytes([b[at + 4], b[at + 5]]))
+                };
+                assert_eq!(entry(&blob, 0), (KEY_BG, 0x1082));
+                assert_eq!(entry(&blob, 1), (KEY_DESCENT, 1), "the base's descent (bottom=1) is inherited");
+
+                //   a child overrides the base's descent
+                std::fs::write(dir.join("over.json"), r##"{ "extends": "base", "descent": "top" }"##).unwrap();
+                compile(&dir.join("over.json"), &dir.join("over.lth"), Some(&dir), None).unwrap();
+                let b2 = std::fs::read(dir.join("over.lth")).unwrap();
+                assert_eq!(u16::from_le_bytes([b2[4], b2[5]]), 1);
+                assert_eq!(entry(&b2, 0), (KEY_DESCENT, 0), "top=0 overrides the base");
+
+                //   strict authoring: an unknown edge stops the build
+                std::fs::write(dir.join("typo.json"), r##"{ "descent": "sideways" }"##).unwrap();
+                assert!(compile(&dir.join("typo.json"), &dir.join("typo.lth"), None, None).is_err());
         }
 
         #[test]
