@@ -741,6 +741,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         rotation_map,
                         initial_rotation: Rotation::R0,
                         main_page: &PAGE_MAIN,
+                        // the portrait interface keeps the toolkit's layout-derived flow
+                        default_descent: None,
                 },
         ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
