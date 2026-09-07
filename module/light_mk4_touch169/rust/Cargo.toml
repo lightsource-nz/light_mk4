@@ -3,7 +3,7 @@ name = "light_app_touch169"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the Rust half of the touch169 spike firmware, linked into a pico-sdk executable"
+description = "the Rust half of the touch169 firmware, linked into a pico-sdk executable"
 
 [lib]
 #   a staticlib is what Corrosion hands to CMake for the C shell to link. No rlib: nothing

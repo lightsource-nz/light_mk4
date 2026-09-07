@@ -1,6 +1,6 @@
 //! The port interface: what portable code asks of a board, and nothing more.
 //!
-//! Designed from the list of primitives the spike actually used rather than from what a HAL
+//! Designed from the list of primitives portable code actually uses rather than from what a HAL
 //! happens to offer. The predecessor C framework's port surface grew to 4,500 lines across ten
 //! port modules; this is the whole of it, and a port crate implements each trait once. The one primitive not here is
 //! the critical section, which is the `critical-section` crate's `Impl`, supplied by the port.

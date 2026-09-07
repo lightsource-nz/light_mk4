@@ -1,4 +1,4 @@
-# Per-project defaults for the mk4 spike.
+# Per-project defaults for light_mk4.
 #
 # Three trees: the touch169 firmware (BOOTSEL-flashed, the board has no SWD pads), a Pico 2
 # with the Waveshare Pico-OLED-1.3 display board (flashed over SWD by debug.ps1 -Batch), and a

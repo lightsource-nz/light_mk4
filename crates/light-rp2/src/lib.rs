@@ -3,7 +3,7 @@
 //! Peripherals are driven through the chip's pac register definitions rather than through
 //! pico-sdk calls: pico-sdk's peripheral API is mostly `static inline` in headers, which no
 //! binding generator can export, so every SDK call from Rust would need a hand-written C shim.
-//! The spike found the pac reaches everything the framework needs. pico-sdk stays in charge of
+//! The pac reaches everything the framework needs. pico-sdk stays in charge of
 //! the RUNTIME (crt0, boot2, clocks, timer start, multicore, USB) in the C shell that links this.
 //!
 //! One crate for both chips because the blocks this crate touches -- SIO, pads, IO, SPI, I2C,

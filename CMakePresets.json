@@ -25,7 +25,7 @@
         },
         {
             "name": "conf-light_mk4-touch169-debug",
-            "description": "The spike firmware on the Waveshare RP2350-Touch-LCD-1.69: pico-sdk C shell + Rust staticlib. Rust_CARGO_TARGET is the soft-float ABI to match pico-sdk's -mfloat-abi=softfp.",
+            "description": "The touch169 firmware on the Waveshare RP2350-Touch-LCD-1.69: pico-sdk C shell + Rust staticlib. Rust_CARGO_TARGET is the soft-float ABI to match pico-sdk's -mfloat-abi=softfp.",
             "inherits": [
                 "conf-light-waveshare-touch169",
                 "conf-light-debug"

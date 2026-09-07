@@ -1,10 +1,9 @@
-// The C shell of the touch169 spike firmware.
+// The C shell of the touch169 firmware.
 //
 // This file is deliberately everything pico-sdk needs to own and nothing else: the runtime comes
 // up through the SDK's crt0 and runtime_init exactly as it does for any SDK program, and then
 // control passes to Rust on core 0 and does not come back. What the shell exports TO Rust is the
-// handful of functions below; keeping them in one file makes the size of that surface -- one of
-// the things the spike measures -- visible.
+// handful of functions below; keeping them in one file makes the size of that surface visible.
 //
 // USB LIVES ON CORE 1, the arrangement this board's bring-up settled on: tusb_init() and tud_task()
 // here, on this core and no other, because dcd_int_enable() enables USBCTRL_IRQ on the CALLING

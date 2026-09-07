@@ -1,7 +1,6 @@
 # light mk4 — the Light Framework
 
-The current, primary version of the **Light Framework** by lightsource aotearoa. It began as the
-feasibility spike from the 2026-08-29 assessment; that spike succeeded, and this is now the
+The current, primary version of the **Light Framework** by lightsource aotearoa. This is the
 framework the lightsource projects build on.
 
 The architecture it proved out and runs on: **Rust framework code linked as a `no_std` staticlib

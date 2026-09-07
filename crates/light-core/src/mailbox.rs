@@ -1,8 +1,8 @@
 //! A bounded, lock-protected queue of plain values, for one module to hand work to another.
 //!
 //! Modules are owned by the runtime and cannot reference each other, so anything crossing
-//! between them goes through a static like this. It is the seed of the typed event bus the
-//! assessment calls for: the same drop-and-count policy as the log queue, safe across cores
+//! between them goes through a static like this. It is the seed of the typed event bus: the
+//! same drop-and-count policy as the log queue, safe across cores
 //! through the port's critical section, and `const`-constructible so it can be a `static`.
 
 use core::cell::RefCell;

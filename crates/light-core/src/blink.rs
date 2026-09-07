@@ -1,4 +1,4 @@
-//! A poll-driven toggle, the first thing the spike drove on hardware and still the simplest
+//! A poll-driven toggle, the first thing this framework drove on hardware and still the simplest
 //! module to test scheduling behaviour with.
 
 use crate::hal::{Clock, OutputPin};
