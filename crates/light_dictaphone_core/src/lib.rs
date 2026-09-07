@@ -49,6 +49,10 @@ pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 /// tree is static, its TEXT is not.
 pub const LIST_ROWS: usize = 8;
 
+/// The cap on a single take: recording stops itself at this many seconds (five minutes),
+/// so a forgotten take cannot fill the card or overflow the WAV's 32-bit sizes.
+pub const MAX_REC_SECS: u32 = 5 * 60;
+
 /// Widget tags: how a module finds a widget again to rewrite its text at runtime.
 /// The status -- elapsed time, playing/ready -- rides the title bar now, and the
 /// recording light is the title bar's own flashing indicator dot, so neither needs a tag.
@@ -1362,6 +1366,17 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 }
                 if failed {
                         self.rec_stop();
+                }
+                //   the length cap: a take stops itself at MAX_REC_SECS. Checked here, right
+                // after the drain, so the file size the elapsed seconds are read from already
+                // includes this poll's captured bytes. rec_stop patches the header and clears
+                // the take, and the publish-on-change at the end of poll flips the UI to idle
+                if let Some(rec) = self.rec.as_ref() {
+                        let secs = rec.file.size().saturating_sub(44) / (self.sample_hz * 2);
+                        if secs >= MAX_REC_SECS {
+                                info!("rec: reached the {}s cap -- stopping", MAX_REC_SECS);
+                                self.rec_stop();
+                        }
                 }
                 let playing = self.remaining > 0 || self.rec.is_some() || self.rec_null || self.play.is_some();
                 if self.play.is_some() {
