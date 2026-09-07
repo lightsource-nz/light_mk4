@@ -52,6 +52,11 @@ pub const DRAG_SLOP: i32 = 16;
 /// an ordinary tap (~100 ms) clears it comfortably while an accidental flick does not.
 pub const TAP_MIN_HOLD_US: u64 = 50_000;
 
+/// How long a button wears its pressed look after activation: a brief acknowledgement so a
+/// tap reads as landed even when the action behind it (opening a card, starting a take) is
+/// slow to change anything else. See [`Ui::touch`].
+pub const ACTIVATE_FLASH_US: u64 = 120_000;
+
 /// Longest label the toolkit renders. Labels are truncated to their widget anyway; this bounds
 /// the work a single draw does.
 pub const TEXT_MAX: usize = 64;
@@ -704,6 +709,10 @@ pub struct Ui<A: 'static, const N: usize> {
         touch_start_us: u64,
         touch_moved: bool,
         pub drag_slop: i32,
+        /// The button wearing the just-activated flash and when it lapses (see
+        /// [`ACTIVATE_FLASH_US`]): instant feedback on a tap, independent of focus, cleared by
+        /// the render loop when the deadline passes or the widget goes away.
+        flash: Option<(WidgetId, u64)>,
         // --- navigation ---
         page: Option<&'static Page<A>>,
         /// Where back goes when it is not the current page's parent; set only by
@@ -798,6 +807,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         touch_start_us: 0,
                         touch_moved: false,
                         drag_slop: DRAG_SLOP,
+                        flash: None,
                         page: None,
                         return_page: None,
                         default_descent: None,
@@ -825,7 +835,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         pub fn is_animating(&self) -> bool {
-                self.rotating || self.page_moving
+                //   an active press flash keeps the loop rendering so the deadline is noticed and
+                // the button reverts on its own
+                self.rotating || self.page_moving || self.flash.is_some()
         }
 
         /// The union of everything invalidated since the last repaint, in LOGICAL
@@ -1091,6 +1103,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 if self.drag_window == Some(id) {
                         self.drag_window = None;
+                }
+                if matches!(self.flash, Some((f, _)) if f == id) {
+                        self.flash = None;
                 }
                 self.widgets[usize::from(id.0)] = None;
         }
@@ -2277,6 +2292,15 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return match hit {
                                 Some(id) => {
                                         self.set_focus(Some(id));
+                                        //   acknowledge the tap at once: a button wears its pressed
+                                        // look for ACTIVATE_FLASH_US whether or not it was focused,
+                                        // so a slow handler (a card open, a take starting) no longer
+                                        // reads as a dropped tap. Set before firing, so a fire that
+                                        // navigates clears it as the old tree is destroyed.
+                                        if matches!(self.w(id).kind, Kind::Button(_)) {
+                                                self.flash = Some((id, now_us + ACTIVATE_FLASH_US));
+                                                self.invalidate_widget(id);
+                                        }
                                         Touch::Tap { hit: true, emitted: self.fire(id) }
                                 }
                                 None => Touch::Tap { hit: false, emitted: None },
@@ -2637,6 +2661,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 let r = self.draw_rect_of(w.rect);
                 let focused = self.focused == Some(id);
+                let pressed = matches!(self.flash, Some((f, _)) if f == id);
                 let (p0, p1) = (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1));
                 //   a flush row's corners follow the CONTAINER'S OWN ARC -- equal radius,
                 // same centre, so its curve parallels the frame's through the corner and
@@ -2662,7 +2687,24 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         };
                         let corners = if themed { light_draw::corner::ALL } else { btn.corners };
                         let saved_fg = c.fg;
-                        if focused {
+                        if pressed {
+                                //   the just-tapped acknowledgement: a solid inverted fill,
+                                // distinct from both the resting and the focused looks (a
+                                // record button is usually already focused, so reusing that
+                                // would show nothing). Brief -- see ACTIVATE_FLASH_US
+                                c.fg = self.theme.focus_text;
+                                if radius != 0 {
+                                        c.rect_rounded(p0, p1, radius, corners, true);
+                                } else {
+                                        c.rect(p0, p1, true);
+                                }
+                                c.fg = self.theme.button_outline;
+                                if radius != 0 {
+                                        c.rect_rounded(p0, p1, radius, corners, false);
+                                } else {
+                                        c.rect(p0, p1, false);
+                                }
+                        } else if focused {
                                 //   the selection: shaded when the theme carries a focus
                                 // surface -- the cell reads as LIT -- else a solid fill in
                                 // the outline color
@@ -2708,7 +2750,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // the button text otherwise. Uniform for 1 bpp and RGB565, since both go
                 // through the same colour path
                 let saved_fg = c.fg;
-                c.fg = if focused { self.theme.focus_text } else { self.theme.button_text };
+                c.fg = if pressed {
+                        self.theme.button_outline
+                } else if focused {
+                        self.theme.focus_text
+                } else {
+                        self.theme.button_text
+                };
                 let label = if w.text.len > 0 { w.text.as_str() } else { btn.label };
                 if !label.is_empty() {
                         // positioned from the TRUE rect, never the clamped one: centring against
@@ -2961,6 +3009,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// when a frame happens, and this is a no-op on the passes in between. On a refused frame
         /// the dirty flag and the regions survive, so the repaint happens on a later pass.
         pub fn render<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> bool {
+                //   a lapsed press flash reverts here: cleared and the button re-drawn normal.
+                // Guarded against a widget the flash outlived (it should have been cleared on
+                // destroy, but a stale id must never be dereferenced)
+                if let Some((id, until)) = self.flash {
+                        if now_us >= until {
+                                self.flash = None;
+                                if self.get(id).is_some() {
+                                        self.invalidate_widget(id);
+                                }
+                        }
+                }
                 //   the two animations are mutually exclusive by construction, from both ends:
                 // show_page declines while a rotation runs, and set_rotation defers while a
                 // transition runs. The transition goes first only because it is the one that
@@ -3617,6 +3676,35 @@ mod tests {
                 assert_eq!(ui.get(root).unwrap().window().unwrap().indicator, Some((IndicatorShape::Dot, false, 3)));
                 ui.set_indicator(root, None);
                 assert_eq!(ui.get(root).unwrap().window().unwrap().indicator, None);
+        }
+
+        /// A tap on a button lights the press flash at once (so a slow handler still reads as
+        /// acknowledged), and the flash lapses on its own once ACTIVATE_FLASH_US has passed.
+        #[test]
+        fn a_tap_flashes_the_button_then_lapses() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PLAIN_PAGE).unwrap();
+                let btn = ui.children(ui.root().unwrap()).next().unwrap();
+                let r = ui.get(btn).unwrap().rect;
+                let (cx, cy) = (((r.x0 + r.x1) / 2) as u16, ((r.y0 + r.y1) / 2) as u16);
+
+                // a tap: down, then up after a valid hold, on the same spot
+                ui.touch(cx, cy, true, 0);
+                let up = TAP_MIN_HOLD_US + 1;
+                assert_eq!(ui.touch(cx, cy, false, up), Touch::Tap { hit: true, emitted: Some(Ev::Alpha) });
+                assert!(ui.is_animating(), "the press flash keeps the loop rendering");
+
+                // a render before the deadline keeps it; one after clears it
+                ui.render(&mut layer, &mut display, &font, up + ACTIVATE_FLASH_US / 2);
+                assert!(ui.is_animating(), "still flashing mid-window");
+                ui.render(&mut layer, &mut display, &font, up + ACTIVATE_FLASH_US + 1);
+                assert!(!ui.is_animating(), "the flash lapses on its own");
         }
 
         /// The COVER transition (forward into a Row page), at the rotation the landscape apps
