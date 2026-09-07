@@ -93,6 +93,43 @@ pub enum Layout {
         Row { gap: u8 },
 }
 
+/// The edge a child page enters from as it opens: press a button and the incoming page
+/// slides in from this edge, the outgoing one retreating the same way; back navigation runs
+/// the reverse. Named by the origin edge, which is how it reads at the call site
+/// (`FromBottom` rises up into view). A whole tree can be pointed one way with
+/// [`Ui::set_default_descent`], and a single page can override it with [`Page::descend`].
+/// Left unset everywhere, a page keeps the historical layout-derived flow (a `Row` page
+/// enters from the bottom, everything else from the right) -- see [`Ui`]'s navigation section.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Descent {
+        FromTop,
+        FromBottom,
+        FromLeft,
+        FromRight,
+}
+
+impl Descent {
+        /// Whether this descent runs the vertical axis (`FromTop`/`FromBottom`) rather than
+        /// the horizontal one.
+        pub const fn vertical(self) -> bool {
+                matches!(self, Descent::FromTop | Descent::FromBottom)
+        }
+
+        /// The signed unit of this descent's axis in the transition engine's logical
+        /// convention (see `Ui::page_step`): `FromBottom`/`FromLeft` are `+1`,
+        /// `FromTop`/`FromRight` are `-1`. The vertical and horizontal axes carry different
+        /// senses because the engine's cover-forward path runs logical `+y` while its reveal
+        /// path runs logical `-x`; the two forward defaults, `Row`->`FromBottom` and
+        /// `Stack`->`FromRight`, fall out as `+1` and `-1` respectively, which is what keeps
+        /// the historical flow byte-for-byte.
+        const fn axis_sign(self) -> i32 {
+                match self {
+                        Descent::FromBottom | Descent::FromLeft => 1,
+                        Descent::FromTop | Descent::FromRight => -1,
+                }
+        }
+}
+
 /// Where a button takes the interface when activated, after emitting its event.
 #[derive(Clone, Copy)]
 pub enum Nav<A: 'static> {
@@ -273,11 +310,23 @@ impl<A: Copy> Widget<A> {
 pub struct Page<A: 'static> {
         pub content: &'static Desc<A>,
         pub parent: Option<&'static Page<A>>,
+        /// This page's own navigation-descent direction, overriding the tree default and the
+        /// layout-derived fallback. `None` defers to [`Ui::set_default_descent`], then to the
+        /// layout seed. See [`Descent`].
+        pub descend: Option<Descent>,
 }
 
 impl<A> Page<A> {
         pub const fn new(content: &'static Desc<A>, parent: Option<&'static Page<A>>) -> Self {
-                Self { content, parent }
+                Self { content, parent, descend: None }
+        }
+
+        /// Pin the direction this page's own arrival and departure flow, overriding the tree
+        /// default. The page being entered decides going forward, the page being left coming
+        /// back, so a page's opening and closing always mirror.
+        pub const fn descend(mut self, descend: Descent) -> Self {
+                self.descend = Some(descend);
+                self
         }
 }
 
@@ -568,6 +617,12 @@ pub struct Ui<A: 'static, const N: usize> {
         /// Where back goes when it is not the current page's parent; set only by
         /// `navigate_returning`, cleared by every ordinary navigation.
         return_page: Option<&'static Page<A>>,
+        /// The direction child pages open across this whole tree, unless a page pins its own
+        /// with [`Page::descend`]. `None` -- the default -- keeps the historical
+        /// layout-derived flow: a `Row` page enters from the bottom ([`Descent::FromBottom`]),
+        /// everything else from the right ([`Descent::FromRight`]). An app or board sets this to point the whole interface
+        /// one way, and may change it live, e.g. from an orientation sensor. See [`Descent`].
+        default_descent: Option<Descent>,
         // --- the rotation animation, driven from `render` ---
         //   while active, frames show the pre-rotation image turning rather than the widget
         // tree; the real rotation is applied once, on the final step. The image is captured
@@ -599,7 +654,7 @@ pub struct Ui<A: 'static, const N: usize> {
         /// entering one drops it in from the top, leaving one reveals the parent upward.
         /// The child page of the pair decides -- the incoming page going forward, the
         /// outgoing one coming back -- so one page's arrival and departure mirror.
-        page_move_vertical: bool,
+        page_move_descent: Descent,
         /// No back buffer to capture the outgoing page into: the incoming tree slides in
         /// OVER the old image, which survives in the live buffer wherever a step has not yet
         /// overdrawn it. Chosen at the first step, from what the display can hold.
@@ -647,6 +702,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         drag_slop: DRAG_SLOP,
                         page: None,
                         return_page: None,
+                        default_descent: None,
                         rotating: false,
                         rotate_started: false,
                         rotate_target: Rotation::R0,
@@ -657,7 +713,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page_moving: false,
                         page_move_started: false,
                         page_move_back: false,
-                        page_move_vertical: false,
+                        page_move_descent: Descent::FromRight,
                         page_move_over: false,
                         page_move_dx: 0,
                         page_move_dy: 0,
@@ -986,11 +1042,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         self.page_moving = true;
                         self.page_move_started = false;
                         self.page_move_back = back;
-                        //   the CHILD of the pair picks the axis -- the page being entered
-                        // going forward, the one being left coming back -- so a Row page
-                        // drops in and lifts out along the same axis
-                        let child = if back { self.page.map(|p| p.content) } else { Some(page.content) };
-                        self.page_move_vertical = matches!(child.map(|c| c.layout), Some(Layout::Row { .. }));
+                        //   the CHILD of the pair decides the descent -- the page being entered
+                        // going forward, the one being left coming back -- so a page's arrival
+                        // and departure run the same axis and mirror. Precedence: the page's own
+                        // override, then the tree default, then the layout seed that reproduces
+                        // the historical flow (a Row page enters from the bottom, everything
+                        // else from the right)
+                        let child = if back { self.page } else { Some(page) };
+                        self.page_move_descent = child
+                                .and_then(|p| p.descend)
+                                .or(self.default_descent)
+                                .unwrap_or_else(|| match child.map(|p| p.content.layout) {
+                                        Some(Layout::Row { .. }) => Descent::FromBottom,
+                                        _ => Descent::FromRight,
+                                });
                 }
                 // the old tree goes before the new one is built: only one page's widgets exist
                 if let Some(root) = self.root {
@@ -1023,6 +1088,21 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let Some(page) = self.page else { return false };
                 let Some(target) = self.return_page.or(page.parent) else { return false };
                 self.show_page(target, None, true).is_ok()
+        }
+
+        /// Point the whole tree's navigation flow one way: every child page opens in this
+        /// direction unless it pins its own with [`Page::descend`]. `None` restores the
+        /// historical layout-derived flow (a `Row` page rises, everything else slides left).
+        /// Takes effect on the next navigation; an app may change it live, e.g. from an
+        /// orientation sensor. See [`Descent`].
+        pub fn set_default_descent(&mut self, descend: Option<Descent>) {
+                self.default_descent = descend;
+        }
+
+        /// The tree-wide default set by [`set_default_descent`](Self::set_default_descent),
+        /// or `None` when navigation follows the layout-derived flow.
+        pub fn default_descent(&self) -> Option<Descent> {
+                self.default_descent
         }
 
         // --- geometry ---
@@ -1619,16 +1699,21 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 // The vertical pair mirrors it a quarter-turn: forward drops in
                                 // from logical -y, back rises from +y
                                 let (w, h) = layer.logical_size();
-                                if self.page_move_vertical {
-                                        //   over mode only ever slides the INCOMING in (no capture
-                                        // to move the outgoing), so it approximates the cover: the
-                                        // incoming enters from logical DOWN (+y) forward, from the
-                                        // top on the way back
+                                //   over mode only ever slides the INCOMING in (no capture to move
+                                // the outgoing), so it approximates the cover along the descent's
+                                // axis. The offset shrinks from `span` to zero, so a positive unit
+                                // starts the incoming past the far edge and brings it back this
+                                // way: the vertical axis takes the descent's sign directly (down
+                                // enters from the top), the horizontal one its negation (left
+                                // enters from the right). Back reverses either.
+                                let asign = self.page_move_descent.axis_sign();
+                                let dir = if self.page_move_back { -1 } else { 1 };
+                                if self.page_move_descent.vertical() {
                                         self.page_move_dx = 0;
-                                        self.page_move_dy = if self.page_move_back { -1 } else { 1 };
+                                        self.page_move_dy = asign * dir;
                                         self.page_move_span = i32::from(h);
                                 } else {
-                                        self.page_move_dx = if self.page_move_back { -1 } else { 1 };
+                                        self.page_move_dx = -asign * dir;
                                         self.page_move_dy = 0;
                                         self.page_move_span = i32::from(w);
                                 }
@@ -1639,7 +1724,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 // the static background; each step blits the incoming up over it.
                                 // Every other capture-mode transition REVEALS: freeze the outgoing
                                 // into the back and slide it off the live incoming.
-                                let cover = self.page_move_vertical && !self.page_move_back;
+                                let cover = self.page_move_descent.vertical() && !self.page_move_back;
                                 if cover {
                                         let Some(back) = display.freeze_render() else {
                                                 return Step::Waiting; // busy: try next pass
@@ -1661,13 +1746,15 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 // child arrives from the right; cover-forward's +y unit is the
                                 // logical DOWN the incoming rises from, offset shrinking to zero.
                                 let m = layer.transform();
-                                let (ux, uy, sign) = if self.page_move_vertical {
-                                        //   both directions run the logical-DOWN axis (+y): forward
-                                        // the incoming rises from it (cover), back the outgoing
-                                        // sinks to it (reveal) -- the one is the other reversed
-                                        (m.b.signum(), m.d.signum(), 1)
+                                let asign = self.page_move_descent.axis_sign();
+                                let (ux, uy, sign) = if self.page_move_descent.vertical() {
+                                        //   both directions run the descent's vertical axis: forward
+                                        // the incoming rises into it (cover), back the outgoing
+                                        // sinks off it (reveal) -- the one is the other reversed, so
+                                        // the sign is the axis's alone and does not turn on `back`
+                                        (m.b.signum(), m.d.signum(), asign)
                                 } else {
-                                        (m.a.signum(), m.c.signum(), if self.page_move_back { 1 } else { -1 })
+                                        (m.a.signum(), m.c.signum(), asign * if self.page_move_back { -1 } else { 1 })
                                 };
                                 let (pw, ph) = layer.physical_size();
                                 self.page_move_dx = sign * ux;
@@ -1693,7 +1780,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return Step::Finished;
                 }
                 let travel = ((self.page_move_span as i64 * elapsed as i64) / (i64::from(self.page_move_ms) * 1000)) as i32;
-                let cover = !self.page_move_over && self.page_move_vertical && !self.page_move_back;
+                let cover = !self.page_move_over && self.page_move_descent.vertical() && !self.page_move_back;
                 if self.page_move_over {
                         //   no clear: the outgoing image IS the ground the incoming page
                         // slides in over
@@ -1729,16 +1816,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                 let mut c = layer.canvas(front);
                                 //   the outgoing image's LOGICAL motion sign along the axis (== the
                                 // setup's `sign`): new rows of the incoming appear at the low end
-                                // when it moves positive, the high end otherwise. Vertical always
-                                // runs +y (down); horizontal is +x back, -x forward
-                                let s = if !self.page_move_vertical && !self.page_move_back { -1 } else { 1 };
+                                // when it moves positive, the high end otherwise. The vertical
+                                // axis takes the descent's sign alone (reveal here is always the
+                                // back half of a cover, so it does not turn on `back`); the
+                                // horizontal one reverses with it.
+                                let vertical = self.page_move_descent.vertical();
+                                let asign = self.page_move_descent.axis_sign();
+                                let s = if vertical { asign } else { asign * if self.page_move_back { -1 } else { 1 } };
                                 let prev = self.page_move_travel;
                                 if travel > prev {
                                         let (lw, lh) = layer.logical_size();
                                         let (lw, lh) = (i32::from(lw), i32::from(lh));
-                                        let extent = if self.page_move_vertical { lh } else { lw };
+                                        let extent = if vertical { lh } else { lw };
                                         let (b0, b1) = if s > 0 { (prev, travel - 1) } else { (extent - travel, extent - prev - 1) };
-                                        let band = if self.page_move_vertical {
+                                        let band = if vertical {
                                                 Rect::new(0, b0, lw - 1, b1)
                                         } else {
                                                 Rect::new(b0, 0, b1, lh - 1)
@@ -2737,6 +2828,13 @@ mod tests {
         static PINNED: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &STRIP]);
         static PAGE_PINNED: Page<Ev> = Page::new(&PINNED, None);
 
+        //   the same stack content (layout seed would be Left) pinned to each cardinal, to
+        // prove a per-page override beats the seed and the tree default
+        static PAGE_D_BOTTOM: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromBottom);
+        static PAGE_D_TOP: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromTop);
+        static PAGE_D_RIGHT: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromRight);
+        static PAGE_D_LEFT: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromLeft);
+
         fn font_blob() -> StdVec<u8> {
                 let mut e = Encoder::new(4, 6, 5, 6);
                 for c in 0x20u8..0x7f {
@@ -3022,6 +3120,81 @@ mod tests {
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &font, now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0));
+        }
+
+        /// A per-page [`Descent`] override and the tree-wide default both steer the transition,
+        /// in that order of precedence, over the layout-derived seed; back mirrors. The rig is
+        /// single-buffered mono, so the engine runs its logical over-mode and `page_move_dx`/`dy`
+        /// are the logical unit: Up `(0,1)`, Down `(0,-1)`, Left `(1,0)`, Right `(-1,0)`.
+        #[test]
+        fn descent_overrides_and_the_tree_default_steer_the_transition() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                let mut now = 0u64;
+                let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, now: &mut u64| {
+                        let mut frames = 0;
+                        while ui.is_animating() {
+                                *now += 50_000;
+                                ui.render(layer, display, &font, *now);
+                                while layer.poll(display).unwrap() {}
+                                frames += 1;
+                                assert!(frames < 100, "a transition that never ends");
+                        }
+                };
+                ui.navigate(&PAGE_MAIN).unwrap();
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+
+                //   a per-page override beats the layout seed: DETAIL is a stack (seed FromRight),
+                // yet each pinned copy flows the way it names, and back reverses it
+                for (page, fwd, rev) in [
+                        (&PAGE_D_BOTTOM, (0, 1), (0, -1)),
+                        (&PAGE_D_TOP, (0, -1), (0, 1)),
+                        (&PAGE_D_RIGHT, (1, 0), (-1, 0)),
+                        (&PAGE_D_LEFT, (-1, 0), (1, 0)),
+                ] {
+                        ui.navigate_returning(page, &PAGE_MAIN).unwrap();
+                        now += 50_000;
+                        ui.render(&mut layer, &mut display, &font, now);
+                        assert_eq!((ui.page_move_dx, ui.page_move_dy), fwd, "forward into an overridden page");
+                        settle(&mut ui, &mut layer, &mut display, &mut now);
+                        assert!(ui.navigate_back());
+                        now += 50_000;
+                        ui.render(&mut layer, &mut display, &font, now);
+                        assert_eq!((ui.page_move_dx, ui.page_move_dy), rev, "back out mirrors the arrival");
+                        settle(&mut ui, &mut layer, &mut display, &mut now);
+                }
+
+                //   the tree default applies to a page with no override (DETAIL, seed FromRight)...
+                ui.set_default_descent(Some(Descent::FromTop));
+                ui.navigate_returning(&PAGE_DETAIL, &PAGE_MAIN).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, -1), "tree default overrides the seed");
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                assert!(ui.navigate_back());
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+
+                //   ...but a page's own override still wins over the tree default
+                ui.navigate_returning(&PAGE_D_RIGHT, &PAGE_MAIN).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0), "page override beats the tree default");
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                assert!(ui.navigate_back());
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+
+                //   clearing the default restores the layout-derived flow: a Row page rises
+                ui.set_default_descent(None);
+                assert_eq!(ui.default_descent(), None);
+                ui.navigate_returning(&PAGE_PINNED, &PAGE_MAIN).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "cleared default falls back to the seed");
         }
 
         /// The COVER transition (forward into a Row page), at the rotation the landscape apps
