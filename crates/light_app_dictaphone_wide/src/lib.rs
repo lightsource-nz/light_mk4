@@ -36,7 +36,7 @@ macro_rules! dictaphone_wide_pages {
                 static BTN_REC: $crate::Desc<$event> = $crate::Desc::button("* Record").emit(<$event>::Ui($crate::UiAction::RecToggle)).tag($crate::TAG_REC).min_size($rec_w, 0).max_size($rec_w, 0);
                 static BTN_PLAY: $crate::Desc<$event> = $crate::Desc::button("Play last").emit(<$event>::Ui($crate::UiAction::PlayToggle)).tag($crate::TAG_PLAY);
                 static BTN_FILES: $crate::Desc<$event> = $crate::Desc::button("Recordings >").emit(<$event>::Ui($crate::UiAction::FilesOpen)).navigate(&PAGE_FILES);
-                static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").row($gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
+                static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").linear($gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
                 static ROW_0: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(0))).tag($crate::TAG_ROW_BASE).min_size($list_col_w, 0);
                 static ROW_1: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(1))).tag($crate::TAG_ROW_BASE + 1).min_size($list_col_w, 0);
@@ -48,11 +48,11 @@ macro_rules! dictaphone_wide_pages {
                 static ROW_7: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(7))).tag($crate::TAG_ROW_BASE + 7).min_size($list_col_w, 0);
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size($back_w, 0).max_size($back_w, 0);
                 static FILES_STRIP: $crate::Desc<$event> = $crate::Desc::frame()
-                        .row($gap)
+                        .linear($gap)
                         .scroll($crate::scroll::HORIZONTAL)
                         .children(&[&ROW_0, &ROW_1, &ROW_2, &ROW_3, &ROW_4, &ROW_5, &ROW_6, &ROW_7]);
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
-                        .row($gap)
+                        .linear($gap)
                         .children(&[&BTN_FILES_BACK, &FILES_STRIP]);
 
                 static PAGE_MAIN: $crate::Page<$event> = $crate::Page::new(&MAIN_WINDOW, None);

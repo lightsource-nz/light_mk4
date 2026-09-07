@@ -86,11 +86,27 @@ pub mod scroll {
 pub enum Layout {
         /// Children placed by hand; relayout leaves them where they are.
         None,
-        /// Equal-height rows, one per visible child, `gap` pixels apart.
+        /// Equal-height rows, one per visible child, `gap` pixels apart. Pins the vertical
+        /// axis regardless of the tree's [`Axis`].
         Stack { gap: u8 },
         /// Equal-width columns, one per visible child, `gap` pixels apart: the horizontal
-        /// counterpart of `Stack`, for an interface on glass wider than it is tall.
+        /// counterpart of `Stack`. Pins the horizontal axis regardless of the tree's [`Axis`].
         Row { gap: u8 },
+        /// A line of children along whichever axis the tree carries
+        /// ([`Ui::set_layout_axis`]): `Stack` when the tree is [`Axis::Vertical`], `Row` when
+        /// [`Axis::Horizontal`]. The window keeps this generic recording, so flipping the
+        /// tree axis re-lays it the other way without the descriptor changing. This is how a
+        /// tree is authored once and instantiated portrait or landscape from the outside.
+        Linear { gap: u8 },
+}
+
+/// The axis a generic [`Layout::Linear`] runs along: a whole tree's primary layout
+/// direction, set with [`Ui::set_layout_axis`]. `Vertical` -- the default -- stacks children
+/// top to bottom; `Horizontal` lays them side by side. `Stack` and `Row` ignore it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Axis {
+        Vertical,
+        Horizontal,
 }
 
 /// The edge a child page enters from as it opens: press a button and the incoming page
@@ -417,6 +433,13 @@ impl<A: Copy> Desc<A> {
                 self.layout = Layout::Row { gap };
                 self
         }
+        /// Lay children along the tree's [`Axis`] ([`Ui::set_layout_axis`]) rather than a
+        /// fixed one -- a `Stack` in a vertical tree, a `Row` in a horizontal one. Authors a
+        /// window once and lets the board choose portrait or landscape. See [`Layout::Linear`].
+        pub const fn linear(mut self, gap: u8) -> Self {
+                self.layout = Layout::Linear { gap };
+                self
+        }
         pub const fn scroll(mut self, flags: u8) -> Self {
                 self.scroll = flags;
                 self
@@ -623,6 +646,9 @@ pub struct Ui<A: 'static, const N: usize> {
         /// everything else from the right ([`Descent::FromRight`]). An app or board sets this to point the whole interface
         /// one way, and may change it live, e.g. from an orientation sensor. See [`Descent`].
         default_descent: Option<Descent>,
+        /// The axis every [`Layout::Linear`] window runs along. `Vertical` by default; a
+        /// landscape tree sets `Horizontal`. `Stack`/`Row` windows ignore it. See [`Axis`].
+        layout_axis: Axis,
         // --- the rotation animation, driven from `render` ---
         //   while active, frames show the pre-rotation image turning rather than the widget
         // tree; the real rotation is applied once, on the final step. The image is captured
@@ -703,6 +729,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         page: None,
                         return_page: None,
                         default_descent: None,
+                        layout_axis: Axis::Vertical,
                         rotating: false,
                         rotate_started: false,
                         rotate_target: Rotation::R0,
@@ -910,6 +937,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 match desc.layout {
                         Layout::Stack { gap } => self.layout_stack(id, gap),
                         Layout::Row { gap } => self.layout_row(id, gap),
+                        Layout::Linear { gap } => self.layout_linear(id, gap),
                         Layout::None => {}
                 }
                 Ok(id)
@@ -1046,16 +1074,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // going forward, the one being left coming back -- so a page's arrival
                         // and departure run the same axis and mirror. Precedence: the page's own
                         // override, then the tree default, then the layout seed that reproduces
-                        // the historical flow (a Row page enters from the bottom, everything
-                        // else from the right)
+                        // the historical flow. The seed follows the page's EFFECTIVE axis -- a
+                        // horizontal page (a Row, or a Linear tree set horizontal) enters from
+                        // the bottom, a vertical one from the right
                         let child = if back { self.page } else { Some(page) };
-                        self.page_move_descent = child
-                                .and_then(|p| p.descend)
-                                .or(self.default_descent)
-                                .unwrap_or_else(|| match child.map(|p| p.content.layout) {
-                                        Some(Layout::Row { .. }) => Descent::FromBottom,
-                                        _ => Descent::FromRight,
-                                });
+                        let axis = self.layout_axis;
+                        let seed = || {
+                                let horizontal = match child.map(|p| p.content.layout) {
+                                        Some(Layout::Row { .. }) => true,
+                                        Some(Layout::Linear { .. }) => axis == Axis::Horizontal,
+                                        _ => false,
+                                };
+                                if horizontal { Descent::FromBottom } else { Descent::FromRight }
+                        };
+                        self.page_move_descent = child.and_then(|p| p.descend).or(self.default_descent).unwrap_or_else(seed);
                 }
                 // the old tree goes before the new one is built: only one page's widgets exist
                 if let Some(root) = self.root {
@@ -1103,6 +1135,26 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// or `None` when navigation follows the layout-derived flow.
         pub fn default_descent(&self) -> Option<Descent> {
                 self.default_descent
+        }
+
+        /// Set the axis every [`Layout::Linear`] window in this tree runs along -- the whole
+        /// interface's portrait/landscape choice, made from the outside. Re-lays the current
+        /// page so a change takes effect at once; `Stack` and `Row` windows are unaffected.
+        pub fn set_layout_axis(&mut self, axis: Axis) {
+                if self.layout_axis == axis {
+                        return;
+                }
+                self.layout_axis = axis;
+                if let Some(root) = self.root {
+                        self.relayout_window(root);
+                        self.invalidate_all();
+                }
+        }
+
+        /// The tree's generic-layout axis, [`Axis::Vertical`] unless
+        /// [`set_layout_axis`](Self::set_layout_axis) changed it.
+        pub fn layout_axis(&self) -> Axis {
+                self.layout_axis
         }
 
         // --- geometry ---
@@ -1187,11 +1239,17 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// they do: its last row wears rounded bottom corners permanently instead, as the list's
         /// end cap, sitting flush when the clamp lands it at the stop.
         pub fn layout_stack(&mut self, id: WidgetId, gap: u8) {
-                let gap = i32::from(gap);
-                {
-                        let win = self.w_mut(id).window_mut().expect("a window");
-                        win.layout = Layout::Stack { gap: gap as u8 };
+                if let Some(win) = self.w_mut(id).window_mut() {
+                        win.layout = Layout::Stack { gap };
                 }
+                self.lay_vertical(id, gap);
+        }
+
+        /// The vertical placement pass of [`layout_stack`], without recording the layout kind:
+        /// shared with a [`Layout::Linear`] window in a vertical tree, which stays `Linear` so
+        /// a later axis flip re-lays it the other way.
+        fn lay_vertical(&mut self, id: WidgetId, gap: u8) {
+                let gap = i32::from(gap);
                 let mut content = self.viewport(id);
                 let plain_y1 = content.y1;
                 let (rect, inset_x, corner_radius, scroll_flags) = {
@@ -1310,11 +1368,16 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// corner-flush treatment either way. Vertical scrolling is pinned off: a row is
         /// never taller than its window.
         pub fn layout_row(&mut self, id: WidgetId, gap: u8) {
-                let gap = i32::from(gap);
-                {
-                        let win = self.w_mut(id).window_mut().expect("a window");
-                        win.layout = Layout::Row { gap: gap as u8 };
+                if let Some(win) = self.w_mut(id).window_mut() {
+                        win.layout = Layout::Row { gap };
                 }
+                self.lay_horizontal(id, gap);
+        }
+
+        /// The horizontal placement pass of [`layout_row`], without recording the layout kind:
+        /// shared with a [`Layout::Linear`] window in a horizontal tree, which stays `Linear`.
+        fn lay_horizontal(&mut self, id: WidgetId, gap: u8) {
+                let gap = i32::from(gap);
                 let content = self.viewport(id);
                 let scroll_h = {
                         let win = self.w(id).window().expect("a window");
@@ -1386,7 +1449,21 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 match win.layout {
                         Layout::Stack { gap } => self.layout_stack(id, gap),
                         Layout::Row { gap } => self.layout_row(id, gap),
+                        Layout::Linear { gap } => self.layout_linear(id, gap),
                         Layout::None => {}
+                }
+        }
+
+        /// Lay a window along the tree's current [`Axis`] and record it as [`Layout::Linear`],
+        /// so a later [`set_layout_axis`](Self::set_layout_axis) re-lays it the other way. The
+        /// public entry for a generic layout.
+        pub fn layout_linear(&mut self, id: WidgetId, gap: u8) {
+                if let Some(win) = self.w_mut(id).window_mut() {
+                        win.layout = Layout::Linear { gap };
+                }
+                match self.layout_axis {
+                        Axis::Vertical => self.lay_vertical(id, gap),
+                        Axis::Horizontal => self.lay_horizontal(id, gap),
                 }
         }
 
@@ -2835,6 +2912,12 @@ mod tests {
         static PAGE_D_RIGHT: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromRight);
         static PAGE_D_LEFT: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromLeft);
 
+        //   generic layouts: the same descriptor lays out along whichever axis the tree carries
+        static LINEAR_WIN: Desc<Ev> = Desc::window("Lin").linear(2).children(&[&BTN_ALPHA, &BTN_BETA]);
+        static PAGE_LINEAR: Page<Ev> = Page::new(&LINEAR_WIN, None);
+        static LINEAR_WIN_2: Desc<Ev> = Desc::window("Lin2").linear(2).children(&[&BTN_ALPHA, &BTN_BETA]);
+        static PAGE_LINEAR_2: Page<Ev> = Page::new(&LINEAR_WIN_2, None);
+
         fn font_blob() -> StdVec<u8> {
                 let mut e = Encoder::new(4, 6, 5, 6);
                 for c in 0x20u8..0x7f {
@@ -3195,6 +3278,43 @@ mod tests {
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &font, now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "cleared default falls back to the seed");
+        }
+
+        /// A generic `Linear` window lays out along the tree's `Axis`, and the SAME window
+        /// re-flows the other way when the axis flips -- the descriptor never changes. The
+        /// navigation seed follows the effective axis too: a Linear page in a horizontal tree
+        /// enters from the bottom, as a `Row` page would.
+        #[test]
+        fn a_linear_window_follows_the_tree_axis_and_reflows_when_it_flips() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+
+                // the default axis is vertical
+                assert_eq!(ui.layout_axis(), Axis::Vertical);
+                ui.navigate(&PAGE_LINEAR).unwrap();
+                let root = ui.root().unwrap();
+                let r: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
+                assert_eq!(r.len(), 2);
+                // vertical: the second child sits below the first, sharing the left edge
+                assert!(r[1].y0 > r[0].y1 && r[0].x0 == r[1].x0, "linear should stack vertically by default");
+
+                // flip the tree axis: the same live window re-lays side by side
+                ui.set_layout_axis(Axis::Horizontal);
+                let r: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
+                assert!(r[1].x0 > r[0].x1 && r[0].y0 == r[1].y0, "flipping the axis should re-flow horizontally");
+
+                //   and a Linear page now seeds its navigation like a Row (enters from the
+                // bottom): the mono rig runs the logical over-mode, so that is (0, 1)
+                let mut now = 0u64;
+                ui.navigate(&PAGE_LINEAR_2).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &font, now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "a horizontal-tree Linear page seeds from the bottom");
         }
 
         /// The COVER transition (forward into a Row page), at the rotation the landscape apps

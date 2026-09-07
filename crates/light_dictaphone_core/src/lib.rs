@@ -39,7 +39,7 @@ use light_ui::{SwipeDir, TextSlot, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
-pub use light_ui::{scroll, Desc, Descent, Page};
+pub use light_ui::{scroll, Axis, Desc, Descent, Page};
 
 /// Widget arena size: the deeper page is the recordings list (a window and nine rows).
 pub const UI_WIDGETS: usize = 12;
@@ -423,6 +423,10 @@ pub struct DisplayConfig<X: Copy + 'static> {
         /// interface points it one way for the whole tree. It is expressed logically, so it
         /// stays correct through the display rotation the orientation map applies.
         pub default_descent: Option<Descent>,
+        /// The axis this interface's generic (`Linear`) windows run along: `Vertical` for a
+        /// portrait tree, `Horizontal` for a landscape one. The page tree is authored once
+        /// with generic layouts and instantiated either way from here.
+        pub layout_axis: Axis,
 }
 
 /// Owns the panel and the widget tree: renders when something is dirty, routes touches
@@ -677,6 +681,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module fo
                         self.ui.set_rotation(self.layer, self.cfg.initial_rotation);
                 }
                 self.ui.set_default_descent(self.cfg.default_descent);
+                self.ui.set_layout_axis(self.cfg.layout_axis);
                 if let Err(e) = self.ui.navigate(self.cfg.main_page) {
                         warn!("the main page did not build: {e:?}");
                 }
