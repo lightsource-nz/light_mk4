@@ -1,6 +1,6 @@
 {
     "version": 6,
-    "include": ["../light_framework_mk3/cmake/light_presets/light_pico_presets.json"],
+    "include": ["cmake/light_presets/light_pico_presets.json"],
     "configurePresets": [
         {
             "name": "conf-light_mk4-host-debug",
@@ -127,7 +127,7 @@
         },
         {
             "name": "conf-light_mk4-mini-stm32h7-debug",
-            "description": "WeAct MiniSTM32H7xx (STM32H743VIT6) on bare CMSIS: the CMSIS shell with the Rust app on the board's ST7735. Inherits conf-light-base rather than a Pico base, since PICO_* means nothing here; the arm-none-eabi toolchain comes from mk3's toolchain file, selected by its preinit before project(). Rust_CARGO_TARGET is the hard-float Cortex-M7 target, matching -mfloat-abi=hard.",
+            "description": "WeAct MiniSTM32H7xx (STM32H743VIT6) on bare CMSIS: the CMSIS shell with the Rust app on the board's ST7735. Inherits conf-light-base rather than a Pico base, since PICO_* means nothing here; the arm-none-eabi toolchain comes from the framework's toolchain file, selected by its preinit before project(). Rust_CARGO_TARGET is the hard-float Cortex-M7 target, matching -mfloat-abi=hard.",
             "inherits": [
                 "conf-light-base",
                 "conf-light-debug"

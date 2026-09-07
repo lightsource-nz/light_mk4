@@ -1,0 +1,152 @@
+# Reusable: build and run a light project's host test suite.
+#
+# WHY THIS IS HERE AND NOT IN EACH PROJECT: screen-test, crossfire and font-crusher each grew a
+# near-identical copy of the sibling-checkout dance, the apt packages and the toolchain install.
+# Three copies of a build recipe drift, which is the exact failure the scripts/ layer exists to
+# prevent -- it would be odd to solve it for developers and re-create it in CI.
+#
+# THE ONE IDEA worth keeping in mind: light-env.ps1 and light_resolve_project() resolve every
+# dependency as ../<name> relative to the project. So the whole job is to check each dependency
+# out as a SIBLING inside the workspace, after which nothing needs configuring -- no paths, no
+# environment variables, no user config:
+#
+#     $GITHUB_WORKSPACE/
+#       <project>/              <- the calling repository
+#       light_mk4/    <- LIGHT_PATH, always
+#       light_display/          <- optional
+#       font-crusher/           <- optional
+#       pico-sdk/               <- optional
+#
+# USAGE (from a project's own workflow):
+#
+#     jobs:
+#       test:
+#         uses: lightsource-nz/light_mk4/.github/workflows/project-test.yml@main
+#         with:
+#           project: screen-test
+#           light_display: true
+#           font_crusher: true
+name: light project tests
+
+on:
+  workflow_call:
+    inputs:
+      project:
+        description: 'directory to check this repository out into; also the working directory'
+        type: string
+        required: true
+      light_display:
+        description: 'check out the light_display group beside the project'
+        type: boolean
+        default: false
+      light_ui:
+        description: 'check out the light_ui group beside the project'
+        type: boolean
+        default: false
+      light_usb:
+        description: 'check out the light_usb group beside the project'
+        type: boolean
+        default: false
+      font_crusher:
+        description: 'check out font-crusher (needed by anything rend renders text with)'
+        type: boolean
+        default: false
+      pico_sdk:
+        description: 'check out the pico-sdk fork; needed by pico_hostmode host builds too'
+        type: boolean
+        default: false
+      framework_ref:
+        description: 'ref of light_mk4 to build against'
+        type: string
+        default: main
+      artifact_path:
+        description: 'optional glob, relative to the workspace root, to keep off a green run.
+          font-crusher uses it for the crush binary, which every other project renders fonts with.'
+        type: string
+        default: ''
+      artifact_name:
+        type: string
+        default: build-output
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    #   see project-build.yml: a wedged step should fail in minutes, not eat the 6-hour default.
+    # The longest legitimate run here is crossfire's ~3 minutes with a host Pico SDK build
+    timeout-minutes: 20
+    steps:
+      #   no `repository:`, so this checks out the CALLING repository -- inside a reusable
+      # workflow, github.repository is still the caller's
+      - uses: actions/checkout@v4
+        with:
+          path: ${{ inputs.project }}
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        with:
+          repository: lightsource-nz/light_mk4
+          ref: ${{ inputs.framework_ref }}
+          path: light_mk4
+          submodules: recursive
+
+      - uses: actions/checkout@v4
+        if: inputs.light_display
+        with:
+          repository: lightsource-nz/light_display
+          path: light_display
+
+      - uses: actions/checkout@v4
+        if: inputs.light_ui
+        with:
+          repository: lightsource-nz/light_ui
+          path: light_ui
+
+      - uses: actions/checkout@v4
+        if: inputs.light_usb
+        with:
+          repository: lightsource-nz/light_usb
+          path: light_usb
+
+      #   font-crusher is worth checking out even where it looks optional: rend's Findcrush.cmake
+      # FetchContent-fetches a copy from GitHub when it cannot find one locally, so leaving it out
+      # does not fail -- it silently tests a different crush
+      - uses: actions/checkout@v4
+        if: inputs.font_crusher
+        with:
+          repository: lightsource-nz/font-crusher
+          path: font-crusher
+          submodules: recursive
+
+      #   the vendored fork, not raspberrypi/pico-sdk: it carries local patches these projects
+      # depend on. Non-recursive -- that fetches tinyusb, which the USB stacks need, without
+      # tinyusb's own tree, which nothing here uses
+      - uses: actions/checkout@v4
+        if: inputs.pico_sdk
+        with:
+          repository: lightsource-nz/pico-sdk
+          ref: master
+          path: pico-sdk
+          submodules: true
+
+      - name: install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      #   one command, the same one a developer runs. It configures the test tree if absent,
+      # builds it, runs ctest with --no-tests=error, and then any smoke commands the project
+      # declares in scripts/project.config.ps1
+      - name: test
+        working-directory: ${{ inputs.project }}
+        shell: pwsh
+        run: ./scripts/test.ps1
+
+      #   only when the caller asks. if-no-files-found: error applies as everywhere else -- a
+      # caller that names a path and gets nothing has a broken glob, not an empty build
+      - name: upload build output
+        if: inputs.artifact_path != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          if-no-files-found: error
+          path: ${{ inputs.artifact_path }}

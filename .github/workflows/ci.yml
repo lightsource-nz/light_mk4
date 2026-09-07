@@ -1,11 +1,11 @@
 # Builds and runs the host test suite on every push and pull request.
 #
-# The same shared workflow every mk3 project calls: it checks the framework out beside this
-# repository (scripts/ and CMakeLists.txt reach it as ../light_framework_mk3), installs ninja,
-# and runs scripts/test.ps1 -- which configures the host tree and runs its one ctest, `cargo
-# test` over the portable crates. Nothing Rust-specific is installed: ubuntu-latest carries a
-# stable rustup toolchain, and the host build needs no cross target. crush's bundled FreeType
-# builds with the runner's C compiler and cmake.
+# The framework IS this repository, so there is no separate framework to check out: the job
+# checks out light_mk4, installs ninja, and runs scripts/test.ps1 -- which configures the host
+# tree and runs its one ctest, `cargo test` over the portable crates. ubuntu-latest carries a
+# stable rustup toolchain and the host build needs no cross target; crush's bundled FreeType
+# builds with the runner's C compiler and cmake. Submodules are left unfetched: the CMSIS and
+# sanitizers submodules are for firmware and bare-metal builds, which the host tests never touch.
 #
 # Firmware trees are not built here: they need the arm and riscv cross toolchains, pico-sdk and
 # the CMSIS device checkouts, and a green host run is what CI is for -- the firmware is verified
@@ -28,6 +28,20 @@ permissions:
 jobs:
   test:
     name: host tests
-    uses: lightsource-nz/light_framework_mk3/.github/workflows/project-test.yml@v1
-    with:
-      project: light_mk4
+    runs-on: ubuntu-latest
+    # a wedged step should fail in minutes, not eat the 6-hour default
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      #   one command, the same one a developer runs: it configures the host tree if absent,
+      # builds it, runs ctest with --no-tests=error, and then any smoke commands project.config
+      # declares. cargo and cmake are already on the runner.
+      - name: test
+        shell: pwsh
+        run: ./scripts/test.ps1

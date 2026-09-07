@@ -1,0 +1,88 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "conf-light-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build",
+            "installDir": "${sourceDir}/stage",
+            "cacheVariables": {
+              "CMAKE_PREFIX_PATH": {
+                "type": "path",
+                "value": "${sourceDir}/stage"
+              },
+              "CMAKE_C_STANDARD": "11",
+              "CMAKE_C_STANDARD_REQUIRED": true
+            }
+        },
+        {
+            "name": "conf-light-host-base",
+            "inherits": ["conf-light-base"],
+            "hidden": true,
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "HOST",
+                "LIGHT_SYSTEM": "HOST_OS",
+                "LIGHT_GENERATE_LOG_LEVEL": "INFO",
+                "LIGHT_LOG_LEVEL_DEFAULT": "INFO"
+            }
+        },
+        {
+            "name": "conf-light-debug",
+            "hidden": true,
+            "inherits": ["conf-light-base"],
+            "cacheVariables": {
+                "LIGHT_RUN_MODE": "DEBUG",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "conf-light-debug-addrsan",
+            "hidden": true,
+            "inherits": ["conf-light-debug"],
+            "cacheVariables": {
+                "SANITIZE_ADDRESS": "On",
+                "LIGHT_CORE_ENABLE_SANITIZERS": "On"
+            }
+        },
+        {
+            "name": "conf-light-trace",
+            "hidden": true,
+            "inherits": ["conf-light-base"],
+            "cacheVariables": {
+                "LIGHT_RUN_MODE": "TRACE",
+                "CMAKE_BUILD_TYPE": "Debug"
+            }
+        },
+        {
+            "name": "conf-light-release",
+            "hidden": true,
+            "inherits": ["conf-light-base"],
+            "cacheVariables": {
+                "LIGHT_RUN_MODE": "PRODUCTION",
+                "CMAKE_BUILD_TYPE": "Release"
+            }
+        },
+        {
+            "name": "conf-light-host-debug",
+            "inherits": [
+                "conf-light-host-base",
+                "conf-light-debug"
+            ]
+        },
+        {
+            "name": "conf-light-host-trace",
+            "inherits": [
+                "conf-light-host-base",
+                "conf-light-trace"
+            ]
+        },
+        {
+            "name": "conf-light-host-release",
+            "inherits": [
+                "conf-light-host-base",
+                "conf-light-release"
+            ]
+        }
+    ]
+}

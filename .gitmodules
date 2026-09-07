@@ -1,0 +1,15 @@
+[submodule "cmake/sanitizers"]
+	path = cmake/sanitizers
+	url = https://github.com/arsenm/sanitizers-cmake.git
+[submodule "lib/CMSIS_6"]
+	path = lib/CMSIS_6
+	url = https://github.com/ARM-software/CMSIS_6.git
+	shallow = true
+[submodule "lib/cmsis_device_h7"]
+	path = lib/cmsis_device_h7
+	url = https://github.com/STMicroelectronics/cmsis_device_h7.git
+	shallow = true
+[submodule "lib/cmsis_device_f4"]
+	path = lib/cmsis_device_f4
+	url = https://github.com/STMicroelectronics/cmsis_device_f4.git
+	shallow = true

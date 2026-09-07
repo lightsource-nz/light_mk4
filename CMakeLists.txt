@@ -5,24 +5,24 @@ cmake_minimum_required(VERSION 3.25)
 # Rust staticlib the firmware links. The Rust crates themselves are a plain cargo workspace and
 # are tested with cargo directly on the host (see the HOST branch at the bottom).
 #
-#   the light framework checkout is used for exactly two things here, neither of them framework
-# code: its preinit resolves PICO_SDK_PATH / PICO_PLATFORM / PICO_BOARD from the LIGHT_* preset
-# variables the same way every sibling project does, and its presets file supplies the board
-# configurations. The spike takes none of its C code.
+#   the framework IS this repository: its preinit (external/light_preinit.cmake) resolves
+# PICO_SDK_PATH / PICO_PLATFORM / PICO_BOARD from the LIGHT_* preset variables, and its presets
+# supply the board configurations. LIGHT_PATH therefore defaults to this repo's own root; it is
+# still overridable (env or cache) for an out-of-tree layout.
 if(DEFINED ENV{LIGHT_PATH} AND (NOT LIGHT_PATH))
-        set(LIGHT_PATH "$ENV{LIGHT_PATH}" CACHE PATH "path to the light framework project")
+        set(LIGHT_PATH "$ENV{LIGHT_PATH}" CACHE PATH "path to the light framework")
 endif()
 if(DEFINED ENV{PICO_SDK_PATH} AND (NOT PICO_SDK_PATH))
         set(PICO_SDK_PATH "$ENV{PICO_SDK_PATH}" CACHE PATH "path to the pico-sdk checkout")
 endif()
 if(NOT LIGHT_PATH)
-        set(LIGHT_PATH "${CMAKE_CURRENT_LIST_DIR}/../light_framework_mk3" CACHE PATH "path to the light framework project")
+        set(LIGHT_PATH "${CMAKE_CURRENT_LIST_DIR}" CACHE PATH "path to the light framework")
 endif()
 get_filename_component(LIGHT_PATH "${LIGHT_PATH}" REALPATH BASE_DIR "${CMAKE_CURRENT_LIST_DIR}")
 if(NOT EXISTS "${LIGHT_PATH}/light_init.cmake")
         message(FATAL_ERROR
                 "could not find the light framework at '${LIGHT_PATH}'.\n"
-                "Check it out beside this project as ../light_framework_mk3, or set LIGHT_PATH.")
+                "It normally is this repository itself; set LIGHT_PATH only for an out-of-tree layout.")
 endif()
 include(${LIGHT_PATH}/external/light_preinit.cmake)
 

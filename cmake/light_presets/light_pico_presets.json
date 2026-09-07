@@ -1,0 +1,114 @@
+{
+    "version": 6,
+    "include": ["light_presets.json"],
+    "configurePresets": [
+        {
+            "name": "conf-light-pico-base",
+            "hidden": true,
+            "inherits": [
+                "conf-light-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_SYSTEM": "PICO_SDK",
+                "PICO_SDK_PATH": "$env{PICO_SDK_PATH}"
+            }
+        },
+        {
+            "name": "conf-light-pico",
+            "hidden": true,
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "pico"
+            }
+        },
+        {
+            "name": "conf-light-pico-debug",
+            "inherits": [
+                "conf-light-pico",
+                "conf-light-debug"
+            ]
+        },
+        {
+            "name": "conf-light-pico-release",
+            "inherits": [
+                "conf-light-pico",
+                "conf-light-release"
+            ]
+        },
+        {
+            "name": "conf-light-pico2",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "pico2"
+            }
+        },
+        {
+            "name": "conf-light-waveshare-touch169",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "waveshare_rp2350_touch_lcd_1.69"
+            }
+        },
+        {
+            "name": "conf-light-waveshare-touch28",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "waveshare_rp2350_touch_lcd_2.8"
+            }
+        },
+        {
+            "name": "conf-light-waveshare-touch349",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "waveshare_rp2350_touch_lcd_3.49"
+            }
+        },
+        {
+            "name": "conf-light-waveshare-touch4",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "waveshare_rp2350_touch_lcd_4"
+            }
+        },
+        {
+            "name": "conf-light-pico_w",
+            "inherits": [
+                "conf-light-pico-base"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "TARGET",
+                "LIGHT_BOARD": "pico_w"
+            }
+        },
+        {
+            "name": "conf-light-pico-host",
+            "inherits": [
+                "conf-light-pico-base",
+                "conf-light-debug"
+            ],
+            "cacheVariables": {
+                "LIGHT_PLATFORM": "HOST",
+                "LIGHT_BOARD": "pico_hostmode",
+                "PICO_BOARD": "none"
+            }
+        }
+    ]
+}
