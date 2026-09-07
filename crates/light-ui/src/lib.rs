@@ -80,6 +80,52 @@ pub mod scroll {
         pub const HORIZONTAL: u8 = 1 << 1;
 }
 
+/// A selectable list as reusable data: the rows of a file picker or menu, generated once
+/// instead of hand-written per screen. Emits a `pub static` slice of row [`Desc`]s ready to
+/// drop into a scrolling window's `children`; each row `i` carries tag `tag_base + i` (address
+/// it later with [`Ui::set_list_text`]/[`Ui::fill_list`]) and emits the app event the caller's
+/// `select` maps its index to -- so the toolkit stays event-agnostic. Sizing is the caller's
+/// (`min_size`: a height for a vertical list, a width for a horizontal one), and the list runs
+/// along whichever [`Axis`] its window carries, so one definition serves portrait and landscape.
+/// An optional `back:` button (a `&'static Desc`) is appended as the last row, for a layout that
+/// scrolls the way back in with the list rather than pinning it.
+///
+/// ```ignore
+/// light_ui::file_list! {
+///         FILE_ROWS,
+///         event: AppEvent,
+///         tag_base: TAG_ROW_BASE,
+///         min_size: (0, 56),
+///         select: |i| AppEvent::Pick(i),
+///         indices: [0, 1, 2, 3, 4, 5, 6, 7],
+///         back: &BTN_BACK,
+/// }
+/// // static FILE_ROWS: &[&Desc<AppEvent>]  --  Desc::frame().linear(gap).children(FILE_ROWS)
+/// ```
+#[macro_export]
+macro_rules! file_list {
+        (
+                $name:ident,
+                event: $ev:ty,
+                tag_base: $base:expr,
+                min_size: ($w:expr, $h:expr),
+                select: |$i:ident| $emit:expr,
+                indices: [$($idx:literal),* $(,)?]
+                $(, back: $back:expr)?
+                $(,)?
+        ) => {
+                pub static $name: &[&$crate::Desc<$ev>] = &[
+                        $(
+                                &$crate::Desc::button("-")
+                                        .emit({ let $i: u8 = $idx; $emit })
+                                        .tag(($base) + $idx)
+                                        .min_size($w, $h),
+                        )*
+                        $( $back, )?
+                ];
+        };
+}
+
 /// How a window arranges its children when layout is (re-)run. Recorded on the window so a
 /// rotation or resize can re-apply it without the application being told.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2335,6 +2381,29 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.invalidate_widget(id);
         }
 
+        /// Set one row of a [`file_list!`](crate::file_list) by its tag (`tag_base + row`),
+        /// showing `placeholder` for an empty string. This is the by-tag address and the
+        /// empty-slot convention a selectable list needs in one place; a no-op if that row is
+        /// not built (the list's page is not the one showing).
+        pub fn set_list_text(&mut self, tag_base: u8, row: u8, text: &str, placeholder: &'static str) {
+                if let Some(id) = self.find(tag_base.wrapping_add(row)) {
+                        if text.is_empty() {
+                                self.set_label(id, placeholder);
+                        } else {
+                                self.set_text(id, text);
+                        }
+                }
+        }
+
+        /// Fill a whole [`file_list!`](crate::file_list) from `entries`, one per row from row 0,
+        /// `placeholder` for an empty entry -- for a caller that holds the entire list rather
+        /// than feeding rows one event at a time. Rows past `entries` are left as they are.
+        pub fn fill_list(&mut self, tag_base: u8, entries: &[&str], placeholder: &'static str) {
+                for (row, text) in entries.iter().enumerate() {
+                        self.set_list_text(tag_base, row as u8, text, placeholder);
+                }
+        }
+
         /// The title-bar status dot on a window: `Some((lit, col))` places it on title
         /// character cell `col`, `lit` choosing drawn or dark; `None` is off. A flashing
         /// light toggles `lit` at a fixed `col`, and since the dot sits on a blank cell the
@@ -2930,6 +2999,28 @@ mod tests {
         static LINEAR_WIN_2: Desc<Ev> = Desc::window("Lin2").linear(2).children(&[&BTN_ALPHA, &BTN_BETA]);
         static PAGE_LINEAR_2: Page<Ev> = Page::new(&LINEAR_WIN_2, None);
 
+        //   the reusable selectable-list component: rows generated once, each tagged and
+        // emitting its own index. PICK_ROWS_BACK also appends a back row.
+        crate::file_list! {
+                PICK_ROWS,
+                event: Ev,
+                tag_base: 0x30u8,
+                min_size: (0, 20),
+                select: |i| Ev::Item(i),
+                indices: [0, 1, 2],
+        }
+        static PICK_WIN: Desc<Ev> = Desc::window("Pick").stack(0).children(PICK_ROWS);
+        static PICK_PAGE: Page<Ev> = Page::new(&PICK_WIN, None);
+        crate::file_list! {
+                PICK_ROWS_BACK,
+                event: Ev,
+                tag_base: 0x40u8,
+                min_size: (0, 20),
+                select: |i| Ev::Item(i),
+                indices: [0, 1],
+                back: &BTN_BACK,
+        }
+
         fn font_blob() -> StdVec<u8> {
                 let mut e = Encoder::new(4, 6, 5, 6);
                 for c in 0x20u8..0x7f {
@@ -3357,6 +3448,45 @@ mod tests {
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &font, now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "a horizontal-tree Linear page seeds from the bottom");
+        }
+
+        /// The `file_list!` component: it generates one tagged, index-emitting row per index
+        /// (plus an optional back row), and the fill helpers address a row by tag and show the
+        /// placeholder for an empty entry.
+        #[test]
+        fn file_list_rows_are_tagged_selectable_and_fillable() {
+                // the generated slice has one entry per index, plus the back row when given
+                assert_eq!(PICK_ROWS.len(), 3);
+                assert_eq!(PICK_ROWS_BACK.len(), 3, "two rows and the appended back");
+
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PICK_PAGE).unwrap();
+
+                // each row carries tag_base + i and, activated, emits its own index
+                for i in 0..3u8 {
+                        let id = ui.find(0x30 + i).unwrap_or_else(|| panic!("row {i} present by tag"));
+                        assert_eq!(ui.fire(id), Some(Ev::Item(i)), "row {i} emits its index");
+                }
+
+                // fill: a name shows as runtime text; an empty entry shows the placeholder label
+                ui.fill_list(0x30, &["REC_0001.WAV", "", "keep"], "-");
+                let row0 = ui.get(ui.find(0x30).unwrap()).unwrap();
+                assert_eq!(row0.text.as_str(), "REC_0001.WAV");
+                let row1 = ui.get(ui.find(0x31).unwrap()).unwrap();
+                assert!(row1.text.as_str().is_empty(), "an empty entry clears the runtime text");
+                if let Kind::Button(b) = &row1.kind {
+                        assert_eq!(b.label, "-", "and falls back to the placeholder label");
+                } else {
+                        panic!("a row is a button");
+                }
+                // a row past the end is simply left alone (no panic)
+                ui.set_list_text(0x30, 9, "ignored", "-");
         }
 
         /// The COVER transition (forward into a Row page), at the rotation the landscape apps

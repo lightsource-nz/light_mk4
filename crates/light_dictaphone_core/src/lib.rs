@@ -39,7 +39,7 @@ use light_ui::{SwipeDir, TextSlot, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
-pub use light_ui::{scroll, Axis, Desc, Descent, Page};
+pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
 
 /// Widget arena size: the deeper page is the recordings list (a window and nine rows).
 pub const UI_WIDGETS: usize = 12;
@@ -571,13 +571,8 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                 }
                         }
                         Event::RowText { row, name } => {
-                                if let Some(id) = self.ui.find(TAG_ROW_BASE + row) {
-                                        if name.is_empty() {
-                                                self.ui.set_label(id, "-");
-                                        } else {
-                                                self.ui.set_text(id, name.as_str());
-                                        }
-                                }
+                                //   the file_list! picker's row-fill convention lives in light_ui now
+                                self.ui.set_list_text(TAG_ROW_BASE, row, name.as_str(), "-");
                         }
                         Event::Command(Command::Stats) => {
                                 info!(

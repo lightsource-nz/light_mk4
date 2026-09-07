@@ -28,19 +28,22 @@ macro_rules! dictaphone_pages {
                 static BTN_FILES: $crate::Desc<$event> = $crate::Desc::button("Recordings >").emit(<$event>::Ui($crate::UiAction::FilesOpen)).navigate(&PAGE_FILES).min_size(0, $list_min_row);
                 static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").linear($row_gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
-                static ROW_0: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(0))).tag($crate::TAG_ROW_BASE).min_size(0, $list_min_row);
-                static ROW_1: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(1))).tag($crate::TAG_ROW_BASE + 1).min_size(0, $list_min_row);
-                static ROW_2: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(2))).tag($crate::TAG_ROW_BASE + 2).min_size(0, $list_min_row);
-                static ROW_3: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(3))).tag($crate::TAG_ROW_BASE + 3).min_size(0, $list_min_row);
-                static ROW_4: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(4))).tag($crate::TAG_ROW_BASE + 4).min_size(0, $list_min_row);
-                static ROW_5: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(5))).tag($crate::TAG_ROW_BASE + 5).min_size(0, $list_min_row);
-                static ROW_6: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(6))).tag($crate::TAG_ROW_BASE + 6).min_size(0, $list_min_row);
-                static ROW_7: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(7))).tag($crate::TAG_ROW_BASE + 7).min_size(0, $list_min_row);
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size(0, $list_min_row);
+                //   the recordings list is light_ui's reusable picker: eight full-width rows
+                // that scroll, each emitting its own index; back rides along as the last row
+                $crate::file_list! {
+                        FILES_ROWS,
+                        event: $event,
+                        tag_base: $crate::TAG_ROW_BASE,
+                        min_size: (0, $list_min_row),
+                        select: |i| <$event>::Ui($crate::UiAction::PlayRow(i)),
+                        indices: [0, 1, 2, 3, 4, 5, 6, 7],
+                        back: &BTN_FILES_BACK,
+                }
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
                         .linear($row_gap)
                         .scroll($crate::scroll::VERTICAL)
-                        .children(&[&ROW_0, &ROW_1, &ROW_2, &ROW_3, &ROW_4, &ROW_5, &ROW_6, &ROW_7, &BTN_FILES_BACK]);
+                        .children(FILES_ROWS);
 
                 static PAGE_MAIN: $crate::Page<$event> = $crate::Page::new(&MAIN_WINDOW, None);
                 static PAGE_FILES: $crate::Page<$event> = $crate::Page::new(&FILES_WINDOW, Some(&PAGE_MAIN));

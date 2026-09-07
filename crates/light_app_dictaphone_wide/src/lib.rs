@@ -38,19 +38,22 @@ macro_rules! dictaphone_wide_pages {
                 static BTN_FILES: $crate::Desc<$event> = $crate::Desc::button("Recordings >").emit(<$event>::Ui($crate::UiAction::FilesOpen)).navigate(&PAGE_FILES);
                 static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").linear($gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
-                static ROW_0: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(0))).tag($crate::TAG_ROW_BASE).min_size($list_col_w, 0);
-                static ROW_1: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(1))).tag($crate::TAG_ROW_BASE + 1).min_size($list_col_w, 0);
-                static ROW_2: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(2))).tag($crate::TAG_ROW_BASE + 2).min_size($list_col_w, 0);
-                static ROW_3: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(3))).tag($crate::TAG_ROW_BASE + 3).min_size($list_col_w, 0);
-                static ROW_4: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(4))).tag($crate::TAG_ROW_BASE + 4).min_size($list_col_w, 0);
-                static ROW_5: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(5))).tag($crate::TAG_ROW_BASE + 5).min_size($list_col_w, 0);
-                static ROW_6: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(6))).tag($crate::TAG_ROW_BASE + 6).min_size($list_col_w, 0);
-                static ROW_7: $crate::Desc<$event> = $crate::Desc::button("-").emit(<$event>::Ui($crate::UiAction::PlayRow(7))).tag($crate::TAG_ROW_BASE + 7).min_size($list_col_w, 0);
+                //   the recordings list is light_ui's reusable picker: eight full-height
+                // columns that drag sideways, each emitting its own index. Back is NOT part of
+                // the list here -- it is pinned outside the scrolling strip (below)
+                $crate::file_list! {
+                        FILES_ROWS,
+                        event: $event,
+                        tag_base: $crate::TAG_ROW_BASE,
+                        min_size: ($list_col_w, 0),
+                        select: |i| <$event>::Ui($crate::UiAction::PlayRow(i)),
+                        indices: [0, 1, 2, 3, 4, 5, 6, 7],
+                }
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size($back_w, 0).max_size($back_w, 0);
                 static FILES_STRIP: $crate::Desc<$event> = $crate::Desc::frame()
                         .linear($gap)
                         .scroll($crate::scroll::HORIZONTAL)
-                        .children(&[&ROW_0, &ROW_1, &ROW_2, &ROW_3, &ROW_4, &ROW_5, &ROW_6, &ROW_7]);
+                        .children(FILES_ROWS);
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
                         .linear($gap)
                         .children(&[&BTN_FILES_BACK, &FILES_STRIP]);
