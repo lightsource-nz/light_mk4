@@ -235,12 +235,25 @@ pub struct Window {
         /// stack layout; measured from the children on demand for a hand-placed window.
         pub content_w: i32,
         pub content_h: i32,
-        /// A status dot drawn INLINE in the title bar -- a recording light and the like --
-        /// `Some((lit, col))` centres it on title character cell `col`, so the caller leaves
-        /// a blank there for it (e.g. the space in `REC 0:12`). `lit` false is the dark
-        /// phase of a flash; `None` is off. Because it sits on a space the title already
-        /// holds, blinking never reflows the text. See [`Ui::set_indicator`].
-        pub indicator: Option<(bool, u16)>,
+        /// A status symbol drawn INLINE in the title bar -- a recording light, a play head --
+        /// `Some((shape, lit, col))` centres it on title character cell `col`, so the caller
+        /// leaves a blank there for it (e.g. the space in `REC 0:12`). `lit` false is the dark
+        /// phase of a flash; `None` is off. Because it sits on a space the title already holds,
+        /// blinking never reflows the text. See [`Ui::set_indicator`] and [`IndicatorShape`].
+        pub indicator: Option<(IndicatorShape, bool, u16)>,
+        /// An optional SECOND title row: `None` is a one-row header, `Some` makes the header
+        /// band two rows and carries the runtime text of the lower one (empty draws blank).
+        /// A narrow bar splits a status too long for one row onto it. See [`Ui::set_subtitle`].
+        pub subtitle: Option<TextSlot>,
+}
+
+/// The shape of a title-bar [`indicator`](Window::indicator): a filled `Dot` (a recording
+/// light) or a right-pointing `Play` triangle (a play head). Both paint in
+/// [`Theme::indicator`](crate::theme::Theme::indicator).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndicatorShape {
+        Dot,
+        Play,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -425,12 +438,14 @@ pub struct Desc<A: 'static> {
         /// comes from the canvas.
         rect: Option<Rect>,
         tag: u8,
+        /// A window only: reserve a second title row (see [`Window::subtitle`]).
+        subtitle: bool,
         children: &'static [&'static Desc<A>],
 }
 
 impl<A: Copy> Desc<A> {
         const fn base(kind: DescKind, text: Option<&'static str>) -> Self {
-                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, children: &[], shade: None }
+                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, subtitle: false, children: &[], shade: None }
         }
         pub const fn window(title: &'static str) -> Self {
                 Self::base(DescKind::Window, Some(title))
@@ -438,6 +453,14 @@ impl<A: Copy> Desc<A> {
         /// An untitled frame.
         pub const fn frame() -> Self {
                 Self::base(DescKind::Window, None)
+        }
+        /// Give a titled window a second title row (see [`Window::subtitle`]), filled at
+        /// runtime with [`Ui::set_subtitle`] -- for a narrow bar that splits a long status
+        /// across two rows. The header band is two rows whether or not the lower one has text,
+        /// so the content area never jumps.
+        pub const fn subtitle(mut self) -> Self {
+                self.subtitle = true;
+                self
         }
         pub const fn button(label: &'static str) -> Self {
                 Self::base(DescKind::Button, Some(label))
@@ -927,9 +950,10 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// The corner radius comes from the theme: the OUTER window wears the glass's own
         /// curvature ([`Theme::screen_radius`], zero on square screens) so the frame
         /// parallels the screen edge, and every interior container the house radius.
-        pub fn create_window(&mut self, parent: Option<WidgetId>, rect: Rect, title: Option<&'static str>) -> Result<WidgetId, Error> {
+        pub fn create_window(&mut self, parent: Option<WidgetId>, rect: Rect, title: Option<&'static str>, subtitle: bool) -> Result<WidgetId, Error> {
                 let corner_radius = if parent.is_none() { self.theme.screen_radius } else { self.theme.radius };
-                let win = Window { title, padding: 2, border: true, corner_radius, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0, indicator: None };
+                let subtitle = if subtitle { Some(TextSlot::EMPTY) } else { None };
+                let win = Window { title, padding: 2, border: true, corner_radius, layout: Layout::None, scroll: scroll::NONE, scroll_x: 0, scroll_y: 0, content_w: 0, content_h: 0, indicator: None, subtitle };
                 self.add(parent, Kind::Window(win), rect, false)
         }
 
@@ -951,7 +975,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let rect = desc.rect.unwrap_or(Rect::new(0, 0, 0, 0));
                 let id = match desc.kind {
                         DescKind::Window => {
-                                let id = self.create_window(parent, rect, desc.text)?;
+                                let id = self.create_window(parent, rect, desc.text, desc.subtitle)?;
                                 //   before the children exist: the corner clearance is then already
                                 // accounted for when the single layout pass runs; and scrolling
                                 // changes how the stack treats rows that do not fit. An unset desc
@@ -1214,6 +1238,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 i32::from(win.padding) + if win.border { 1 } else { 0 }
         }
 
+        /// Text rows in a window's title band: two when it carries a [`subtitle`](Window::subtitle),
+        /// one otherwise. The single source `viewport` and `paint_window` share, so the reserved
+        /// band and the painted band always agree.
+        fn title_rows(win: &Window) -> i32 {
+                if win.subtitle.is_some() { 2 } else { 1 }
+        }
+
         /// A window's VIEWPORT: the area content shows through, inside border, padding, header
         /// band and corner clearance. One function so painting, hit-testing, the stack layout and
         /// the scroll clamp can never disagree about where content is allowed to be.
@@ -1230,7 +1261,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let inset_y = drop.max(inset_x);
                 let mut content = Rect::new(w.rect.x0 + inset_x, w.rect.y0 + inset_y, w.rect.x1 - inset_x, w.rect.y1 - inset_y);
                 if win.title.is_some() {
-                        let header_bottom = w.rect.y0 + if win.border { 1 } else { 0 } + self.cell_h + 2;
+                        let header_bottom = w.rect.y0 + if win.border { 1 } else { 0 } + Self::title_rows(win) * self.cell_h + 2;
                         content.y0 = content.y0.max(header_bottom);
                 }
                 content
@@ -2404,17 +2435,30 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
         }
 
-        /// The title-bar status dot on a window: `Some((lit, col))` places it on title
-        /// character cell `col`, `lit` choosing drawn or dark; `None` is off. A flashing
-        /// light toggles `lit` at a fixed `col`, and since the dot sits on a blank cell the
-        /// title already holds the text never reflows. A no-op on a non-window.
-        pub fn set_indicator(&mut self, id: WidgetId, state: Option<(bool, u16)>) {
+        /// The title-bar status symbol on a window: `Some((shape, lit, col))` places
+        /// [`shape`](IndicatorShape) on title character cell `col`, `lit` choosing drawn or
+        /// dark; `None` is off. A flashing light toggles `lit` at a fixed `col`, and since the
+        /// symbol sits on a blank cell the title already holds the text never reflows. A no-op
+        /// on a non-window.
+        pub fn set_indicator(&mut self, id: WidgetId, state: Option<(IndicatorShape, bool, u16)>) {
                 if let Kind::Window(w) = &mut self.w_mut(id).kind {
                         if w.indicator == state {
                                 return;
                         }
                         w.indicator = state;
                         self.invalidate_widget(id);
+                }
+        }
+
+        /// Set the second title row's text on a window built with [`Desc::subtitle`]. A no-op on
+        /// a one-row window (or a non-window); an empty string draws a blank lower row without
+        /// changing the band height, so a status that comes and goes never shifts the content.
+        pub fn set_subtitle(&mut self, id: WidgetId, text: &str) {
+                if let Kind::Window(w) = &mut self.w_mut(id).kind {
+                        if let Some(slot) = w.subtitle.as_mut() {
+                                slot.set(text);
+                                self.invalidate_widget(id);
+                        }
                 }
         }
 
@@ -2532,24 +2576,50 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 c.fg = self.theme.title;
                 let text_right = f.x1 - indent - inset;
                 self.draw_text_fitted(c, font, tx, ty, title, text_right - tx + 1);
-                //   an INLINE status dot, centred on the title cell the caller left blank
+                //   an INLINE status symbol, centred on the title cell the caller left blank
                 // for it (e.g. the space in "REC 0:12"); sized to sit inside one cell so it
                 // never touches the glyphs either side. Only drawn when lit -- the dark
-                // phase shows the blank cell, so the flash never reflows the title
-                if let Some((true, col)) = win.indicator {
-                        let dot_d = (self.cell_h * 3 / 5).clamp(3, self.cell_w);
+                // phase shows the blank cell, so a flash never reflows the title
+                if let Some((shape, true, col)) = win.indicator {
+                        let d = (self.cell_h * 3 / 5).clamp(3, self.cell_w);
                         let cx = tx + i32::from(col) * self.cell_w + self.cell_w / 2;
                         let cy = ty + self.cell_h / 2;
-                        let (dx0, dy0) = (cx - dot_d / 2, cy - dot_d / 2);
-                        let (dx1, dy1) = (dx0 + dot_d - 1, dy0 + dot_d - 1);
-                        if dx0 >= 0 && dy0 >= 0 && dx1 <= text_right {
+                        let (bx0, by0) = (cx - d / 2, cy - d / 2);
+                        let (bx1, by1) = (bx0 + d - 1, by0 + d - 1);
+                        if bx0 >= 0 && by0 >= 0 && bx1 <= text_right {
                                 c.fg = self.theme.indicator;
-                                c.rect_rounded(Point::new(dx0, dy0), Point::new(dx1, dy1), (dot_d / 2) as u16, light_draw::corner::ALL, true);
+                                match shape {
+                                        IndicatorShape::Dot => {
+                                                c.rect_rounded(Point::new(bx0, by0), Point::new(bx1, by1), (d / 2) as u16, light_draw::corner::ALL, true);
+                                        }
+                                        IndicatorShape::Play => {
+                                                //   a right-pointing triangle: a vertical base at the
+                                                // left, apex at the middle-right, each row a horizontal
+                                                // span that tapers to the tip
+                                                let mut dy = 0;
+                                                while dy < d {
+                                                        let wpx = d - 2 * (dy - d / 2).abs();
+                                                        if wpx > 0 {
+                                                                let y = by0 + dy;
+                                                                c.line(Point::new(bx0, y), Point::new(bx0 + wpx - 1, y));
+                                                        }
+                                                        dy += 1;
+                                                }
+                                        }
+                                }
                         }
                 }
-                // the separator sits a cell lower, where the arc has come most of the way out
+                //   the second title row, when the window carries one: a status too long for a
+                // narrow bar sits here. Empty draws nothing but the band stays two rows tall
+                if let Some(sub) = win.subtitle {
+                        if sub.len > 0 {
+                                c.fg = self.theme.title;
+                                self.draw_text_fitted(c, font, tx, ty + self.cell_h, sub.as_str(), text_right - tx + 1);
+                        }
+                }
+                // the separator sits below the title row(s), where the arc has come most of the way out
                 c.fg = self.theme.frame;
-                let sep_y = ty + self.cell_h;
+                let sep_y = ty + Self::title_rows(win) * self.cell_h;
                 let sep_indent = corner_indent(win.corner_radius, i32::from(win.corner_radius) - (sep_y - f.y0));
                 let sep_x0 = f.x0 + sep_indent + inset;
                 if sep_y <= f.y1 && sep_y >= 0 && sep_x0 >= 0 {
@@ -3021,6 +3091,12 @@ mod tests {
                 back: &BTN_BACK,
         }
 
+        //   a two-row title bar (a subtitle) vs the ordinary one-row bar, same content
+        static SUB_WIN: Desc<Ev> = Desc::window("Bar").subtitle().stack(0).children(&[&BTN_ALPHA]);
+        static SUB_PAGE: Page<Ev> = Page::new(&SUB_WIN, None);
+        static PLAIN_WIN: Desc<Ev> = Desc::window("Bar").stack(0).children(&[&BTN_ALPHA]);
+        static PLAIN_PAGE: Page<Ev> = Page::new(&PLAIN_WIN, None);
+
         fn font_blob() -> StdVec<u8> {
                 let mut e = Encoder::new(4, 6, 5, 6);
                 for c in 0x20u8..0x7f {
@@ -3487,6 +3563,60 @@ mod tests {
                 }
                 // a row past the end is simply left alone (no panic)
                 ui.set_list_text(0x30, 9, "ignored", "-");
+        }
+
+        /// A `.subtitle()` window reserves a second title row -- its content starts one text
+        /// row lower than the same window without one -- and `set_subtitle` fills that row;
+        /// on a one-row window it is a no-op.
+        #[test]
+        fn a_subtitle_reserves_a_second_title_row_and_fills_it() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let cell_h = i32::from(font.cell_height());
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+
+                ui.navigate(&PLAIN_PAGE).unwrap();
+                let proot = ui.root().unwrap();
+                let plain_top = ui.get(ui.children(proot).next().unwrap()).unwrap().rect.y0;
+
+                ui.navigate(&SUB_PAGE).unwrap();
+                let sroot = ui.root().unwrap();
+                let sub_top = ui.get(ui.children(sroot).next().unwrap()).unwrap().rect.y0;
+                assert_eq!(sub_top - plain_top, cell_h, "the subtitle reserves one extra text row of header");
+
+                ui.set_subtitle(sroot, "0:12 / 1:23");
+                assert_eq!(ui.get(sroot).unwrap().window().unwrap().subtitle.unwrap().as_str(), "0:12 / 1:23");
+
+                // a one-row window has no subtitle to set
+                ui.navigate(&PLAIN_PAGE).unwrap();
+                let proot = ui.root().unwrap();
+                ui.set_subtitle(proot, "ignored");
+                assert!(ui.get(proot).unwrap().window().unwrap().subtitle.is_none());
+        }
+
+        /// `set_indicator` carries the shape, lit flag and column for both a `Dot` and a `Play`.
+        #[test]
+        fn set_indicator_carries_the_shape() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                ui.navigate(&PLAIN_PAGE).unwrap();
+                let root = ui.root().unwrap();
+
+                ui.set_indicator(root, Some((IndicatorShape::Play, true, 5)));
+                assert_eq!(ui.get(root).unwrap().window().unwrap().indicator, Some((IndicatorShape::Play, true, 5)));
+                ui.set_indicator(root, Some((IndicatorShape::Dot, false, 3)));
+                assert_eq!(ui.get(root).unwrap().window().unwrap().indicator, Some((IndicatorShape::Dot, false, 3)));
+                ui.set_indicator(root, None);
+                assert_eq!(ui.get(root).unwrap().window().unwrap().indicator, None);
         }
 
         /// The COVER transition (forward into a Row page), at the rotation the landscape apps

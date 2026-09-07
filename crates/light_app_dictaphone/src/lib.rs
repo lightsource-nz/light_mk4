@@ -26,7 +26,7 @@ macro_rules! dictaphone_pages {
                 static BTN_REC: $crate::Desc<$event> = $crate::Desc::button("* Record").emit(<$event>::Ui($crate::UiAction::RecToggle)).tag($crate::TAG_REC).min_size(0, $rec_min_h);
                 static BTN_PLAY: $crate::Desc<$event> = $crate::Desc::button("Play last").emit(<$event>::Ui($crate::UiAction::PlayToggle)).tag($crate::TAG_PLAY).min_size(0, $list_min_row);
                 static BTN_FILES: $crate::Desc<$event> = $crate::Desc::button("Recordings >").emit(<$event>::Ui($crate::UiAction::FilesOpen)).navigate(&PAGE_FILES).min_size(0, $list_min_row);
-                static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").linear($row_gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
+                static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").subtitle().linear($row_gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size(0, $list_min_row);
                 //   the recordings list is light_ui's reusable picker: eight full-width rows
@@ -41,6 +41,7 @@ macro_rules! dictaphone_pages {
                         back: &BTN_FILES_BACK,
                 }
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
+                        .subtitle()
                         .linear($row_gap)
                         .scroll($crate::scroll::VERTICAL)
                         .children(FILES_ROWS);

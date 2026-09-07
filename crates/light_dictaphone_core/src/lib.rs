@@ -35,7 +35,7 @@ use light_font::Font;
 use light_fs::{Fat, File as FsFile, FsError};
 use light_input::imu::Orientation;
 use light_input::touch::Gesture;
-use light_ui::{SwipeDir, TextSlot, Touch, Ui};
+use light_ui::{IndicatorShape, SwipeDir, TextSlot, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
@@ -594,44 +594,56 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
         /// the current page's own name so it reads right whichever page is showing. The body
         /// carries only the flashing recording light now (see [`Self::blink_tick`]).
         fn render_status(&mut self) {
-                let base = self
+                let Some(root) = self.ui.root() else { return };
+                //   the transport state shows as a drawn symbol -- a flashing dot recording, a
+                // steady triangle playing -- with the time beside it. A two-row title bar (the
+                // narrow portrait one) puts the name on row 1 with the symbol and the time on
+                // row 2; a one-row bar (the wide one, with room) keeps it all inline.
+                let (base, two_row) = self
                         .ui
-                        .root()
-                        .and_then(|r| self.ui.get(r))
+                        .get(root)
                         .and_then(|w| w.window())
-                        .and_then(|win| win.title)
-                        .unwrap_or("");
-                let mut line = StackString::<{ TextSlot::CAP }>::new();
-                match self.status {
-                        AudioStatus::Idle => {
-                                let _ = write!(line, "{base}");
-                        }
+                        .map(|win| (win.title.unwrap_or(""), win.subtitle.is_some()))
+                        .unwrap_or(("", false));
+                let col = self.symbol_col(base);
+                let mut detail = StackString::<{ TextSlot::CAP }>::new();
+                let indicator = match self.status {
+                        AudioStatus::Idle => None,
                         AudioStatus::Recording { secs } => {
-                                let _ = write!(line, "{base} - REC {}:{:02}", secs / 60, secs % 60);
+                                let _ = write!(detail, "{}:{:02}", secs / 60, secs % 60);
+                                Some((IndicatorShape::Dot, self.blink_on, col))
                         }
                         AudioStatus::Playing { secs, total } => {
-                                let _ = write!(line, "{base} - Play {}:{:02}/{}:{:02}", secs / 60, secs % 60, total / 60, total % 60);
+                                let _ = write!(detail, "{}:{:02} / {}:{:02}", secs / 60, secs % 60, total / 60, total % 60);
+                                Some((IndicatorShape::Play, true, col))
                         }
-                }
-                if let Some(root) = self.ui.root() {
+                };
+                if two_row {
+                        // row 1 stays the static name; the time rides row 2 (blank when idle)
+                        self.ui.set_subtitle(root, detail.as_str());
+                } else {
+                        // name, a blank cell for the symbol, then the inline time
+                        let mut line = StackString::<{ TextSlot::CAP }>::new();
+                        if detail.as_str().is_empty() {
+                                let _ = write!(line, "{base}");
+                        } else {
+                                let _ = write!(line, "{base}   {}", detail.as_str());
+                        }
                         self.ui.set_text(root, line.as_str());
-                        //   leaving the recording state disarms the title-bar light and
-                        // resets the phase, so the next recording starts lit on its first tick
-                        if !matches!(self.status, AudioStatus::Recording { .. }) {
-                                self.ui.set_indicator(root, None);
-                                self.blink_on = false;
-                                self.blink_last_us = 0;
-                        }
+                }
+                self.ui.set_indicator(root, indicator);
+                //   leaving the recording state resets the flash phase, so the next take
+                // starts lit on its first tick
+                if !matches!(self.status, AudioStatus::Recording { .. }) {
+                        self.blink_on = false;
+                        self.blink_last_us = 0;
                 }
         }
 
-        /// The title cell the recording dot sits on: the space between "REC" and the time in
-        /// `"<base> - REC 0:12"` -- the base name, then the six characters of " - REC", then
-        /// the blank the dot lands in. Read from the page's own (static) name, so it tracks
-        /// whichever page is showing.
-        fn dot_col(&self, root: light_ui::WidgetId) -> u16 {
-                let base = self.ui.get(root).and_then(|w| w.window()).and_then(|win| win.title).map(|t| t.chars().count()).unwrap_or(0);
-                (base + 6) as u16
+        /// The title cell the status symbol sits on: one blank past the page's (static) name,
+        /// so it tracks whichever page is showing and never overlaps the title.
+        fn symbol_col(&self, base: &str) -> u16 {
+                (base.chars().count() + 1) as u16
         }
 
         /// One step of the recording light's 2 Hz flash, driven from the display poll so it
@@ -648,8 +660,9 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 self.blink_last_us = now;
                 self.blink_on = !self.blink_on;
                 if let Some(root) = self.ui.root() {
-                        let col = self.dot_col(root);
-                        self.ui.set_indicator(root, Some((self.blink_on, col)));
+                        let base = self.ui.get(root).and_then(|w| w.window()).and_then(|win| win.title).unwrap_or("");
+                        let col = self.symbol_col(base);
+                        self.ui.set_indicator(root, Some((IndicatorShape::Dot, self.blink_on, col)));
                 }
         }
 
@@ -665,6 +678,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                         self.push_started_us = Some(done);
                 }
         }
+
 }
 
 impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module for DisplayMod<D, C, X> {
