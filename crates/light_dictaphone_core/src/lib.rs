@@ -503,6 +503,22 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                         }
                                         Touch::Tap { hit, emitted } => {
                                                 debug!("tap: {}", if hit { "hit" } else { "no widget there" });
+                                                //   run the whole press-flash BLIP synchronously here, before
+                                                // the emitted action runs: paint and push the flash, hold it
+                                                // for its short window, then paint and push the reverted
+                                                // button. A record/play handler blocks core 0 on card I/O far
+                                                // longer than the flash should last, so the loop cannot end
+                                                // the flash on its own -- it would linger for the whole delay
+                                                if emitted.is_some() {
+                                                        self.flush_display();
+                                                        self.render();
+                                                        self.flush_display();
+                                                        let until = now + light_ui::ACTIVATE_FLASH_US;
+                                                        while log::now_us() < until {}
+                                                        // a render past the deadline lapses the flash; push that frame too
+                                                        self.render();
+                                                        self.flush_display();
+                                                }
                                                 Self::publish(self.bus, emitted);
                                         }
                                         Touch::DragEnd | Touch::None => self.drag_reported = false,
@@ -679,6 +695,24 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 }
         }
 
+        /// Drive an in-flight chunked push to the panel to completion, right now. The frame
+        /// otherwise finishes over later polls; this is for the one case that cannot wait --
+        /// painting a tap's acknowledgement before a blocking handler (a card open, a take
+        /// starting) runs and stops the loop from polling. Bounded so a wedged transfer can
+        /// never hang the app.
+        fn flush_display(&mut self) {
+                let mut spins = 0u32;
+                while self.layer.busy(&self.display) {
+                        if self.layer.poll(&mut self.display).is_err() {
+                                break;
+                        }
+                        spins += 1;
+                        if spins > 100_000 {
+                                warn!("display flush did not settle");
+                                break;
+                        }
+                }
+        }
 }
 
 impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module for DisplayMod<D, C, X> {
