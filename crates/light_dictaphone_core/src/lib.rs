@@ -40,6 +40,7 @@ use light_ui::{IndicatorShape, SwipeDir, TextSlot, Touch, Ui};
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
 pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
+pub use light_ui_components::{FilePicker, Order};
 
 /// Widget arena size: the deeper page is the recordings list (a window and nine rows).
 pub const UI_WIDGETS: usize = 12;
@@ -842,8 +843,9 @@ pub struct AudioMod<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock,
         null_bytes: u32,
         /// The most recent recording -- what "Play last" plays.
         last_name: Option<FsPath>,
-        /// The list page's rows, newest first; in .bss like everything sizeable here.
-        list: &'static mut [Option<FsPath>; LIST_ROWS],
+        /// The recordings list, newest first: the system file-picker component, scanning the
+        /// card and driving the list rows. In .bss like everything sizeable here.
+        picker: &'static mut FilePicker<LIST_ROWS>,
         /// Publish-on-change: the last [`AudioStatus`] the interface was told about. The
         /// elapsed second is part of the value, so a live take updates itself.
         last_status: AudioStatus,
@@ -863,7 +865,7 @@ pub struct AudioSlots<Dev: BlockDevice + 'static> {
         pub rec: &'static mut Option<Recording<Dev>>,
         pub play: &'static mut Option<Playback<Dev>>,
         pub play_stage: &'static mut [u8],
-        pub list: &'static mut [Option<FsPath>; LIST_ROWS],
+        pub picker: &'static mut FilePicker<LIST_ROWS>,
 }
 
 impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core::fmt::Debug + 'static> AudioMod<S, B, A, P, C, X> {
@@ -888,7 +890,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                         rec_null: false,
                         null_bytes: 0,
                         last_name: None,
-                        list: slots.list,
+                        picker: slots.picker,
                         last_status: AudioStatus::Idle,
                         mic14: mic_gain.0,
                         mic17: mic_gain.1,
@@ -940,41 +942,25 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
         }
 
         /// Fill the list page: the newest [`LIST_ROWS`] recordings, one RowText per row
-        /// (an empty name is an unused row), and remember them for taps.
+        /// (an empty name is an unused row), and remember them for taps. The scan and the
+        /// newest-first ordering are the system [`FilePicker`]; this keeps the filter (our
+        /// recordings, non-empty) and the RowText bridge to the display module.
         fn scan_files(&mut self) {
-                for slot in self.list.iter_mut() {
-                        *slot = None;
-                }
-                if let Some(mut fs) = self.mount() {
-                        let list = &mut *self.list;
-                        let _ = fs.list_dir("/", |e| {
-                                //   skip header-only takes (44 B, no PCM): an empty recording
-                                // has nothing to play, so it never earns a row
-                                if e.is_dir || e.size <= 44 || rec_number(e.name()).is_none() {
-                                        return;
-                                }
-                                let Some(p) = FsPath::new(e.name()) else { return };
-                                //   insertion, highest number (lexicographic on the
-                                // zero-padded name) first; the displaced row carries on down
-                                let mut cand = Some(p);
-                                for slot in list.iter_mut() {
-                                        match (*slot, cand) {
-                                                (None, Some(_)) => *slot = cand.take(),
-                                                (Some(cur), Some(c)) if c.as_str() > cur.as_str() => {
-                                                        cand = Some(cur);
-                                                        *slot = Some(c);
-                                                }
-                                                _ => {}
-                                        }
-                                }
-                        });
+                match self.mount() {
+                        //   header-only takes (<= 44 B, no PCM) have nothing to play, so they
+                        // never earn a row; directories and non-recordings are not ours
+                        Some(mut fs) => {
+                                let _ = self.picker.scan(&mut fs, "/", |e| !e.is_dir && e.size > 44 && rec_number(e.name()).is_some());
+                        }
+                        None => self.picker.clear(),
                 }
                 let empty = FsPath::new("").unwrap_or(FsPath { buf: [0; 48], len: 0 });
-                for (i, slot) in self.list.iter().enumerate() {
-                        let _ = self.bus.publish(Event::RowText { row: i as u8, name: slot.unwrap_or(empty) });
+                for i in 0..LIST_ROWS {
+                        let name = self.picker.name(i).and_then(FsPath::new).unwrap_or(empty);
+                        let _ = self.bus.publish(Event::RowText { row: i as u8, name });
                 }
                 if self.last_name.is_none() {
-                        self.last_name = self.list[0];
+                        self.last_name = self.picker.name(0).and_then(FsPath::new);
                 }
         }
 
@@ -1292,7 +1278,7 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                                 }
                                 Event::Ui(UiAction::FilesOpen) => self.scan_files(),
                                 Event::Ui(UiAction::PlayRow(i)) => {
-                                        if let Some(p) = self.list.get(usize::from(i)).copied().flatten() {
+                                        if let Some(p) = self.picker.name(usize::from(i)).and_then(FsPath::new) {
                                                 if self.rec.is_some() {
                                                         info!("play: stop the recording first");
                                                 } else {

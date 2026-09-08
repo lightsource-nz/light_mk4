@@ -12,5 +12,6 @@ light-display = { path = "../light-display" }
 light-font = { path = "../light-font" }
 light-input = { path = "../light-input" }
 light-ui = { path = "../light-ui" }
+light_ui_components = { path = "../light_ui_components" }
 light-fs = { path = "../light-fs" }
 light-audio = { path = "../light-audio" }
