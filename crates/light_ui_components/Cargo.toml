@@ -1,0 +1,14 @@
+[package]
+name = "light_ui_components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "higher-level UI components that augment light-ui by integrating other platform layers -- starting with a filesystem-backed file picker"
+
+[dependencies]
+light-ui = { path = "../light-ui" }
+light-fs = { path = "../light-fs" }
+light-core = { path = "../light-core" }
+
+[dev-dependencies]
+critical-section = { version = "1.2", features = ["std"] }
