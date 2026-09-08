@@ -2436,6 +2436,22 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.invalidate_widget(id);
         }
 
+        /// The text a widget currently SHOWS: its runtime text if [`set_text`](Self::set_text)
+        /// gave it one, otherwise its static label/title (a window with no title reads empty).
+        /// `None` for an id that no longer exists. Lets a caller read a list row or label back --
+        /// what the viewer sees -- without reaching into the widget.
+        pub fn widget_text(&self, id: WidgetId) -> Option<&str> {
+                let w = self.get(id)?;
+                if w.text.len > 0 {
+                        return Some(w.text.as_str());
+                }
+                Some(match &w.kind {
+                        Kind::Button(b) => b.label,
+                        Kind::Label(l) => l.text,
+                        Kind::Window(win) => win.title.unwrap_or(""),
+                })
+        }
+
         /// Set one row of a [`file_list!`](crate::file_list) by its tag (`tag_base + row`),
         /// showing `placeholder` for an empty string. This is the by-tag address and the
         /// empty-slot convention a selectable list needs in one place; a no-op if that row is
