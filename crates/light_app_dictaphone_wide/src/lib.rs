@@ -50,13 +50,19 @@ macro_rules! dictaphone_wide_pages {
                         indices: [0, 1, 2, 3, 4, 5, 6, 7],
                 }
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size($back_w, 0).max_size($back_w, 0);
+                //   the paging buttons are pinned outside the strip like back is: the strip eats
+                // horizontal drags, so a "next page" the reader had to scroll to reach would be
+                // unreachable. They show only when that page exists; hidden, they collapse out
+                static BTN_FILES_PREV: $crate::Desc<$event> = $crate::Desc::button("< Newer").emit(<$event>::Ui($crate::UiAction::FilesPrev)).tag($crate::TAG_PREV).min_size($back_w, 0).max_size($back_w, 0);
+                static BTN_FILES_NEXT: $crate::Desc<$event> = $crate::Desc::button("Older >").emit(<$event>::Ui($crate::UiAction::FilesNext)).tag($crate::TAG_NEXT).min_size($back_w, 0).max_size($back_w, 0);
                 static FILES_STRIP: $crate::Desc<$event> = $crate::Desc::frame()
+                        .grow()
                         .linear($gap)
                         .scroll($crate::scroll::HORIZONTAL)
                         .children(FILES_ROWS);
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
                         .linear($gap)
-                        .children(&[&BTN_FILES_BACK, &FILES_STRIP]);
+                        .children(&[&BTN_FILES_BACK, &BTN_FILES_PREV, &FILES_STRIP, &BTN_FILES_NEXT]);
 
                 static PAGE_MAIN: $crate::Page<$event> = $crate::Page::new(&MAIN_WINDOW, None);
                 static PAGE_FILES: $crate::Page<$event> = $crate::Page::new(&FILES_WINDOW, Some(&PAGE_MAIN));

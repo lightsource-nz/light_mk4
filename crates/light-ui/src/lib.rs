@@ -92,8 +92,11 @@ pub mod scroll {
 /// `select` maps its index to -- so the toolkit stays event-agnostic. Sizing is the caller's
 /// (`min_size`: a height for a vertical list, a width for a horizontal one), and the list runs
 /// along whichever [`Axis`] its window carries, so one definition serves portrait and landscape.
-/// An optional `back:` button (a `&'static Desc`) is appended as the last row, for a layout that
-/// scrolls the way back in with the list rather than pinning it.
+/// Optional `prev:`/`next:` buttons (each a `&'static Desc`) bracket the rows -- `prev` before the
+/// first, `next` after the last -- for a paged list: show or hide them per page with
+/// [`Ui::set_visible`] (a hidden one collapses out on the next [`Ui::relayout`]). An optional
+/// `back:` button is appended last, for a layout that scrolls the way back in with the list rather
+/// than pinning it. Supply them in this order: `prev`, `next`, `back`.
 ///
 /// ```ignore
 /// light_ui::file_list! {
@@ -103,6 +106,8 @@ pub mod scroll {
 ///         min_size: (0, 56),
 ///         select: |i| AppEvent::Pick(i),
 ///         indices: [0, 1, 2, 3, 4, 5, 6, 7],
+///         prev: &BTN_PREV,
+///         next: &BTN_NEXT,
 ///         back: &BTN_BACK,
 /// }
 /// // static FILE_ROWS: &[&Desc<AppEvent>]  --  Desc::frame().linear(gap).children(FILE_ROWS)
@@ -116,16 +121,20 @@ macro_rules! file_list {
                 min_size: ($w:expr, $h:expr),
                 select: |$i:ident| $emit:expr,
                 indices: [$($idx:literal),* $(,)?]
+                $(, prev: $prev:expr)?
+                $(, next: $next:expr)?
                 $(, back: $back:expr)?
                 $(,)?
         ) => {
                 pub static $name: &[&$crate::Desc<$ev>] = &[
+                        $( $prev, )?
                         $(
                                 &$crate::Desc::button("-")
                                         .emit({ let $i: u8 = $idx; $emit })
                                         .tag(($base) + $idx)
                                         .min_size($w, $h),
                         )*
+                        $( $next, )?
                         $( $back, )?
                 ];
         };
@@ -347,6 +356,8 @@ pub struct Widget<A: 'static> {
         pub min_h: i32,
         pub max_w: i32,
         pub max_h: i32,
+        /// Stretches to take the surplus in a horizontal layout, so pinned siblings can flank it.
+        pub grow: bool,
         /// An application-chosen mark, for finding a widget again after a build; 0 = untagged.
         pub tag: u8,
         parent: Option<WidgetId>,
@@ -445,12 +456,15 @@ pub struct Desc<A: 'static> {
         tag: u8,
         /// A window only: reserve a second title row (see [`Window::subtitle`]).
         subtitle: bool,
+        /// Take the surplus width in a horizontal layout, so pinned siblings can flank it (see
+        /// [`Desc::grow`]).
+        grow: bool,
         children: &'static [&'static Desc<A>],
 }
 
 impl<A: Copy> Desc<A> {
         const fn base(kind: DescKind, text: Option<&'static str>) -> Self {
-                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, subtitle: false, children: &[], shade: None }
+                Self { kind, text, emit: None, nav: Nav::Stay, corner_radius: 0, layout: Layout::None, scroll: scroll::NONE, min_w: 0, min_h: 0, max_w: 0, max_h: 0, rect: None, tag: 0, subtitle: false, grow: false, children: &[], shade: None }
         }
         pub const fn window(title: &'static str) -> Self {
                 Self::base(DescKind::Window, Some(title))
@@ -534,6 +548,17 @@ impl<A: Copy> Desc<A> {
         }
         pub const fn tag(mut self, tag: u8) -> Self {
                 self.tag = tag;
+                self
+        }
+        /// Claim the leftover space in a horizontal layout ([`Layout::Row`], or [`Layout::Linear`]
+        /// in a horizontal tree). Without any grow child, the layout splits the width evenly and
+        /// the last column absorbs the remainder -- so a fixed-width button can only sit at the
+        /// end. Mark the child that should stretch, and the others keep their pinned widths
+        /// wherever they are, letting pinned buttons flank a stretching one on both sides (the
+        /// wide recordings list's paging buttons bracket the scrolling strip this way). Leftover
+        /// splits evenly between multiple grow children. Honored by the horizontal layout only.
+        pub const fn grow(mut self) -> Self {
+                self.grow = true;
                 self
         }
         pub const fn children(mut self, children: &'static [&'static Desc<A>]) -> Self {
@@ -931,7 +956,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         fn add(&mut self, parent: Option<WidgetId>, kind: Kind<A>, rect: Rect, focusable: bool) -> Result<WidgetId, Error> {
-                let id = self.alloc(Widget { kind, text: TextSlot::EMPTY, rect, visible: true, focusable, enabled: true, hit_slop_y1: 0, min_w: 0, min_h: 0, max_w: 0, max_h: 0, tag: 0, parent, next_sibling: None, first_child: None })?;
+                let id = self.alloc(Widget { kind, text: TextSlot::EMPTY, rect, visible: true, focusable, enabled: true, hit_slop_y1: 0, min_w: 0, min_h: 0, max_w: 0, max_h: 0, grow: false, tag: 0, parent, next_sibling: None, first_child: None })?;
                 match parent {
                         None => {
                                 if let Some(old) = self.root {
@@ -1014,6 +1039,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         w.min_h = desc.min_h;
                         w.max_w = desc.max_w;
                         w.max_h = desc.max_h;
+                        w.grow = desc.grow;
                         w.tag = desc.tag;
                 }
                 for child in desc.children {
@@ -1494,13 +1520,51 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 let viewport_h = content.y1 - content.y0 + 1;
                 let kids: Vec<WidgetId, N> = self.children(id).filter(|c| self.w(*c).visible).collect();
-                // the content's extent, measured before anything is placed, so the offset
-                // is clamped against it FIRST and columns are laid against a legal offset
-                let mut content_w = 0;
-                for &c in kids.iter() {
-                        content_w += Self::row_width(self.w(c), col_w);
+                //   each column's width, settled before anything is placed so the extent is known
+                // and the scroll offset can be clamped against it. With a child marked to stretch
+                // (`grow`), pinned siblings keep their own widths wherever they sit and the surplus
+                // is split between the grow children -- so a fixed button can flank a stretching one
+                // on either side. Without one, the historical rule holds: equal columns, the last
+                // absorbing the division remainder. A scrolling row has no surplus, so grow is moot.
+                let grow_count = kids.iter().filter(|&&c| self.w(c).grow).count() as i32;
+                let mut widths: Vec<i32, N> = Vec::new();
+                if grow_count > 0 && !scroll_h {
+                        let mut fixed = 0;
+                        for &c in kids.iter() {
+                                if !self.w(c).grow {
+                                        fixed += Self::row_width(self.w(c), 0);
+                                }
+                        }
+                        let surplus = (total_w - gap * (count - 1) - fixed).max(grow_count);
+                        let each = surplus / grow_count;
+                        let (mut given, mut seen) = (0, 0);
+                        for &c in kids.iter() {
+                                let w = if self.w(c).grow {
+                                        seen += 1;
+                                        // the last grow column takes the rounding slack, so the row fills exactly
+                                        let w = if seen == grow_count { surplus - given } else { each };
+                                        given += each;
+                                        w
+                                } else {
+                                        Self::row_width(self.w(c), 0)
+                                };
+                                let _ = widths.push(w);
+                        }
+                } else {
+                        for (index, &c) in kids.iter().enumerate() {
+                                let last = index as i32 + 1 == count;
+                                // the last column of a non-scrolling row absorbs the division remainder;
+                                // a scrolling row's columns keep their measured widths
+                                let w = if last && !scroll_h {
+                                        let used: i32 = widths.iter().sum::<i32>() + gap * (count - 1);
+                                        Self::row_width(self.w(c), total_w - used)
+                                } else {
+                                        Self::row_width(self.w(c), col_w)
+                                };
+                                let _ = widths.push(w);
+                        }
                 }
-                content_w += gap * (count - 1);
+                let content_w = widths.iter().sum::<i32>() + gap * (count - 1);
                 let scroll_x = {
                         let win = self.w_mut(id).window_mut().expect("a window");
                         win.content_w = content_w;
@@ -1515,14 +1579,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 };
                 let mut x = content.x0 - scroll_x;
                 for (index, &c) in kids.iter().enumerate() {
-                        let last = index as i32 + 1 == count;
-                        let mut w = Self::row_width(self.w(c), col_w);
+                        let w = widths[index];
                         let h = Self::row_height(self.w(c), viewport_h);
-                        // the last column of a non-scrolling row absorbs the division
-                        // remainder; a scrolling row's columns keep their measured widths
-                        if last && !scroll_h {
-                                w = Self::row_width(self.w(c), content.x1 - x + 1);
-                        }
                         let cw = self.w_mut(c);
                         cw.rect = Rect::new(x, content.y0, x + w - 1, content.y0 + h - 1);
                         cw.hit_slop_y1 = 0;
@@ -2466,6 +2524,20 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
         }
 
+        /// Set one row of a [`file_list!`](crate::file_list) by its tag, HIDING the row when `text`
+        /// is empty instead of showing a placeholder -- so a partly-filled list collapses to just
+        /// its entries. [`Relayout`](Self::relayout) after a batch of these for the freed space to
+        /// close up. A no-op if that row is not built.
+        pub fn set_list_row(&mut self, tag_base: u8, row: u8, text: &str) {
+                if let Some(id) = self.find(tag_base.wrapping_add(row)) {
+                        let filled = !text.is_empty();
+                        self.set_visible(id, filled);
+                        if filled {
+                                self.set_text(id, text);
+                        }
+                }
+        }
+
         /// Fill a whole [`file_list!`](crate::file_list) from `entries`, one per row from row 0,
         /// `placeholder` for an empty entry -- for a caller that holds the entire list rather
         /// than feeding rows one event at a time. Rows past `entries` are left as they are.
@@ -3131,6 +3203,16 @@ mod tests {
         static PINNED: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &STRIP]);
         static PAGE_PINNED: Page<Ev> = Page::new(&PINNED, None);
 
+        //   a grow child flanked by pinned columns on BOTH sides, and the same row without the
+        // grow (the last-absorbs-remainder default) as its control
+        static PIN_R: Desc<Ev> = Desc::button(">").emit(Ev::Alpha).min_size(12, 0).max_size(12, 0);
+        static GROW_STRIP: Desc<Ev> = Desc::frame().grow().row(0).scroll(scroll::HORIZONTAL).children(&[&COL_1, &COL_2, &COL_3, &COL_4, &COL_5]);
+        static GROW_ROW: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &GROW_STRIP, &PIN_R]);
+        static PAGE_GROW: Page<Ev> = Page::new(&GROW_ROW, None);
+        static NOGROW_STRIP: Desc<Ev> = Desc::frame().row(0).scroll(scroll::HORIZONTAL).children(&[&COL_1, &COL_2, &COL_3, &COL_4, &COL_5]);
+        static NOGROW_ROW: Desc<Ev> = Desc::frame().row(2).children(&[&PIN, &NOGROW_STRIP, &PIN_R]);
+        static PAGE_NOGROW: Page<Ev> = Page::new(&NOGROW_ROW, None);
+
         //   the same stack content (layout seed would be Left) pinned to each cardinal, to
         // prove a per-page override beats the seed and the tree default
         static PAGE_D_BOTTOM: Page<Ev> = Page::new(&DETAIL, Some(&PAGE_MAIN)).descend(Descent::FromBottom);
@@ -3416,6 +3498,43 @@ mod tests {
                 let (px, py) = (pin_rect.x0 as u16, (pin_rect.y0 + 2) as u16);
                 assert_eq!(ui.touch(px, py, true, 100_000), Touch::Pending);
                 assert_eq!(ui.touch(px, py, false, 160_000), Touch::Tap { hit: true, emitted: Some(Ev::Beta) });
+        }
+
+        #[test]
+        fn a_grow_child_takes_the_surplus_so_pinned_columns_flank_it() {
+                let blob = font_blob();
+                let font = Font::parse(&blob).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (layer, _d) = rig(&mut buf);
+                let mut ui: Ui<Ev, 12> = Ui::new();
+                ui.set_font(&font);
+                ui.fit(&layer);
+                let read = |ui: &Ui<Ev, 12>| {
+                        let root = ui.root().unwrap();
+                        let mut kids = ui.children(root);
+                        let l = ui.get(kids.next().unwrap()).unwrap().rect;
+                        let s = ui.get(kids.next().unwrap()).unwrap().rect;
+                        let r = ui.get(kids.next().unwrap()).unwrap().rect;
+                        (l, s, r)
+                };
+                let gap = 2;
+
+                ui.navigate(&PAGE_GROW).unwrap();
+                let (gl, gs, gr) = read(&ui);
+                // both pinned columns keep their 12 px, wherever they sit
+                assert_eq!(gl.x1 - gl.x0 + 1, 12);
+                assert_eq!(gr.x1 - gr.x0 + 1, 12);
+                // left pin, then the strip, then the right pin -- contiguous with the gap between
+                assert_eq!(gs.x0, gl.x1 + 1 + gap);
+                assert_eq!(gr.x0, gs.x1 + 1 + gap);
+
+                ui.navigate(&PAGE_NOGROW).unwrap();
+                let (_nl, ns, nr) = read(&ui);
+                // grow gave the strip the surplus that the equal-split default strands after the
+                // last column, so the strip is wider and the trailing pin sits flush at the edge
+                // instead of floating mid-row (the bug this guards)
+                assert!(gs.x1 - gs.x0 + 1 > ns.x1 - ns.x0 + 1, "grow widened the strip");
+                assert!(gr.x1 > nr.x1, "grow pushed the trailing pin to the edge");
         }
 
         #[test]

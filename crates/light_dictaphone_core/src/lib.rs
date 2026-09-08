@@ -42,8 +42,10 @@ pub use light_input::cst816t::Event as TouchSample;
 pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
 pub use light_ui_components::{DirEntry, FilePicker, Order};
 
-/// Widget arena size: the deeper page is the recordings list (a window and nine rows).
-pub const UI_WIDGETS: usize = 12;
+/// Widget arena size: the deepest page is the recordings list. Its widest form is the wide
+/// layout's -- a window, the pinned back button, the two pinned paging buttons, the scrolling
+/// strip, and the strip's eight rows: thirteen, plus a little headroom.
+pub const UI_WIDGETS: usize = 15;
 /// The backlight scale, `0..=MAX` per-mille.
 pub const BACKLIGHT_LEVEL_MAX: u16 = 1000;
 /// How many recordings the list page shows: the newest N, one fixed row each -- the page
@@ -59,6 +61,9 @@ pub const MAX_REC_SECS: u32 = 5 * 60;
 /// recording light is the title bar's own flashing indicator dot, so neither needs a tag.
 pub const TAG_REC: u8 = 2;
 pub const TAG_PLAY: u8 = 3;
+/// The recordings list's paging buttons, shown only when a previous/next page exists.
+pub const TAG_PREV: u8 = 4;
+pub const TAG_NEXT: u8 = 5;
 /// The recordings list's rows carry `TAG_ROW_BASE + row`.
 pub const TAG_ROW_BASE: u8 = 0x10;
 
@@ -79,6 +84,9 @@ pub enum Event<X: Copy> {
         /// A recordings-list row's text: the scan hands names to the display one row at a
         /// time, so neither module holds the other's data.
         RowText { row: u8, name: FsPath },
+        /// Whether the recordings list has a previous/next page to page to, published after each
+        /// scan or page turn; the display shows or hides the paging buttons to match.
+        ListNav { prev: bool, next: bool },
         /// The board's own affair; the app carries it and looks away.
         Ext(X),
 }
@@ -176,6 +184,9 @@ pub enum UiAction {
         FilesOpen,
         /// A recordings-list row was tapped.
         PlayRow(u8),
+        /// The recordings list's "next"/"previous" page buttons.
+        FilesNext,
+        FilesPrev,
         DragConsumed,
 }
 
@@ -588,8 +599,23 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                 }
                         }
                         Event::RowText { row, name } => {
-                                //   the file_list! picker's row-fill convention lives in light_ui now
-                                self.ui.set_list_text(TAG_ROW_BASE, row, name.as_str(), "-");
+                                //   an unused row (an empty name, e.g. the tail of the last page) is
+                                // hidden, not left as a blank cell; the ListNav that follows the row
+                                // batch relays the list so the freed space closes up
+                                self.ui.set_list_row(TAG_ROW_BASE, row, name.as_str());
+                        }
+                        Event::ListNav { prev, next } => {
+                                //   the paging buttons appear only when there is a page that way;
+                                // find() is None when the files page is not built -- the right
+                                // no-op. Then relay: this event ends a list update (the row batch
+                                // before it), so the hidden rows and paging buttons close up
+                                if let Some(id) = self.ui.find(TAG_PREV) {
+                                        self.ui.set_visible(id, prev);
+                                }
+                                if let Some(id) = self.ui.find(TAG_NEXT) {
+                                        self.ui.set_visible(id, next);
+                                }
+                                self.ui.relayout();
                         }
                         Event::Command(Command::Stats) => {
                                 info!(
@@ -949,10 +975,9 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                 FsPath::new(s.as_str())
         }
 
-        /// Fill the list page: the newest [`LIST_ROWS`] recordings, one RowText per row
-        /// (an empty name is an unused row), and remember them for taps. The scan, the
+        /// Open the list page: scan the card fresh (first page) and publish it. The scan, the
         /// newest-first ordering, and the [`keep_recording`] filter are all the system
-        /// [`FilePicker`]; this keeps the RowText bridge to the display module.
+        /// [`FilePicker`]; this keeps the RowText/ListNav bridge to the display module.
         fn scan_files(&mut self) {
                 match self.mount() {
                         Some(mut fs) => {
@@ -960,14 +985,31 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                         }
                         None => self.picker.clear(),
                 }
+                self.publish_list();
+                if self.last_name.is_none() {
+                        self.last_name = self.picker.name(0).and_then(FsPath::new);
+                }
+        }
+
+        /// Page the list one step forward (`forward`) or back, then publish the new page. The
+        /// [`FilePicker`] re-lists the card and keeps only the page's window, so every recording
+        /// is reachable however many there are.
+        fn page_files(&mut self, forward: bool) {
+                if let Some(mut fs) = self.mount() {
+                        let _ = if forward { self.picker.next_page(&mut fs, "/") } else { self.picker.prev_page(&mut fs, "/") };
+                }
+                self.publish_list();
+        }
+
+        /// Publish the current page: a RowText per row (an empty name is an unused row), and the
+        /// ListNav telling the display which paging buttons to show.
+        fn publish_list(&mut self) {
                 let empty = FsPath::new("").unwrap_or(FsPath { buf: [0; 48], len: 0 });
                 for i in 0..LIST_ROWS {
                         let name = self.picker.name(i).and_then(FsPath::new).unwrap_or(empty);
                         let _ = self.bus.publish(Event::RowText { row: i as u8, name });
                 }
-                if self.last_name.is_none() {
-                        self.last_name = self.picker.name(0).and_then(FsPath::new);
-                }
+                let _ = self.bus.publish(Event::ListNav { prev: self.picker.has_prev(), next: self.picker.has_next() });
         }
 
         fn rec_start(&mut self, path: &str) {
@@ -1283,6 +1325,8 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
                                         }
                                 }
                                 Event::Ui(UiAction::FilesOpen) => self.scan_files(),
+                                Event::Ui(UiAction::FilesNext) => self.page_files(true),
+                                Event::Ui(UiAction::FilesPrev) => self.page_files(false),
                                 Event::Ui(UiAction::PlayRow(i)) => {
                                         if let Some(p) = self.picker.name(usize::from(i)).and_then(FsPath::new) {
                                                 if self.rec.is_some() {

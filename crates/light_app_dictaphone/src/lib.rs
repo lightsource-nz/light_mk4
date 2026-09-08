@@ -28,9 +28,13 @@ macro_rules! dictaphone_pages {
                 static BTN_FILES: $crate::Desc<$event> = $crate::Desc::button("Recordings >").emit(<$event>::Ui($crate::UiAction::FilesOpen)).navigate(&PAGE_FILES).min_size(0, $list_min_row);
                 static MAIN_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Dictaphone").subtitle().linear($row_gap).children(&[&BTN_REC, &BTN_PLAY, &BTN_FILES]);
 
+                static BTN_FILES_PREV: $crate::Desc<$event> = $crate::Desc::button("< Newer").emit(<$event>::Ui($crate::UiAction::FilesPrev)).tag($crate::TAG_PREV).min_size(0, $list_min_row);
+                static BTN_FILES_NEXT: $crate::Desc<$event> = $crate::Desc::button("Older >").emit(<$event>::Ui($crate::UiAction::FilesNext)).tag($crate::TAG_NEXT).min_size(0, $list_min_row);
                 static BTN_FILES_BACK: $crate::Desc<$event> = $crate::Desc::button("< Back").back().min_size(0, $list_min_row);
                 //   the recordings list is light_ui's reusable picker: eight full-width rows
-                // that scroll, each emitting its own index; back rides along as the last row
+                // that scroll, each emitting its own index. When there are more than eight takes
+                // it pages: prev/next bracket the rows and show only when that page exists; back
+                // rides along as the last row
                 $crate::file_list! {
                         FILES_ROWS,
                         event: $event,
@@ -38,6 +42,8 @@ macro_rules! dictaphone_pages {
                         min_size: (0, $list_min_row),
                         select: |i| <$event>::Ui($crate::UiAction::PlayRow(i)),
                         indices: [0, 1, 2, 3, 4, 5, 6, 7],
+                        prev: &BTN_FILES_PREV,
+                        next: &BTN_FILES_NEXT,
                         back: &BTN_FILES_BACK,
                 }
                 static FILES_WINDOW: $crate::Desc<$event> = $crate::Desc::window("Recordings")
