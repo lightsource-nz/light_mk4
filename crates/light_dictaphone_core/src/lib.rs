@@ -40,7 +40,7 @@ use light_ui::{IndicatorShape, SwipeDir, TextSlot, Touch, Ui};
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
 pub use light_ui::{file_list, scroll, Axis, Desc, Descent, Page};
-pub use light_ui_components::{FilePicker, Order};
+pub use light_ui_components::{DirEntry, FilePicker, Order};
 
 /// Widget arena size: the deeper page is the recordings list (a window and nine rows).
 pub const UI_WIDGETS: usize = 12;
@@ -790,6 +790,14 @@ fn rec_number(name: &str) -> Option<u32> {
         digits.parse().ok()
 }
 
+/// The [`FilePicker`] filter for the recordings list: our `REC_NNNN.WAV` takes, and only ones
+/// with PCM past the 44-byte header -- a header-only take has nothing to play, so it earns no
+/// row. The board hands this to the picker at construction; the picker never learns what a
+/// recording is.
+pub fn keep_recording(entry: &DirEntry) -> bool {
+        !entry.is_dir && entry.size > 44 && rec_number(entry.name()).is_some()
+}
+
 /// One open recording: the volume stays mounted and every filled capture buffer appends
 /// to the file, write-through, until stop patches the WAV header.
 pub struct Recording<Dev: BlockDevice> {
@@ -942,15 +950,13 @@ impl<S: Store, B: I2cBus, A: AudioStream, P: OutputPin, C: Clock, X: Copy + core
         }
 
         /// Fill the list page: the newest [`LIST_ROWS`] recordings, one RowText per row
-        /// (an empty name is an unused row), and remember them for taps. The scan and the
-        /// newest-first ordering are the system [`FilePicker`]; this keeps the filter (our
-        /// recordings, non-empty) and the RowText bridge to the display module.
+        /// (an empty name is an unused row), and remember them for taps. The scan, the
+        /// newest-first ordering, and the [`keep_recording`] filter are all the system
+        /// [`FilePicker`]; this keeps the RowText bridge to the display module.
         fn scan_files(&mut self) {
                 match self.mount() {
-                        //   header-only takes (<= 44 B, no PCM) have nothing to play, so they
-                        // never earn a row; directories and non-recordings are not ours
                         Some(mut fs) => {
-                                let _ = self.picker.scan(&mut fs, "/", |e| !e.is_dir && e.size > 44 && rec_number(e.name()).is_some());
+                                let _ = self.picker.scan(&mut fs, "/");
                         }
                         None => self.picker.clear(),
                 }

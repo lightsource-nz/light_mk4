@@ -11,8 +11,19 @@
 #![no_std]
 
 use light_core::hal::BlockDevice;
-use light_fs::{DirEntry, Fat, FsError};
+pub use light_fs::DirEntry;
+use light_fs::{Fat, FsError};
 use light_ui::Ui;
+
+/// A predicate deciding whether a directory entry belongs in the listing, chosen by the app at
+/// construction. A bare `fn` (not a boxed closure) so it stays `const`-constructible and nameable
+/// in a `static` picker's type.
+pub type Filter = fn(&DirEntry) -> bool;
+
+/// The default [`Filter`]: keeps every entry. Pass it when the caller wants no filtering.
+pub fn keep_all(_entry: &DirEntry) -> bool {
+        true
+}
 
 /// Longest entry name the picker keeps; longer names are truncated at a char boundary. A list
 /// row is far narrower than this anyway, so the cap only bounds storage.
@@ -59,10 +70,15 @@ pub enum Order {
 /// fill the rows, and turn a tapped row index back into a filename. Holds at most `CAP` entries
 /// -- size it to the list's row count -- with no allocator.
 ///
+/// The app fixes the two policy choices at construction: the [`Order`] entries are kept in, and
+/// the [`Filter`] deciding which entries belong (skipping directories, empty files, the wrong
+/// extension -- whatever the app means). `scan` then just lists a directory against them.
+///
 /// ```ignore
-/// static mut PICKER: FilePicker<8> = FilePicker::new(Order::NameDescending);
+/// fn keep_wav(e: &DirEntry) -> bool { !e.is_dir && e.name().ends_with(".WAV") }
+/// static mut PICKER: FilePicker<8> = FilePicker::new(Order::NameDescending, keep_wav);
 /// // on open: mount the card, then
-/// picker.scan(&mut fs, "/", |e| !e.is_dir && e.name().ends_with(".WAV"))?;
+/// picker.scan(&mut fs, "/")?;
 /// picker.fill(&mut ui, TAG_ROW_BASE, "-");
 /// // on a row tap: picker.name(i) is the file to open
 /// ```
@@ -70,11 +86,12 @@ pub struct FilePicker<const CAP: usize> {
         items: [Option<Item>; CAP],
         len: usize,
         order: Order,
+        filter: Filter,
 }
 
 impl<const CAP: usize> FilePicker<CAP> {
-        pub const fn new(order: Order) -> Self {
-                Self { items: [None; CAP], len: 0, order }
+        pub const fn new(order: Order, filter: Filter) -> Self {
+                Self { items: [None; CAP], len: 0, order, filter }
         }
 
         /// Drop every entry. `scan` does this first; call it directly to blank a list.
@@ -136,13 +153,15 @@ impl<const CAP: usize> FilePicker<CAP> {
                 }
         }
 
-        /// List `dir` on a mounted filesystem, keeping the entries `keep` accepts, ordered and
-        /// bounded to `CAP`. The display name (the long name when present, else the 8.3 name) and
-        /// size are copied in; nothing borrows the transient entry. Replaces the previous listing.
-        pub fn scan<D: BlockDevice>(&mut self, fs: &mut Fat<D>, dir: &str, keep: impl Fn(&DirEntry) -> bool) -> Result<(), FsError> {
+        /// List `dir` on a mounted filesystem, keeping the entries this picker's [`Filter`] accepts,
+        /// ordered and bounded to `CAP`. The display name (the long name when present, else the 8.3
+        /// name) and size are copied in; nothing borrows the transient entry. Replaces the previous
+        /// listing.
+        pub fn scan<D: BlockDevice>(&mut self, fs: &mut Fat<D>, dir: &str) -> Result<(), FsError> {
                 self.clear();
+                let filter = self.filter;
                 fs.list_dir(dir, |e| {
-                        if keep(e) {
+                        if filter(e) {
                                 let name = e.long_name().unwrap_or_else(|| e.name());
                                 self.offer(Item::new(name, e.size, e.is_dir));
                         }
@@ -170,7 +189,7 @@ mod tests {
         // --- the data logic, no filesystem ---
 
         fn offer_names<const CAP: usize>(order: Order, names: &[&str]) -> FilePicker<CAP> {
-                let mut p = FilePicker::<CAP>::new(order);
+                let mut p = FilePicker::<CAP>::new(order, keep_all);
                 for n in names {
                         p.offer(Item::new(n, 0, false));
                 }
@@ -283,11 +302,15 @@ mod tests {
                 MemDev(d)
         }
 
+        fn keep_wav(e: &DirEntry) -> bool {
+                !e.is_dir && e.name().ends_with(".WAV")
+        }
+
         #[test]
         fn scan_lists_matching_files_newest_first() {
                 let mut fs = Fat::mount(fat16_with_recordings()).unwrap();
-                let mut picker = FilePicker::<8>::new(Order::NameDescending);
-                picker.scan(&mut fs, "", |e| !e.is_dir && e.name().ends_with(".WAV")).unwrap();
+                let mut picker = FilePicker::<8>::new(Order::NameDescending, keep_wav);
+                picker.scan(&mut fs, "").unwrap();
                 // the three .WAV files, newest (highest number) first; the .TXT and the dir skipped
                 assert_eq!(collected(&picker), ["REC_0003.WAV", "REC_0002.WAV", "REC_0001.WAV"]);
                 assert_eq!(picker.size(0), Some(300));
@@ -296,8 +319,8 @@ mod tests {
         #[test]
         fn scan_is_bounded_by_capacity() {
                 let mut fs = Fat::mount(fat16_with_recordings()).unwrap();
-                let mut picker = FilePicker::<2>::new(Order::NameDescending);
-                picker.scan(&mut fs, "", |e| e.name().ends_with(".WAV")).unwrap();
+                let mut picker = FilePicker::<2>::new(Order::NameDescending, keep_wav);
+                picker.scan(&mut fs, "").unwrap();
                 assert_eq!(collected(&picker), ["REC_0003.WAV", "REC_0002.WAV"]);
         }
 

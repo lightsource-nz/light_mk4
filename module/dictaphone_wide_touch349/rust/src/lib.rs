@@ -12,7 +12,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone_wide as dict;
-use dict::{dictaphone_commands, dictaphone_wide_pages, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
+use dict::{dictaphone_commands, dictaphone_wide_pages, keep_recording, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -691,7 +691,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         //   a small frame-aligned read scratch for the playback path; the stall-riding DEPTH
         // is the transport's IRQ-drained prefetch ring (see I2sStream::start), not this
         static STAGE: ConstStaticCell<[u8; 2048]> = ConstStaticCell::new([0; 2048]);
-        static PICKER: ConstStaticCell<FilePicker<{ dict::LIST_ROWS }>> = ConstStaticCell::new(FilePicker::new(Order::NameDescending));
+        static PICKER: ConstStaticCell<FilePicker<{ dict::LIST_ROWS }>> = ConstStaticCell::new(FilePicker::new(Order::NameDescending, keep_recording));
         let mut audio_mod = dict::AudioMod::new(
                 Es8311::new(imu_i2c),
                 I2sStream { i2s: p.i2s, cap_handed: false },

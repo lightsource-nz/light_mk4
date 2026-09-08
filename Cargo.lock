@@ -602,6 +602,17 @@ dependencies = [
  "light-fs",
  "light-input",
  "light-ui",
+ "light_ui_components",
+]
+
+[[package]]
+name = "light_ui_components"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "light-core",
+ "light-fs",
+ "light-ui",
 ]
 
 [[package]]
