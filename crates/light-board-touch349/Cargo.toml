@@ -9,3 +9,4 @@ description = "shared board port for the Waveshare RP2350-Touch-LCD-3.49: the pi
 light-core = { path = "../light-core" }
 light-input = { path = "../light-input" }
 light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
+light-power-manager = { path = "../light-power-manager" }

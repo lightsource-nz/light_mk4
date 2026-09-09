@@ -348,6 +348,7 @@ version = "0.1.0"
 dependencies = [
  "light-core",
  "light-input",
+ "light-power-manager",
  "light-rp2",
 ]
 
@@ -406,6 +407,14 @@ dependencies = [
 
 [[package]]
 name = "light-power"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "light-core",
+]
+
+[[package]]
+name = "light-power-manager"
 version = "0.1.0"
 dependencies = [
  "critical-section",

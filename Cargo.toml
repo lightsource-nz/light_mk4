@@ -15,6 +15,7 @@ members = [
         "crates/light-sd",
         "crates/light-fs",
         "crates/light-rp2",
+        "crates/light-power-manager",
         "crates/light-board-touch349",
         "crates/light-stm32h7",
         "crates/light-stm32f4",

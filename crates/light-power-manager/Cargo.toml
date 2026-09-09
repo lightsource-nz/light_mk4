@@ -1,0 +1,13 @@
+[package]
+name = "light-power-manager"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "portable power policy -- idle backlight-dim and on-battery auto power-off -- driven through a per-port PowerMechanism; the framework's power behaviour lives here once, each board supplies the mechanism"
+
+[dependencies]
+light-core = { path = "../light-core" }
+
+[dev-dependencies]
+#   the host test binary links light-core's log, which needs a critical-section impl
+critical-section = { version = "1.2", features = ["std"] }
