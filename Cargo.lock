@@ -546,6 +546,7 @@ dependencies = [
  "light-draw",
  "light-font",
  "light-input",
+ "light-power-manager",
  "light-rp2",
  "light-ui",
  "light_app_ui_demo",

@@ -22,6 +22,7 @@ use light_input::touch::Tracker;
 use light_ui::{Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_power_manager::{PowerManager, PowerMechanism};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
@@ -276,9 +277,23 @@ impl Module for ImuMod {
         }
 }
 
-/// Owns the backlight.
-struct BoardMod {
+/// This board's [`PowerMechanism`]: just the backlight (a non-inverted, near-linear PWM drive).
+/// The 1.69 has no battery, latch or power button, so the trait defaults do the rest -- most
+/// importantly `on_external_power` defaults to `true`, which correctly disables the on-battery
+/// power-off on a board that only ever runs from USB. Touch and IMU feed the activity beacon
+/// through their shared drivers, so the screen still dims on idle and wakes on use.
+struct Touch169Power {
         backlight: light_rp2::pwm::PwmOutput,
+}
+
+impl PowerMechanism for Touch169Power {
+        fn set_backlight(&mut self, level: u16) {
+                self.backlight.set_duty(level.min(BACKLIGHT_LEVEL_MAX));
+        }
+}
+
+struct BoardMod {
+        power: PowerManager<Touch169Power, SysClock>,
         events: Subscription,
 }
 
@@ -287,7 +302,7 @@ impl Module for BoardMod {
                 "board"
         }
         fn load(&mut self) -> Result<(), ()> {
-                self.backlight.set_duty(BACKLIGHT_LEVEL_MAX);
+                self.power.on_load();
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
@@ -295,17 +310,19 @@ impl Module for BoardMod {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         if let AppEvent::Command(Command::Backlight(level)) = ev {
                                 busy = true;
-                                self.backlight.set_duty(level);
+                                self.power.set_backlight(level);
                                 info!("backlight {level}");
-                                // the slice and pad state, which is what found the slice mapping wrong
-                                let r = self.backlight.registers(PIN_DISPLAY_BL);
-                                debug!("backlight pwm: csr {:#x} div {:#x} top {} ctr {} cc {:#x} ctrl {:#x} status {:#x}", r[0], r[1], r[2], r[3], r[4], r[5], r[6]);
                         }
+                }
+                //   the shared power policy: dim on idle, wake on activity (touch/IMU via the
+                // beacon). No power-off here -- this board has no battery to save
+                if let Poll::Shutdown = self.power.tick() {
+                        return Poll::Shutdown;
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
-                self.backlight.set_duty(0);
+                self.power.on_unload();
         }
 }
 
@@ -483,7 +500,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Cst816t::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
-        let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
+        let power = PowerManager::new(Touch169Power { backlight: p.backlight }, SysClock);
+        let mut board_mod = BoardMod { power, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut audio_mod = AudioMod {
                 buzzer: p.buzzer,
