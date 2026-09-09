@@ -36,6 +36,9 @@ pub mod key {
         /// A status indicator dot in the title bar, e.g. a recording light (u16); a
         /// vivid red by default so it reads on any ground.
         pub const INDICATOR: u16 = 0x0008;
+        /// The title bar's own background band (u16 RGB565). Omitted, the bar takes the window
+        /// background [`BG`], the historical black-on-mono look.
+        pub const BAR: u16 = 0x0009;
         /// The focused widget's fill, a vertical shade (u16 from, u16 to).
         pub const FOCUS_SURFACE: u16 = 0x0010;
         /// Every button's unfocused surface, a vertical shade (u16 from, u16 to); a
@@ -67,6 +70,9 @@ pub struct Theme {
         pub focus_text: u16,
         /// The title-bar status dot's colour (e.g. the recording light).
         pub indicator: u16,
+        /// The title bar's background band; `None` -- the default -- takes [`bg`](Self::bg), so a
+        /// theme that omits it keeps the historical bar-is-background look.
+        pub bar: Option<u16>,
         pub focus_surface: Option<Shade>,
         pub button_surface: Option<Shade>,
         /// Corner radius every container and control wears unless a descriptor says
@@ -93,6 +99,7 @@ impl Theme {
                 button_text: 0xFFFF,
                 focus_text: 0x0000,
                 indicator: 0xF800,
+                bar: None,
                 focus_surface: None,
                 button_surface: None,
                 radius: 3,
@@ -166,6 +173,12 @@ impl Theme {
                                 key::BUTTON_TEXT => color(&mut theme.button_text)?,
                                 key::FOCUS_TEXT => color(&mut theme.focus_text)?,
                                 key::INDICATOR => color(&mut theme.indicator)?,
+                                key::BAR => {
+                                        if payload.len() != 2 {
+                                                return Err(ThemeError::BadEntry(k));
+                                        }
+                                        theme.bar = Some(u16le(payload, 0));
+                                }
                                 key::FOCUS_SURFACE => shade(&mut theme.focus_surface)?,
                                 key::BUTTON_SURFACE => shade(&mut theme.button_surface)?,
                                 key::RADIUS => metric(&mut theme.radius)?,
@@ -264,6 +277,14 @@ mod tests {
                 //   a value crush would never emit, and a wrong length, are both corruption
                 assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &9u16.to_le_bytes())])), Err(ThemeError::BadEntry(key::DESCENT)));
                 assert_eq!(Theme::parse(&blob(&[(key::DESCENT, &[1])])), Err(ThemeError::BadEntry(key::DESCENT)));
+        }
+
+        #[test]
+        fn bar_is_none_by_default_and_parses_when_present() {
+                assert_eq!(Theme::parse(&blob(&[])).unwrap().bar, None, "no bar entry -> the bar takes the background");
+                let t = Theme::parse(&blob(&[(key::BAR, &0x22u16.to_le_bytes())])).unwrap();
+                assert_eq!(t.bar, Some(0x0022));
+                assert_eq!(Theme::parse(&blob(&[(key::BAR, &[1, 2, 3])])), Err(ThemeError::BadEntry(key::BAR)));
         }
 
         #[test]

@@ -2639,8 +2639,22 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         }
                 }
                 let saved_fg = c.fg;
+                //   the title band is painted once, in its own colour, BEFORE the gap loop, which
+                // then starts below it -- so no pixel is written twice (a double-written pixel
+                // reads as flicker on the single-buffered scanout). A titled window's band takes
+                // the theme's bar colour, falling back to the background when the theme sets none
+                let header_inset = if win.border { 1 } else { 0 };
+                let header_bottom = if win.title.is_some() {
+                        (r.y0 + header_inset + Self::title_rows(win) * self.cell_h + 2).min(r.y1 + 1)
+                } else {
+                        r.y0
+                };
+                if header_bottom > r.y0 {
+                        c.fg = self.theme.bar.unwrap_or(self.theme.bg);
+                        c.rect(Point::new(r.x0, r.y0), Point::new(r.x1, header_bottom - 1), true);
+                }
                 c.fg = c.bg;
-                let mut band_top = r.y0;
+                let mut band_top = header_bottom;
                 for child in self.children(id) {
                         let mut cr = self.w(child).rect;
                         if !rect_intersect(&mut cr, &owned) {

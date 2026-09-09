@@ -1,8 +1,9 @@
 {
         "name": "steel",
         "colors": {
-                "bg": "0000",
-                "frame": "#B0B8C0",
+                "bg": "#B0B8C0",
+                "bar": "#22405F",
+                "frame": "0000",
                 "title": "#D8E0E8",
                 "text": "FFFF",
                 "button_outline": "#7890A8",
@@ -11,6 +12,6 @@
         },
         "surfaces": {
                 "focus": { "from": "4C5D", "to": "090E" },
-                "button": null
+                "button": { "from": "090E", "to": "090E" }
         }
 }

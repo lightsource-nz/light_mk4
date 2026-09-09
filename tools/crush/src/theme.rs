@@ -31,6 +31,7 @@ const KEY_BUTTON_OUTLINE: u16 = 0x0005;
 const KEY_BUTTON_TEXT: u16 = 0x0006;
 const KEY_FOCUS_TEXT: u16 = 0x0007;
 const KEY_INDICATOR: u16 = 0x0008;
+const KEY_BAR: u16 = 0x0009;
 const KEY_FOCUS_SURFACE: u16 = 0x0010;
 const KEY_BUTTON_SURFACE: u16 = 0x0011;
 const KEY_RADIUS: u16 = 0x0020;
@@ -103,7 +104,8 @@ fn color_key(name: &str) -> Result<u16, String> {
                 "button_text" => KEY_BUTTON_TEXT,
                 "focus_text" => KEY_FOCUS_TEXT,
                 "indicator" => KEY_INDICATOR,
-                _ => return Err(format!("unknown color '{name}' (bg, frame, title, text, button_outline, button_text, focus_text, indicator)")),
+                "bar" => KEY_BAR,
+                _ => return Err(format!("unknown color '{name}' (bg, frame, title, text, button_outline, button_text, focus_text, indicator, bar)")),
         })
 }
 
