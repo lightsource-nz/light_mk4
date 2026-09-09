@@ -186,6 +186,9 @@ impl<B: I2cBus, I: InputPin> Axs15231bTouch<B, I> {
                 // x is the short axis and y the long
                 self.x = short;
                 self.y = long;
+                //   a decoded finger touch is user activity: feed the standard beacon a power
+                // manager watches, whatever app or board this is
+                light_core::note_activity();
                 if was_active {
                         Some(Event::Move { x: self.x, y: self.y })
                 } else {

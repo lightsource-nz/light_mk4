@@ -1116,9 +1116,6 @@ impl Module for BoardMod {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                //   a touch or gesture is user activity: wake the screen and hold off
-                                // the idle dim and power-off
-                                AppEvent::Touch(_) | AppEvent::Gesture(_) => self.power.note_activity(),
                                 AppEvent::Command(Command::Backlight(level)) => {
                                         busy = true;
                                         self.power.set_backlight(level);

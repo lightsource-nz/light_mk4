@@ -15,6 +15,7 @@
 
 #![no_std]
 
+pub mod activity;
 pub mod blink;
 pub mod button;
 pub mod cli;
@@ -25,6 +26,7 @@ pub mod log;
 pub mod mailbox;
 pub mod module;
 
+pub use activity::note_activity;
 pub use blink::Blinker;
 pub use console::LineReader;
 pub use events::{Bus, EventBus, Subscription};

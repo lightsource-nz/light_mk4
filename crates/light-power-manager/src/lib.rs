@@ -79,6 +79,9 @@ pub struct PowerManager<M: PowerMechanism, C: Clock> {
         busy: bool,
         /// The power-button hold start.
         pressed_since_ms: Option<u32>,
+        /// The last [`light_core::activity`] generation seen: a change means an input source
+        /// reported activity, without this crate knowing or naming the source.
+        last_activity_gen: u32,
 }
 
 impl<M: PowerMechanism, C: Clock> PowerManager<M, C> {
@@ -93,6 +96,7 @@ impl<M: PowerMechanism, C: Clock> PowerManager<M, C> {
                         level: FULL_LEVEL,
                         busy: false,
                         pressed_since_ms: None,
+                        last_activity_gen: light_core::activity::generation(),
                 }
         }
 
@@ -112,9 +116,15 @@ impl<M: PowerMechanism, C: Clock> PowerManager<M, C> {
                 self.mech.power_off();
         }
 
-        /// User activity: wake the screen and restart the idle timers.
+        /// User activity: wake the screen and restart the idle timers. Prefer reporting activity
+        /// through [`light_core::note_activity`], which reaches here via the beacon in [`tick`](Self::tick);
+        /// this is the direct path, used internally and by [`set_backlight`](Self::set_backlight).
         pub fn note_activity(&mut self) {
                 let now = self.clock.now_us();
+                self.reset_idle(now);
+        }
+
+        fn reset_idle(&mut self, now: u64) {
                 self.last_touch_us = now;
                 self.quiet_since_us = now;
                 if self.dimmed {
@@ -151,9 +161,20 @@ impl<M: PowerMechanism, C: Clock> PowerManager<M, C> {
         pub fn tick(&mut self) -> Poll {
                 let now = self.clock.now_us();
 
-                // the manual gesture: a long hold of the power button shuts down, whatever the source
+                //   the activity beacon: any input source (a touch driver, an IMU, ...) that called
+                // light_core::note_activity resets the idle timers -- no per-app or per-board wiring,
+                // no knowledge here of what the board's inputs even are
+                let current_gen = light_core::activity::generation();
+                if current_gen != self.last_activity_gen {
+                        self.last_activity_gen = current_gen;
+                        self.reset_idle(now);
+                }
+
+                //   the power button is the mechanism's own input: a press is activity too (how a
+                // button-only board reports it), and a long hold is the manual shutdown gesture
                 let now_ms = (now / 1000) as u32;
                 if self.mech.power_button_pressed() {
+                        self.reset_idle(now);
                         let since = *self.pressed_since_ms.get_or_insert(now_ms);
                         if now_ms.wrapping_sub(since) >= POWER_OFF_HOLD_MS {
                                 info!("power button held; shutting down");

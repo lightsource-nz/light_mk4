@@ -505,9 +505,6 @@ impl Module for BoardMod {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
-                                //   a touch or gesture is user activity: wake the screen and hold off
-                                // the idle dim and power-off
-                                AppEvent::Touch(_) | AppEvent::Gesture(_) => self.power.note_activity(),
                                 //   audio in flight defers power-off, so a recording is never cut short
                                 AppEvent::Status(s) => self.power.set_busy(!matches!(s, AudioStatus::Idle)),
                                 AppEvent::Command(Command::Backlight(level)) => {

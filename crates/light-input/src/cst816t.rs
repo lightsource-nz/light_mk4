@@ -287,6 +287,11 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst816t<B, I, R> {
                 if gesture != GESTURE_NONE {
                         self.last_gesture = gesture;
                 }
+                if was_active || self.active {
+                        //   a real finger interaction (down/move/up) is user activity: feed the
+                        // standard beacon a power manager watches, whatever app or board this is
+                        light_core::note_activity();
+                }
                 match (was_active, self.active) {
                         (false, true) => Some(Event::Down { x: self.x, y: self.y }),
                         (true, true) => Some(Event::Move { x: self.x, y: self.y }),
