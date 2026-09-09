@@ -1,0 +1,11 @@
+[package]
+name = "light-board-touch349"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "shared board port for the Waveshare RP2350-Touch-LCD-3.49: the pin wiring, and the default power manager (auto backlight-dim and on-battery auto power-down) every touch349 firmware carries"
+
+[dependencies]
+light-core = { path = "../light-core" }
+light-input = { path = "../light-input" }
+light-rp2 = { path = "../light-rp2", features = ["rp2350"] }

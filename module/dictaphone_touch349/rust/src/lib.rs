@@ -11,7 +11,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone as dict;
-use dict::{dictaphone_commands, dictaphone_pages, keep_recording, Axis, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
+use dict::{dictaphone_commands, dictaphone_pages, keep_recording, AudioStatus, Axis, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -19,16 +19,15 @@ use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
 use light_ui::{Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{debug, info, log, warn, AudioStream, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{debug, info, log, warn, AudioStream, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
 use light_sd::{SdError, SpiSd};
-mod board;
+use light_board_touch349::{board, PowerManager};
 use board::*;
-use light_rp2::adc::Adc;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
 use light_rp2::i2s::PioI2sOut;
@@ -480,33 +479,13 @@ impl Module for RtcMod {
 }
 
 struct BoardMod {
-        backlight: light_rp2::pwm::PwmOutput,
-        /// The power latch: high since board::take(); driven low on unload = power off.
-        sys_en: Output,
-        /// The side button, low when pressed; held [`POWER_OFF_HOLD_MS`] = shutdown.
-        button: Input,
-        battery: Adc,
+        /// The shared touch349 power behaviour: dim on idle, power off on battery. Owns the
+        /// backlight, the power latch, the side button and the battery ADC.
+        power: PowerManager,
         /// The TF slot; probed on demand (the `sd` command), not at boot -- an empty slot
         /// is this board's ordinary state. Shared with the recorder, per-operation.
         sd: &'static RefCell<SpiSd<Spi1Bus, Output>>,
-        pressed_since_ms: Option<u32>,
         events: Subscription,
-}
-
-impl BoardMod {
-        fn apply(&mut self, level: u16) {
-                //   the driver's usable band, MEASURED on this glass: the backlight is
-                // fully dark at or below 40% LED-on time and only dims visibly between
-                // ~45% and 100% -- an RC-filtered threshold drive, not a proportional
-                // switch. Level 0 is off; every other level maps linearly onto the band
-                // above the floor, so the console's 0..1000 scale is all usable
-                const FLOOR: u32 = 450;
-                let level = u32::from(level.min(BACKLIGHT_LEVEL_MAX));
-                let max = u32::from(BACKLIGHT_LEVEL_MAX);
-                let physical = if level == 0 { 0 } else { (FLOOR + level * (max - FLOOR) / max) as u16 };
-                let duty = if BACKLIGHT_INVERTED { BACKLIGHT_LEVEL_MAX - physical } else { physical };
-                self.backlight.set_duty(duty);
-        }
 }
 
 impl Module for BoardMod {
@@ -514,23 +493,25 @@ impl Module for BoardMod {
                 "board"
         }
         fn load(&mut self) -> Result<(), ()> {
-                self.apply(BACKLIGHT_LEVEL_MAX);
+                self.power.on_load();
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
                 let mut busy = false;
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         match ev {
+                                //   a touch or gesture is user activity: wake the screen and hold off
+                                // the idle dim and power-off
+                                AppEvent::Touch(_) | AppEvent::Gesture(_) => self.power.note_activity(),
+                                //   audio in flight defers power-off, so a recording is never cut short
+                                AppEvent::Status(s) => self.power.set_busy(!matches!(s, AudioStatus::Idle)),
                                 AppEvent::Command(Command::Backlight(level)) => {
                                         busy = true;
-                                        self.apply(level);
+                                        self.power.set_backlight(level);
                                         info!("backlight {level}");
                                 }
                                 AppEvent::Command(Command::Stats) => {
-                                        //   12-bit read across 3.3 V behind the divider
-                                        let raw = u32::from(self.battery.read());
-                                        let mv = raw * 3300 * BATTERY_DIVIDER / 4096;
-                                        info!("battery: {mv} mV (raw {raw})");
+                                        info!("battery: {} mV", self.power.battery_mv());
                                         //   the instruments that convicted a core-1 stack
                                         // kill once: core 1's pulse, and how deep core 0's
                                         // deepest call chain reached
@@ -559,26 +540,16 @@ impl Module for BoardMod {
                                 _ => {}
                         }
                 }
-                //   the side button: a 1.5 s hold is the power-off gesture. The shutdown
-                // flows through the runtime like the console's `quit`, so every module
-                // unloads before this module's unload releases the power latch
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                if self.button.is_low() {
-                        let since = *self.pressed_since_ms.get_or_insert(now_ms);
-                        if now_ms.wrapping_sub(since) >= POWER_OFF_HOLD_MS {
-                                info!("power button held; shutting down");
-                                return Poll::Shutdown;
-                        }
-                } else {
-                        self.pressed_since_ms = None;
+                //   the power manager runs the dim and power-off timers and the button-hold
+                // gesture; its shutdown flows through the runtime like the console's `quit`, so
+                // every module unloads before this module's unload releases the power latch
+                if let Poll::Shutdown = self.power.tick() {
+                        return Poll::Shutdown;
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
-                self.apply(0);
-                //   on battery this is the power-off; on USB the rails stay up and the
-                // runtime parks in the idle loop
-                self.sys_en.set(false);
+                self.power.on_unload();
         }
 }
 
@@ -668,12 +639,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static SD_CELL: StaticCell<RefCell<SpiSd<Spi1Bus, Output>>> = StaticCell::new();
         let sd: &'static RefCell<SpiSd<Spi1Bus, Output>> = SD_CELL.init(RefCell::new(SpiSd::new(p.sd_spi, p.sd_cs)));
         let mut board_mod = BoardMod {
-                backlight: p.backlight,
-                sys_en: p.sys_en,
-                button: p.power_button,
-                battery: p.battery,
+                power: PowerManager::new(p.backlight, p.sys_en, p.power_button, p.battery),
                 sd,
-                pressed_since_ms: None,
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };

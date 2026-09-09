@@ -33,6 +33,16 @@ extern void light_app_core1_service(void);
 
 static volatile bool core1_ready = false;
 
+//   the USB device enumeration state, updated on core 1 (which owns TinyUSB) each service pass and
+// read from any core: the board's only "on external (USB) power" signal, since it carries no VBUS
+// sense pin. Stays false on the host-role build, which runs no device stack.
+static volatile bool usb_mounted_flag = false;
+
+bool light_shell_usb_mounted(void)
+{
+        return usb_mounted_flag;
+}
+
 // a line of text from Rust, formatted there, for the console. Called from core 1 only
 void light_shell_log(const char *msg, size_t len)
 {
@@ -165,6 +175,7 @@ static void core1_main(void)
         core1_ready = true;
         while (true) {
                 tud_task();
+                usb_mounted_flag = tud_mounted();
                 if (panic_pending) {
                         printf("\n*** PANIC (core 0) ***\n%s\n", panic_message);
                         // keep pumping so the message actually leaves the device
