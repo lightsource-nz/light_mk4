@@ -257,6 +257,11 @@ impl<B: I2cBus, I: InputPin, R: OutputPin> Cst328<B, I, R> {
                         self.x = (u16::from(data[1]) << 4) | u16::from(data[3] >> 4);
                         self.y = (u16::from(data[2]) << 4) | u16::from(data[3] & 0x0F);
                 }
+                if was_active || self.active {
+                        //   a real finger interaction (down/move/up) is user activity: feed the
+                        // standard beacon a power manager watches, whatever app or board this is
+                        light_core::note_activity();
+                }
                 match (was_active, self.active) {
                         (false, true) => Some(Event::Down { x: self.x, y: self.y }),
                         (true, true) => Some(Event::Move { x: self.x, y: self.y }),

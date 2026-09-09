@@ -24,7 +24,8 @@ use light_display::st7789::St7789;
 use light_input::touch::Tracker;
 use light_ui::{Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
+use light_power_manager::{PowerManager, PowerMechanism};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_font::Font;
@@ -275,8 +276,43 @@ impl Module for ImuMod {
         }
 }
 
-struct BoardMod {
+unsafe extern "C" {
+        /// True while a USB host has this device enumerated; set on core 1 by the shell. This
+        /// board has no VBUS pin, so enumeration is its "on external power" signal (see the 349).
+        fn light_shell_usb_mounted() -> bool;
+}
+
+/// This board's [`PowerMechanism`]: the backlight is an NPN low-side switch (high = lit, linear,
+/// no floor), the battery latch powers it off, the side key is the button, and there is no battery
+/// gauge. External power is USB enumeration, as on the 349.
+struct Touch28Power {
         backlight: light_rp2::pwm::PwmOutput,
+        bat_en: Output,
+        key_bat: Input,
+}
+
+impl PowerMechanism for Touch28Power {
+        fn set_backlight(&mut self, level: u16) {
+                //   an NPN low-side PWM switch is close to linear, so the per-mille level is the
+                // duty directly -- no floor band like the 349's RC-filtered drive
+                self.backlight.set_duty(level.min(BACKLIGHT_LEVEL_MAX));
+        }
+
+        fn on_external_power(&self) -> bool {
+                unsafe { light_shell_usb_mounted() }
+        }
+
+        fn power_off(&mut self) {
+                self.bat_en.set(false);
+        }
+
+        fn power_button_pressed(&self) -> bool {
+                self.key_bat.is_low()
+        }
+}
+
+struct BoardMod {
+        power: PowerManager<Touch28Power, SysClock>,
         events: Subscription,
 }
 
@@ -285,7 +321,7 @@ impl Module for BoardMod {
                 "board"
         }
         fn load(&mut self) -> Result<(), ()> {
-                self.backlight.set_duty(BACKLIGHT_LEVEL_MAX);
+                self.power.on_load();
                 Ok(())
         }
         fn poll(&mut self) -> Poll {
@@ -293,14 +329,19 @@ impl Module for BoardMod {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         if let AppEvent::Command(Command::Backlight(level)) = ev {
                                 busy = true;
-                                self.backlight.set_duty(level);
+                                self.power.set_backlight(level);
                                 info!("backlight {level}");
                         }
+                }
+                //   the shared power policy: dim on idle, power off on battery (touch/IMU/key feed
+                // the activity beacon it watches), and the key-hold shutdown
+                if let Poll::Shutdown = self.power.tick() {
+                        return Poll::Shutdown;
                 }
                 if busy { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
-                self.backlight.set_duty(0);
+                self.power.on_unload();
         }
 }
 
@@ -342,7 +383,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         let touch = Cst328::new(i2c, p.touch_int, p.touch_reset, (light_rp2::now_us() / 1000) as u32);
         let imu = Imu::new(Qmi8658::new(i2c));
 
-        let mut board_mod = BoardMod { backlight: p.backlight, events: EVENTS.subscribe().expect("subscriber slot") };
+        let power = PowerManager::new(Touch28Power { backlight: p.backlight, bat_en: p.bat_en, key_bat: p.key_bat }, SysClock);
+        let mut board_mod = BoardMod { power, events: EVENTS.subscribe().expect("subscriber slot") };
         let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
         static LAYER: ConstStaticCell<FrameLayer> = ConstStaticCell::new(FrameLayer::new(DISPLAY_WIDTH, DISPLAY_HEIGHT, PixelFormat::Rgb565));
         static UI: ConstStaticCell<Ui<AppEvent, { demo::UI_WIDGETS }>> = ConstStaticCell::new(Ui::new());

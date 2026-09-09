@@ -77,6 +77,10 @@ pub struct Peripherals {
         pub touch_bus: I2c1,
         pub touch_int: Input,
         pub touch_reset: Output,
+        /// The battery power latch, driven high to stay alive on battery; low = power off.
+        pub bat_en: Output,
+        /// The side key, low while pressed.
+        pub key_bat: Input,
 }
 
 static TAKEN: AtomicBool = AtomicBool::new(false);
@@ -86,10 +90,15 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
         if TAKEN.swap(true, Ordering::AcqRel) {
                 return None;
         }
+        //   the latch first: on battery the board is only powered while the user holds the key
+        // until this line runs (irrelevant on USB, where the rails stay up regardless)
+        let bat_en = Output::new(PIN_BAT_EN, true);
         // SAFETY: the flag above makes this the one construction of each peripheral;
         // the shell uses none of them (its USB and timer blocks are not in this set)
         unsafe {
                 Some(Peripherals {
+                        bat_en,
+                        key_bat: Input::new_pull_up(PIN_KEY_BAT),
                         display_bus: Spi1Display::new(
                                 clocks.peri_hz,
                                 PIN_DISPLAY_SCK,
