@@ -116,11 +116,9 @@ pub extern "C" fn light_app_core1_service() {
 
 // --- the interface, as data ---------------------------------------------------------------
 
-/// A breathing margin on every edge; the glass's curve itself is the THEME's job (the
-/// `screen_radius` metric -- see [`THEME_BLOB`] for the measurement behind the 42).
-/// Strict concentric geometry here would say radius-minus-inset, but the measurement
-/// only bounded the radius from below and the full figure is what reads right.
-const SAFE_INSET: u8 = 2;
+/// No inset: the frame sits flush to the glass edge, its rounded corners following the
+/// curve (the `screen_radius` metric -- see [`THEME_BLOB`] for the measurement behind the 42).
+const SAFE_INSET: u8 = 0;
 const FPS: u32 = 30;
 /// A tenth: the panel stays readable, the way an idle device dims rather than goes dark.
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
