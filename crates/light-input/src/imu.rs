@@ -69,21 +69,6 @@ pub trait ImuDriver {
 pub const ORIENT_HOLD_MS_DEFAULT: u32 = 250;
 pub const ORIENT_MARGIN_MG_DEFAULT: i32 = 200;
 
-/// How much the acceleration must shift between samples (summed per-axis, mg) to count as the
-/// device being handled rather than sensor noise, for the activity beacon. Sensor noise is a few
-/// tens of mg across the axes; a hand picking the device up is many hundreds.
-pub const MOTION_THRESHOLD_MG_DEFAULT: i32 = 200;
-
-/// Whether the acceleration shifted enough between two samples to read as movement rather than
-/// noise: the summed absolute per-axis change against a threshold (mg).
-fn accel_motion(prev: [i32; AXES], cur: [i32; AXES], threshold_mg: i32) -> bool {
-        let mut delta = 0;
-        for i in 0..AXES {
-                delta += (cur[i] - prev[i]).abs();
-        }
-        delta > threshold_mg
-}
-
 pub struct Imu<D: ImuDriver> {
         driver: D,
         axis_map: AxisMap,
@@ -101,10 +86,6 @@ pub struct Imu<D: ImuDriver> {
         pending: Option<Orientation>,
         hold_ms: u32,
         margin_mg: i32,
-        /// The previous sample's device-frame acceleration, for the motion/activity check; `None`
-        /// until the first sample seeds it.
-        prev_accel_mg: Option<[i32; AXES]>,
-        motion_threshold_mg: i32,
         pub failures: u32,
 }
 
@@ -126,8 +107,6 @@ impl<D: ImuDriver> Imu<D> {
                         pending: None,
                         hold_ms: ORIENT_HOLD_MS_DEFAULT,
                         margin_mg: ORIENT_MARGIN_MG_DEFAULT,
-                        prev_accel_mg: None,
-                        motion_threshold_mg: MOTION_THRESHOLD_MG_DEFAULT,
                         failures: 0,
                 }
         }
@@ -153,12 +132,6 @@ impl<D: ImuDriver> Imu<D> {
                 self.margin_mg = margin_mg;
         }
 
-        /// The acceleration shift (summed per-axis, mg) that counts as movement for the activity
-        /// beacon. Raise it to ignore more, lower it to wake on gentler motion.
-        pub fn set_motion_threshold(&mut self, threshold_mg: i32) {
-                self.motion_threshold_mg = threshold_mg;
-        }
-
         /// Sample if it is time to, and advance orientation tracking. Returns `true` when a
         /// new sample arrived. Every call in between costs nothing on the bus.
         pub fn poll(&mut self, now_ms: u32) -> bool {
@@ -178,15 +151,6 @@ impl<D: ImuDriver> Imu<D> {
                 self.accel_mg = self.axis_map.apply(sample.accel_mg);
                 self.gyro_mdps = self.axis_map.apply(sample.gyro_mdps);
                 self.temperature_mc = sample.temperature_mc;
-                //   motion is user activity: a device being handled shifts its gravity vector between
-                // samples, a still one does not. Report it to the standard beacon a power manager
-                // watches; the first sample only seeds the reference
-                if let Some(prev) = self.prev_accel_mg {
-                        if accel_motion(prev, self.accel_mg, self.motion_threshold_mg) {
-                                light_core::note_activity();
-                        }
-                }
-                self.prev_accel_mg = Some(self.accel_mg);
                 self.track_orientation(now_ms);
                 true
         }
@@ -225,6 +189,10 @@ impl<D: ImuDriver> Imu<D> {
                 }
                 self.orientation = observed;
                 self.pending = Some(observed);
+                //   a settled orientation change is deliberate user activity: feed the standard
+                // beacon a power manager watches. This is the IMU's ONLY activity signal -- raw
+                // motion is deliberately not, so a knock or vibration never wakes the screen
+                light_core::note_activity();
         }
 
         /// A pending orientation CHANGE, once. Read `orientation` for the settled value.
@@ -257,15 +225,6 @@ mod tests {
                 fn sample_interval_ms(&self) -> u32 {
                         10
                 }
-        }
-
-        #[test]
-        fn accel_motion_ignores_noise_and_catches_a_shift() {
-                let still = [100, 1000, 20];
-                // a few mg of jitter per axis stays under the threshold
-                assert!(!accel_motion(still, [110, 990, 35], MOTION_THRESHOLD_MG_DEFAULT));
-                // a hand tilting the device redirects gravity by hundreds of mg
-                assert!(accel_motion(still, [400, 700, 20], MOTION_THRESHOLD_MG_DEFAULT));
         }
 
         #[test]
