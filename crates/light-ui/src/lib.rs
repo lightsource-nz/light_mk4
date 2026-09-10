@@ -1302,8 +1302,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let inset_y = drop.max(inset_x);
                 let mut content = Rect::new(w.rect.x0 + inset_x, w.rect.y0 + inset_y, w.rect.x1 - inset_x, w.rect.y1 - inset_y);
                 if win.title.is_some() {
+                        //   a small breathing gap below the title bar before the content, so the top
+                        // control does not butt against the separator. A rounded window already has
+                        // it -- its corner_drop clears the curve by more than this -- so the max()
+                        // leaves those unchanged and only gives a square window the same spacing.
+                        const HEADER_GAP: i32 = 4;
                         let header_bottom = w.rect.y0 + if win.border { 1 } else { 0 } + Self::title_rows(win) * self.cell_h + 2;
-                        content.y0 = content.y0.max(header_bottom);
+                        content.y0 = content.y0.max(header_bottom + HEADER_GAP);
                 }
                 content
         }
