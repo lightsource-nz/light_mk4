@@ -402,6 +402,18 @@ mod tests {
         }
 
         #[test]
+        fn build_lui_with_drives_a_typed_ui() {
+                use crate::Ui;
+                //   a typed event Ui (not u16) built from a blob via the mapping closure
+                let data: &'static [u8] = Vec::leak(blob());
+                let page = Lui::parse(data).unwrap().page(0).unwrap();
+                let ui: &'static mut Ui<i32, 16> = std::boxed::Box::leak(std::boxed::Box::new(Ui::new()));
+                ui.build_lui_with(&page, |i, _child| Some(i as i32 + 100)).unwrap();
+                assert_eq!(ui.widget_text(ui.find(1).expect("child 1")), Some("Go"));
+                assert_eq!(ui.widget_text(ui.find(2).expect("child 2")), Some("hi"));
+        }
+
+        #[test]
         fn build_lui_builds_a_window_with_its_children() {
                 use crate::Ui;
                 //   a 'static blob (leaked once) so build_lui's `&'static str` requirement holds

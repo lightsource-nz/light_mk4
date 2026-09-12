@@ -3289,15 +3289,16 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 }
 
-/// Building a page from an LUI blob. A blob UI's event type is `u16` -- a button emits its child
-/// index, since the blob carries no Rust event type; a caller resolves the blob child's navigation
-/// (or app meaning) from that index. See [`crate::lui`].
-impl<const N: usize> Ui<u16, N> {
+/// Building a page from an LUI blob into a widget tree of ANY event type. A button's emitted value
+/// comes from the caller's `emit` closure, mapping the blob child (and its index) to the app's own
+/// event -- so a typed app (`Ui<AppEvent>`) drives a design blob while keeping its events, and the
+/// `Ui<u16>` [`build_lui`](Ui::build_lui) wrapper is just the identity mapping to the child index.
+impl<A: Copy + 'static, const N: usize> Ui<A, N> {
         /// Build `page` (from a parsed [`Lui`] blob) into the widget tree, replacing any current
-        /// page and laying it out to the canvas. The blob must be `'static` -- its strings become
-        /// the widgets' `&'static str`. There is no page transition; this is an in-place build (a
-        /// blob-driven caller animates, if at all, at its own layer).
-        pub fn build_lui(&mut self, page: &LuiPage<'static>) -> Result<(), Error> {
+        /// page and laying it out to the canvas. Each button emits `emit(index, child)`. The blob
+        /// must be `'static` -- its strings become the widgets' `&'static str`. There is no page
+        /// transition; this is an in-place build.
+        pub fn build_lui_with(&mut self, page: &LuiPage<'static>, emit: impl Fn(usize, &LuiChild<'static>) -> Option<A>) -> Result<(), Error> {
                 if let Some(root) = self.root {
                         self.destroy(root);
                 }
@@ -3310,14 +3311,13 @@ impl<const N: usize> Ui<u16, N> {
                         }
                 }
                 for (i, child) in page.children().enumerate() {
-                        let slot = i as u16;
                         let id = match child.kind {
                                 lui::code::KIND_LABEL => self.create_label(Some(win), Rect::new(0, 0, 0, 0), child.text)?,
-                                //   a button, or any unknown kind treated as one, emits its slot; the
-                                // runtime maps the slot back to the blob child's nav and app event
-                                _ => self.create_button(Some(win), Rect::new(0, 0, 0, 0), child.text, Some(slot), Nav::Stay)?,
+                                //   a button, or any unknown kind treated as one; its emitted value is
+                                // the caller's to decide from the child
+                                _ => self.create_button(Some(win), Rect::new(0, 0, 0, 0), child.text, emit(i, &child), Nav::Stay)?,
                         };
-                        //   the design's tag, or slot + 1 as a default (tag 0 is "untagged"), so a
+                        //   the design's tag, or index + 1 as a default (tag 0 is "untagged"), so a
                         // caller finds a child by a stable id or by index
                         let w = self.w_mut(id);
                         w.tag = if child.tag != 0 { child.tag } else { (i + 1) as u8 };
@@ -3331,6 +3331,15 @@ impl<const N: usize> Ui<u16, N> {
                 }
                 self.relayout();
                 Ok(())
+        }
+}
+
+/// The `Ui<u16>` convenience over [`build_lui_with`](Ui::build_lui_with): a blob UI whose event type
+/// is `u16` -- each button emits its child index, which [`LuiRuntime`](crate::LuiRuntime) resolves
+/// back to the blob child's navigation and app event.
+impl<const N: usize> Ui<u16, N> {
+        pub fn build_lui(&mut self, page: &LuiPage<'static>) -> Result<(), Error> {
+                self.build_lui_with(page, |i, _| Some(i as u16))
         }
 }
 
