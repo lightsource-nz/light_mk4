@@ -5,8 +5,8 @@
 //!
 //! Layout, little-endian:
 //! - Header (16 bytes): magic "LUI3", `version` u8 (the schema version -- the shared blob-header
-//!   convention, see LGF fonts and LTH themes), `reserved` u8, `page_count` u16, `root` u16, device
-//!   `width`/`height`/`corner_radius` u16 each.
+//!   convention, see LGF fonts and LTH themes), `orientation` u8 (0 portrait, 1 landscape),
+//!   `page_count` u16, `root` u16, device `width`/`height`/`corner_radius` u16 each.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
 //! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
 //!   `child_count` u8, then each child.
@@ -41,6 +41,10 @@ pub const LAYOUT_LINEAR: u8 = 2;
 pub const KIND_BUTTON: u8 = 0;
 pub const KIND_LABEL: u8 = 1;
 pub const KIND_FRAME: u8 = 2;
+
+// Header orientation byte: how the interface is laid out and previewed.
+pub const ORIENT_PORTRAIT: u8 = 0;
+pub const ORIENT_LANDSCAPE: u8 = 1;
 
 // Scroll flags (a frame's scroll axis), matching light-ui's `scroll` module.
 pub const SCROLL_NONE: u8 = 0;
@@ -145,7 +149,7 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
         let mut blob = Vec::with_capacity(HEADER_LEN + table_len + bodies.iter().map(Vec::len).sum::<usize>());
         blob.extend_from_slice(MAGIC);
         blob.push(VERSION);
-        blob.push(0); // reserved
+        blob.push(if design.landscape() { ORIENT_LANDSCAPE } else { ORIENT_PORTRAIT });
         blob.extend_from_slice(&(design.pages.len() as u16).to_le_bytes());
         blob.extend_from_slice(&(design.root.min(u16::MAX as usize) as u16).to_le_bytes());
         blob.extend_from_slice(&design.device.width.to_le_bytes());
@@ -245,6 +249,14 @@ mod tests {
                 assert_eq!(u16::from_le_bytes([blob[s0 + 4], blob[s0 + 5]]), 1, "sub event");
                 assert_eq!(blob[s0 + 16], 1, "text len 'A'");
                 assert_eq!(blob[s0 + 17], b'A');
+        }
+
+        #[test]
+        fn writes_the_orientation_byte() {
+                let land = design::parse(r#"{ "orientation": "landscape", "pages": [ { "title": "P", "children": [] } ] }"#).unwrap();
+                assert_eq!(compile(&land).unwrap()[5], ORIENT_LANDSCAPE);
+                let port = design::parse(r#"{ "pages": [ { "title": "P", "children": [] } ] }"#).unwrap();
+                assert_eq!(compile(&port).unwrap()[5], ORIENT_PORTRAIT, "no orientation is portrait");
         }
 
         #[test]

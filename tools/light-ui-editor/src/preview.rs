@@ -93,7 +93,13 @@ impl Preview {
                         .and_then(|j| design::parse(j).ok())
                         .unwrap_or_else(|| design::parse(STARTER_JSON).expect("the starter design parses"));
 
-                let (dev_w, dev_h) = (design.device.width.max(1), design.device.height.max(1));
+                //   a landscape design is authored against the panel turned onto its long edge:
+                // swap the panel dimensions for the preview and lay the tree out along the
+                // horizontal axis, exactly as the firmware does with its rotation + layout axis, so
+                // the fixed widths (sized for the long edge) read right instead of half-screen
+                let landscape = design.landscape();
+                let (pw, ph) = (design.device.width.max(1), design.device.height.max(1));
+                let (dev_w, dev_h) = if landscape { (ph, pw) } else { (pw, ph) };
                 let font = font::load(PIXEL_SIZE);
                 let lth = crush_core::theme::compile_flat(THEME_JSON).expect("the bundled steel theme compiles");
                 let theme = Theme::parse(&lth).expect("the compiled theme parses");
@@ -103,6 +109,9 @@ impl Preview {
                 layer.bg = theme.bg;
                 let mut ui = Ui::new();
                 ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+                if landscape {
+                        ui.set_layout_axis(light_ui::Axis::Horizontal);
+                }
                 ui.fit(&layer);
 
                 let lui = compile_blob(&design);

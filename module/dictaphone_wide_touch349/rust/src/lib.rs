@@ -12,7 +12,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone_wide as dict;
-use dict::{dictaphone_commands, keep_recording, AudioStatus, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -714,8 +714,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         // the BOTTOM and rises into place, back sinks it back down. Logical, so
                         // it reads the same in both landscape poses.
                         default_descent: Some(Descent::FromBottom),
-                        // landscape: the generic (Linear) windows lay out side by side
-                        layout_axis: Axis::Horizontal,
+                        // the layout axis comes from the design's orientation (landscape ->
+                        // horizontal); the firmware no longer states it
                 },
         ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();

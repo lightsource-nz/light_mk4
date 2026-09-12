@@ -24,6 +24,9 @@ pub mod code {
         pub const NAV_NONE: u8 = 0;
         pub const NAV_BACK: u8 = 1;
         pub const NAV_GOTO: u8 = 2;
+        /// Header orientation byte (byte 5): how the interface is laid out and previewed.
+        pub const ORIENT_PORTRAIT: u8 = 0;
+        pub const ORIENT_LANDSCAPE: u8 = 1;
 }
 
 const MAGIC: [u8; 4] = *b"LUI3";
@@ -87,6 +90,13 @@ impl<'a> Lui<'a> {
         /// The target device: `(width, height, corner_radius)`.
         pub fn device(&self) -> (u16, u16, u16) {
                 (self.u16(10), self.u16(12), self.u16(14))
+        }
+
+        /// Whether the interface is laid out sideways -- a horizontal layout axis, shown on the
+        /// screen turned onto its long edge (header byte 5). The device dimensions stay the physical
+        /// panel's; a landscape consumer swaps them for display and lays out along the long axis.
+        pub fn landscape(&self) -> bool {
+                self.blob.get(5).copied() == Some(code::ORIENT_LANDSCAPE)
         }
 
         /// The page at index `i`, located through the offset table.
@@ -519,6 +529,15 @@ mod tests {
                 //   the third top-level child proves next() skipped the whole frame subtree
                 assert_eq!(kids[2].text, "end");
                 assert!(!kids[2].is_frame());
+        }
+
+        #[test]
+        fn reads_the_orientation_byte() {
+                let data = blob(); // header() writes byte 5 = 0
+                assert!(!Lui::parse(&data).unwrap().landscape(), "0 is portrait");
+                let mut land = blob();
+                land[5] = code::ORIENT_LANDSCAPE;
+                assert!(Lui::parse(&land).unwrap().landscape());
         }
 
         #[test]

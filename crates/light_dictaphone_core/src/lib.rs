@@ -476,7 +476,12 @@ fn fs_command<S: Store>(store: &mut S, op: FsOp, path: &str, arg: &str) {
 /// grows nesting; the upright interface, whose list is a flat scrolling window, is a blob.
 #[derive(Clone, Copy)]
 pub enum UiSource<X: Copy + 'static> {
-        Pages(&'static Page<Event<X>>),
+        /// A const-`Page` tree, with the axis its generic (`Linear`) windows run along -- the blob
+        /// path takes that axis from the design instead (see [`UiSource::Blob`]).
+        Pages { root: &'static Page<Event<X>>, axis: Axis },
+        /// An LUI design blob. Its `orientation` (authored in the design, [`Lui::landscape`])
+        /// decides the layout axis, so the design is the single source and the firmware states no
+        /// axis of its own.
         Blob(Lui<'static>),
 }
 
@@ -499,10 +504,6 @@ pub struct DisplayConfig<X: Copy + 'static> {
         /// interface points it one way for the whole tree. It is expressed logically, so it
         /// stays correct through the display rotation the orientation map applies.
         pub default_descent: Option<Descent>,
-        /// The axis this interface's generic (`Linear`) windows run along: `Vertical` for a
-        /// portrait tree, `Horizontal` for a landscape one. The page tree is authored once
-        /// with generic layouts and instantiated either way from here.
-        pub layout_axis: Axis,
 }
 
 /// Owns the panel and the widget tree: renders when something is dirty, routes touches
@@ -757,7 +758,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
         /// `UiBack` at the top means nothing there, as it did before.
         fn back(&mut self) -> bool {
                 match self.cfg.source {
-                        UiSource::Pages(_) => self.ui.navigate_back(),
+                        UiSource::Pages { .. } => self.ui.navigate_back(),
                         UiSource::Blob(_) => {
                                 if self.page == PAGE_MAIN {
                                         return false;
@@ -893,12 +894,25 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module fo
                         self.ui.set_rotation(self.layer, self.cfg.initial_rotation);
                 }
                 self.ui.set_default_descent(self.cfg.default_descent);
-                self.ui.set_layout_axis(self.cfg.layout_axis);
+                //   the layout axis: stated by a const-Page interface, but taken from the DESIGN for
+                // a blob (its orientation), so the design is the single source and the editor and
+                // firmware cannot disagree about which way it lays out
+                let axis = match self.cfg.source {
+                        UiSource::Pages { axis, .. } => axis,
+                        UiSource::Blob(lui) => {
+                                if lui.landscape() {
+                                        Axis::Horizontal
+                                } else {
+                                        Axis::Vertical
+                                }
+                        }
+                };
+                self.ui.set_layout_axis(axis);
                 //   the root is empty, so this first build snaps (navigate/navigate_lui start no
                 // transition until there is an outgoing page to slide off)
                 match self.cfg.source {
-                        UiSource::Pages(main) => {
-                                if let Err(e) = self.ui.navigate(main) {
+                        UiSource::Pages { root, .. } => {
+                                if let Err(e) = self.ui.navigate(root) {
                                         warn!("the main page did not build: {e:?}");
                                 }
                         }

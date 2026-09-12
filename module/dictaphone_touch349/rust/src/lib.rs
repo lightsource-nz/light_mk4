@@ -11,7 +11,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone as dict;
-use dict::{dictaphone_commands, keep_recording, AudioStatus, Axis, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -705,10 +705,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         rotation_map,
                         initial_rotation: Rotation::R0,
                         source: UiSource::Blob(lui),
-                        // the portrait interface keeps the toolkit's layout-derived flow
+                        // the portrait interface keeps the toolkit's layout-derived flow; its layout
+                        // axis comes from the design's orientation (portrait -> vertical)
                         default_descent: None,
-                        // portrait: the generic (Linear) windows stack top to bottom
-                        layout_axis: Axis::Vertical,
                 },
         ));
         static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();

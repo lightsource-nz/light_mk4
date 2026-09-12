@@ -11,9 +11,23 @@ use serde::{Deserialize, Serialize};
 pub struct Design {
         #[serde(default)]
         pub device: Device,
+        /// How the interface is laid out and shown: `portrait` (the default) stacks a `linear`
+        /// window top-to-bottom on the screen as authored; `landscape` runs it left-to-right and is
+        /// previewed on the screen turned sideways. It is the design's copy of the toolkit's layout
+        /// axis, so a preview matches the device without the firmware's rotation being guessed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub orientation: Option<String>,
         #[serde(default)]
         pub root: usize,
         pub pages: Vec<PageDef>,
+}
+
+impl Design {
+        /// Whether the interface is laid out sideways (a horizontal layout axis, previewed on the
+        /// screen turned on its long edge).
+        pub fn landscape(&self) -> bool {
+                self.orientation.as_deref() == Some("landscape")
+        }
 }
 
 /// The target device screen -- what the preview renders at, and its physical shape.
@@ -211,6 +225,12 @@ mod tests {
                 assert!(!json.contains("\"goto\""), "an absent action is not written");
                 assert!(!json.contains("\"back\""));
                 assert_eq!(parse(&json).unwrap().pages[0].children.len(), 2);
+        }
+
+        #[test]
+        fn orientation_reads_landscape() {
+                assert!(parse(r#"{ "orientation": "landscape", "pages": [] }"#).unwrap().landscape());
+                assert!(!parse(r#"{ "pages": [] }"#).unwrap().landscape(), "default is portrait");
         }
 
         #[test]

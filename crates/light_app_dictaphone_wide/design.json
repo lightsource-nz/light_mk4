@@ -1,42 +1,118 @@
 {
-        "device": { "width": 172, "height": 640, "corner_radius": 0 },
-        "root": 0,
-        "pages": [
-                {
-                        "title": "Dictaphone",
-                        "layout": "linear",
-                        "gap": 6,
-                        "children": [
-                                { "button": "* Record", "event": 1, "tag": 2, "min_w": 108, "max_w": 108 },
-                                { "button": "Play last", "event": 2, "tag": 3 },
-                                { "button": "Recordings >", "event": 3 }
-                        ]
-                },
-                {
-                        "title": "Recordings",
-                        "layout": "linear",
-                        "gap": 6,
-                        "children": [
-                                { "button": "< Back", "event": 6, "min_w": 84, "max_w": 84 },
-                                { "button": "< Newer", "event": 5, "tag": 4, "min_w": 84, "max_w": 84 },
-                                {
-                                        "layout": "linear",
-                                        "gap": 6,
-                                        "scroll": "horizontal",
-                                        "grow": true,
-                                        "children": [
-                                                { "button": "-", "event": 16, "tag": 16, "min_w": 160 },
-                                                { "button": "-", "event": 17, "tag": 17, "min_w": 160 },
-                                                { "button": "-", "event": 18, "tag": 18, "min_w": 160 },
-                                                { "button": "-", "event": 19, "tag": 19, "min_w": 160 },
-                                                { "button": "-", "event": 20, "tag": 20, "min_w": 160 },
-                                                { "button": "-", "event": 21, "tag": 21, "min_w": 160 },
-                                                { "button": "-", "event": 22, "tag": 22, "min_w": 160 },
-                                                { "button": "-", "event": 23, "tag": 23, "min_w": 160 }
-                                        ]
-                                },
-                                { "button": "Older >", "event": 4, "tag": 5, "min_w": 84, "max_w": 84 }
-                        ]
-                }
-        ]
+  "device": {
+    "width": 172,
+    "height": 640,
+    "corner_radius": 0
+  },
+  "orientation": "landscape",
+  "root": 0,
+  "pages": [
+    {
+      "title": "Dictaphone",
+      "layout": "linear",
+      "gap": 6,
+      "children": [
+        {
+          "button": "* Record",
+          "event": 1,
+          "tag": 2,
+          "min_w": 108,
+          "max_w": 108
+        },
+        {
+          "button": "Play last",
+          "event": 2,
+          "tag": 3
+        },
+        {
+          "button": "Recordings >",
+          "goto": 1,
+          "event": 3
+        }
+      ]
+    },
+    {
+      "title": "Recordings",
+      "layout": "linear",
+      "gap": 6,
+      "children": [
+        {
+          "button": "< Back",
+          "event": 6,
+          "min_w": 84,
+          "max_w": 84
+        },
+        {
+          "button": "< Newer",
+          "event": 5,
+          "tag": 4,
+          "min_w": 84,
+          "max_w": 84
+        },
+        {
+          "grow": true,
+          "layout": "linear",
+          "gap": 6,
+          "scroll": "horizontal",
+          "children": [
+            {
+              "button": "-",
+              "event": 16,
+              "tag": 16,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 17,
+              "tag": 17,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 18,
+              "tag": 18,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 19,
+              "tag": 19,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 20,
+              "tag": 20,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 21,
+              "tag": 21,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 22,
+              "tag": 22,
+              "min_w": 160
+            },
+            {
+              "button": "-",
+              "event": 23,
+              "tag": 23,
+              "min_w": 160
+            }
+          ]
+        },
+        {
+          "button": "Older >",
+          "event": 4,
+          "tag": 5,
+          "min_w": 84,
+          "max_w": 84
+        }
+      ]
+    }
+  ]
 }
