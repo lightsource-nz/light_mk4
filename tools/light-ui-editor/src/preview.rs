@@ -27,8 +27,10 @@ pub struct Sel {
         pub sub: Option<usize>,
 }
 
-/// The preview font's pixel size.
-const PIXEL_SIZE: u16 = 18;
+/// The preview font's pixel size -- the framework's common device size (16 px, what the touch
+/// boards render at), so a label fits the preview exactly as it fits the glass. A design carries no
+/// font, so this is a fixed default until a font picker exists.
+const PIXEL_SIZE: u16 = 16;
 
 /// Widget arena capacity per page.
 const UI_WIDGETS: usize = 32;
@@ -78,11 +80,18 @@ pub struct Preview {
         dev_w: u16,
         dev_h: u16,
         path: PathBuf,
+        /// Write the compiled `.lui` beside the design too. On for the editor's own default file (a
+        /// self-contained artifact); OFF when editing a named design (an app crate's), where the
+        /// build system owns compilation and a stray blob would clutter the source tree.
+        write_sidecar: bool,
 }
 
 impl Preview {
-        pub fn new() -> Self {
-                let path = save_path();
+        /// Open a design. `path` names the file to edit (an app crate's `design.json`); `None` uses
+        /// the editor's own file beside the executable.
+        pub fn new(path: Option<PathBuf>) -> Self {
+                let write_sidecar = path.is_none();
+                let path = path.unwrap_or_else(save_path);
                 let design = std::fs::read_to_string(&path)
                         .ok()
                         .as_deref()
@@ -103,7 +112,7 @@ impl Preview {
 
                 let lui = compile_blob(&design);
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, write_sidecar };
                 this.build_current();
                 this
         }
@@ -381,9 +390,13 @@ impl Preview {
                 if let Err(e) = std::fs::write(&self.path, design::to_json(&self.design)) {
                         eprintln!("light-ui-editor: could not save '{}': {e}", self.path.display());
                 }
-                //   also the compiled blob beside it, so a design yields a usable artifact
-                if let Ok(blob) = crush_core::lui::compile(&self.design) {
-                        let _ = std::fs::write(self.path.with_extension("lui"), blob);
+                //   also the compiled blob beside it, so the editor's own file yields a usable
+                // artifact; NOT for a named design, where the build compiles it and a stray blob
+                // would dirty the source tree
+                if self.write_sidecar {
+                        if let Ok(blob) = crush_core::lui::compile(&self.design) {
+                                let _ = std::fs::write(self.path.with_extension("lui"), blob);
+                        }
                 }
         }
 

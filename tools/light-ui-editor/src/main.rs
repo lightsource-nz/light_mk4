@@ -463,7 +463,10 @@ impl HostApp for Editor {
 }
 
 fn main() {
-        let editor = Editor { preview: Preview::new(), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false, editing: None };
+        //   an optional design file to edit (an app crate's design.json); without one, the editor
+        // opens its own file beside the executable
+        let path = std::env::args().nth(1).map(std::path::PathBuf::from);
+        let editor = Editor { preview: Preview::new(path), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false, editing: None };
         if let Err(e) = light_host_gui::run(editor) {
                 eprintln!("light-ui-editor: {e}");
                 std::process::exit(1);
