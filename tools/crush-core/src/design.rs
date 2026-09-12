@@ -44,6 +44,12 @@ pub struct PageDef {
         pub layout: String,
         #[serde(default = "default_gap")]
         pub gap: u8,
+        /// The window scrolls vertically (its content can exceed the screen).
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub scroll: bool,
+        /// The window reserves a second title row (for a runtime-set status/subtitle).
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub subtitle: bool,
         #[serde(default)]
         pub children: Vec<ChildDef>,
 }
@@ -63,12 +69,25 @@ pub struct ChildDef {
         /// A button that goes back.
         #[serde(default, skip_serializing_if = "is_false")]
         pub back: bool,
+        /// An application event id the button emits when tapped (0 = none). The app owns the
+        /// meaning; navigation (goto/back) still applies alongside it.
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub event: u16,
+        /// A stable tag the app finds this widget by (to set its text at runtime); 0 = auto
+        /// (the child's index + 1).
+        #[serde(default, skip_serializing_if = "is_zero_u8")]
+        pub tag: u8,
+        /// Minimum size in pixels (0 = unset).
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub min_w: u16,
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub min_h: u16,
 }
 
 impl ChildDef {
         /// A fresh plain button, the default an "add" inserts.
         pub fn new_button() -> Self {
-                Self { button: Some("Button".to_owned()), label: None, goto: None, back: false }
+                Self { button: Some("Button".to_owned()), label: None, goto: None, back: false, event: 0, tag: 0, min_w: 0, min_h: 0 }
         }
 
         /// A short human label for the inspector: the kind and its text.
@@ -108,6 +127,14 @@ fn default_dev_h() -> u16 {
 
 fn is_false(b: &bool) -> bool {
         !*b
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+        *v == 0
+}
+
+fn is_zero_u8(v: &u8) -> bool {
+        *v == 0
 }
 
 /// Parse a design JSON.

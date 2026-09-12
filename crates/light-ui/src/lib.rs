@@ -3301,16 +3301,28 @@ impl<const N: usize> Ui<u16, N> {
                 if let Some(root) = self.root {
                         self.destroy(root);
                 }
-                let win = self.create_window(None, Rect::new(0, 0, 0, 0), Some(page.title()), false)?;
+                let win = self.create_window(None, Rect::new(0, 0, 0, 0), Some(page.title()), page.subtitle())?;
+                //   scroll before the children, since it changes how the stack lays out rows that
+                // do not fit (mirrors build_desc)
+                if page.scroll() {
+                        if let Some(w) = self.w_mut(win).window_mut() {
+                                w.scroll = scroll::VERTICAL;
+                        }
+                }
                 for (i, child) in page.children().enumerate() {
                         let slot = i as u16;
                         let id = match child.kind {
                                 lui::code::KIND_LABEL => self.create_label(Some(win), Rect::new(0, 0, 0, 0), child.text)?,
-                                //   a button, or any unknown kind treated as one, emits its slot
+                                //   a button, or any unknown kind treated as one, emits its slot; the
+                                // runtime maps the slot back to the blob child's nav and app event
                                 _ => self.create_button(Some(win), Rect::new(0, 0, 0, 0), child.text, Some(slot), Nav::Stay)?,
                         };
-                        //   tag = slot + 1 (tag 0 is "untagged"), so a caller can find a child by index
-                        self.w_mut(id).tag = (i + 1) as u8;
+                        //   the design's tag, or slot + 1 as a default (tag 0 is "untagged"), so a
+                        // caller finds a child by a stable id or by index
+                        let w = self.w_mut(id);
+                        w.tag = if child.tag != 0 { child.tag } else { (i + 1) as u8 };
+                        w.min_w = i32::from(child.min_w);
+                        w.min_h = i32::from(child.min_h);
                 }
                 match page.layout() {
                         lui::code::LAYOUT_ROW => self.layout_row(win, page.gap()),

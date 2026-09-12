@@ -4,19 +4,21 @@
 //! reader; the two must agree (the codes below are the contract).
 //!
 //! Layout, little-endian:
-//! - Header (16 bytes): magic "LUI1", `page_count` u16, `root` u16, device `width`/`height`/
+//! - Header (16 bytes): magic "LUI2", `page_count` u16, `root` u16, device `width`/`height`/
 //!   `corner_radius` u16 each, then u16 reserved.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
-//! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `child_count` u8, then each
-//!   child: `kind` u8, `nav` u8, `nav_page` u16, `text` (u8 len + bytes).
+//! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
+//!   `child_count` u8, then each child: `kind` u8, `nav` u8, `nav_page` u16, `event` u16, `tag` u8,
+//!   `min_w` u16, `min_h` u16, `text` (u8 len + bytes).
 //!
 //! Strings are inline and length-prefixed, so a reader returns `&str` views into the blob with no
 //! copy -- the LGF pattern.
 
 use crate::design::Design;
 
-/// The blob magic: "LUI1", Light UI, format 1.
-pub const MAGIC: &[u8; 4] = b"LUI1";
+/// The blob magic: "LUI2", Light UI, format 2 (adds per-child event/tag/min-size and window
+/// scroll/subtitle over format 1).
+pub const MAGIC: &[u8; 4] = b"LUI2";
 /// The fixed header length.
 pub const HEADER_LEN: usize = 16;
 
@@ -55,6 +57,8 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                 put_str(&mut b, &page.title)?;
                 b.push(layout_code(&page.layout));
                 b.push(page.gap);
+                b.push(page.scroll as u8);
+                b.push(page.subtitle as u8);
                 if page.children.len() > u8::MAX as usize {
                         return Err(format!("page '{}' has too many children for the format", page.title));
                 }
@@ -75,6 +79,10 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                         };
                         b.push(nav);
                         b.extend_from_slice(&nav_page.to_le_bytes());
+                        b.extend_from_slice(&c.event.to_le_bytes());
+                        b.push(c.tag);
+                        b.extend_from_slice(&c.min_w.to_le_bytes());
+                        b.extend_from_slice(&c.min_h.to_le_bytes());
                         put_str(&mut b, text)?;
                 }
                 bodies.push(b);
@@ -119,8 +127,8 @@ mod tests {
         fn compiles_a_two_page_design() {
                 let d = design::parse(
                         r#"{ "device": { "width": 172, "height": 640, "corner_radius": 8 }, "root": 0, "pages": [
-                                { "title": "Main", "layout": "stack", "gap": 6, "children": [ { "button": "Go", "goto": 1 }, { "label": "hi" } ] },
-                                { "title": "Second", "children": [ { "button": "Back", "back": true } ] }
+                                { "title": "Main", "layout": "stack", "gap": 6, "subtitle": true, "children": [ { "button": "Go", "goto": 1, "event": 5, "tag": 9 }, { "label": "hi" } ] },
+                                { "title": "Second", "scroll": true, "children": [ { "button": "Back", "back": true } ] }
                         ] }"#,
                 )
                 .unwrap();
@@ -133,20 +141,24 @@ mod tests {
                 assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 640, "device height");
                 assert_eq!(u16::from_le_bytes([blob[12], blob[13]]), 8, "device corner");
 
-                // page 0 body at its table offset: title "Main", stack, gap 6, 2 children
+                // page 0 body: title "Main", stack, gap 6, scroll 0, subtitle 1, 2 children
                 let off0 = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
                 assert_eq!(blob[off0], 4, "title length 'Main'");
                 assert_eq!(&blob[off0 + 1..off0 + 5], b"Main");
                 assert_eq!(blob[off0 + 5], LAYOUT_STACK);
                 assert_eq!(blob[off0 + 6], 6, "gap");
-                assert_eq!(blob[off0 + 7], 2, "child count");
-                // first child: button "Go" goto 1
-                let c0 = off0 + 8;
+                assert_eq!(blob[off0 + 7], 0, "no scroll");
+                assert_eq!(blob[off0 + 8], 1, "subtitle");
+                assert_eq!(blob[off0 + 9], 2, "child count");
+                // first child: button "Go" goto 1, event 5, tag 9; header is 11 bytes then text
+                let c0 = off0 + 10;
                 assert_eq!(blob[c0], KIND_BUTTON);
                 assert_eq!(blob[c0 + 1], NAV_GOTO);
                 assert_eq!(u16::from_le_bytes([blob[c0 + 2], blob[c0 + 3]]), 1, "goto page 1");
-                assert_eq!(blob[c0 + 4], 2, "text len 'Go'");
-                assert_eq!(&blob[c0 + 5..c0 + 7], b"Go");
+                assert_eq!(u16::from_le_bytes([blob[c0 + 4], blob[c0 + 5]]), 5, "event id");
+                assert_eq!(blob[c0 + 6], 9, "tag");
+                assert_eq!(blob[c0 + 11], 2, "text len 'Go'");
+                assert_eq!(&blob[c0 + 12..c0 + 14], b"Go");
         }
 
         #[test]

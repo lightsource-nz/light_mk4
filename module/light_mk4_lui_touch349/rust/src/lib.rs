@@ -98,9 +98,15 @@ impl Module for LuiMod {
                 let now_ms = (light_rp2::now_us() / 1000) as u32;
                 if let Some(ev) = self.touch.poll(now_ms) {
                         let now = light_rp2::now_us();
+                        //   this demo's design carries no app events, so the returned event is
+                        // discarded; navigation is handled inside the runtime
                         match ev {
-                                axs::Event::Down { x, y } | axs::Event::Move { x, y } => self.rt.touch(x, y, true, now),
-                                axs::Event::Up => self.rt.touch(0, 0, false, now),
+                                axs::Event::Down { x, y } | axs::Event::Move { x, y } => {
+                                        self.rt.touch(x, y, true, now);
+                                }
+                                axs::Event::Up => {
+                                        self.rt.touch(0, 0, false, now);
+                                }
                                 axs::Event::Reset => {}
                         }
                 }

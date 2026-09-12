@@ -24,7 +24,7 @@ pub mod code {
         pub const NAV_GOTO: u8 = 2;
 }
 
-const MAGIC: [u8; 4] = *b"LUI1";
+const MAGIC: [u8; 4] = *b"LUI2";
 const HEADER_LEN: usize = 16;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,13 +84,15 @@ impl<'a> Lui<'a> {
         }
 }
 
-/// A page view: a window (title, layout, gap) and its children.
+/// A page view: a window (title, layout, gap, scroll, subtitle) and its children.
 #[derive(Clone, Copy)]
 pub struct LuiPage<'a> {
         blob: &'a [u8],
         title: &'a str,
         layout: u8,
         gap: u8,
+        scroll: bool,
+        subtitle: bool,
         child_count: usize,
         children_at: usize,
 }
@@ -100,8 +102,10 @@ impl<'a> LuiPage<'a> {
                 let (title, at) = read_str(blob, off)?;
                 let layout = *blob.get(at)?;
                 let gap = *blob.get(at + 1)?;
-                let child_count = usize::from(*blob.get(at + 2)?);
-                Some(Self { blob, title, layout, gap, child_count, children_at: at + 3 })
+                let scroll = *blob.get(at + 2)? != 0;
+                let subtitle = *blob.get(at + 3)? != 0;
+                let child_count = usize::from(*blob.get(at + 4)?);
+                Some(Self { blob, title, layout, gap, scroll, subtitle, child_count, children_at: at + 5 })
         }
 
         pub fn title(&self) -> &'a str {
@@ -113,6 +117,12 @@ impl<'a> LuiPage<'a> {
         pub fn gap(&self) -> u8 {
                 self.gap
         }
+        pub fn scroll(&self) -> bool {
+                self.scroll
+        }
+        pub fn subtitle(&self) -> bool {
+                self.subtitle
+        }
 
         /// The children in order.
         pub fn children(&self) -> LuiChildren<'a> {
@@ -120,12 +130,16 @@ impl<'a> LuiPage<'a> {
         }
 }
 
-/// One child widget: a button or a label, with its text and (for a button) its navigation.
+/// One child widget: a button or a label, with its text, navigation, app event, tag and min-size.
 #[derive(Clone, Copy)]
 pub struct LuiChild<'a> {
         pub kind: u8,
         pub nav: u8,
         pub nav_page: u16,
+        pub event: u16,
+        pub tag: u8,
+        pub min_w: u16,
+        pub min_h: u16,
         pub text: &'a str,
 }
 
@@ -143,13 +157,19 @@ impl<'a> Iterator for LuiChildren<'a> {
                 if self.remaining == 0 {
                         return None;
                 }
-                let kind = *self.blob.get(self.at)?;
-                let nav = *self.blob.get(self.at + 1)?;
-                let nav_page = u16::from_le_bytes([*self.blob.get(self.at + 2)?, *self.blob.get(self.at + 3)?]);
-                let (text, next) = read_str(self.blob, self.at + 4)?;
+                let b = self.blob;
+                let at = self.at;
+                let kind = *b.get(at)?;
+                let nav = *b.get(at + 1)?;
+                let nav_page = u16::from_le_bytes([*b.get(at + 2)?, *b.get(at + 3)?]);
+                let event = u16::from_le_bytes([*b.get(at + 4)?, *b.get(at + 5)?]);
+                let tag = *b.get(at + 6)?;
+                let min_w = u16::from_le_bytes([*b.get(at + 7)?, *b.get(at + 8)?]);
+                let min_h = u16::from_le_bytes([*b.get(at + 9)?, *b.get(at + 10)?]);
+                let (text, next) = read_str(b, at + 11)?;
                 self.at = next;
                 self.remaining -= 1;
-                Some(LuiChild { kind, nav, nav_page, text })
+                Some(LuiChild { kind, nav, nav_page, event, tag, min_w, min_h, text })
         }
 }
 
@@ -185,25 +205,26 @@ impl<const N: usize> LuiRuntime<N> {
                 self.build_current();
         }
 
-        /// Feed a touch, as [`Ui::touch`] takes it; a tapped button navigates per the blob.
-        pub fn touch(&mut self, x: u16, y: u16, touching: bool, now_us: u64) {
+        /// Feed a touch, as [`Ui::touch`] takes it; a tapped button navigates per the blob and, if
+        /// it carries an application event id, returns it for the caller to dispatch.
+        pub fn touch(&mut self, x: u16, y: u16, touching: bool, now_us: u64) -> Option<u16> {
                 if let Touch::Tap { emitted: Some(slot), .. } = self.ui.touch(x, y, touching, now_us) {
-                        self.activate(slot);
+                        return self.activate(slot);
                 }
+                None
         }
 
-        /// Resolve a child's navigation by its slot (index), as a tap would -- for a caller that
-        /// wires input another way.
-        pub fn activate(&mut self, slot: u16) {
+        /// Resolve a child by its slot (index), as a tap would: perform its navigation and return
+        /// its app event id (0 -> `None`). For a caller that wires input another way.
+        pub fn activate(&mut self, slot: u16) -> Option<u16> {
                 let cur = self.current_page();
-                let nav = self.lui.page(cur).and_then(|p| p.children().nth(usize::from(slot)));
-                if let Some(child) = nav {
-                        match child.nav {
-                                code::NAV_GOTO => self.goto(child.nav_page),
-                                code::NAV_BACK => self.back(),
-                                _ => {}
-                        }
+                let child = self.lui.page(cur).and_then(|p| p.children().nth(usize::from(slot)))?;
+                match child.nav {
+                        code::NAV_GOTO => self.goto(child.nav_page),
+                        code::NAV_BACK => self.back(),
+                        _ => {}
                 }
+                (child.event != 0).then_some(child.event)
         }
 
         /// The index of the page currently shown.
@@ -250,51 +271,69 @@ mod tests {
         extern crate std;
         use std::vec::Vec;
 
-        //   a hand-built blob: two pages, matching crush's layout, so the reader is tested without
-        // depending on the compiler (which is std/heavy)
+        fn put_str(b: &mut Vec<u8>, s: &str) {
+                b.push(s.len() as u8);
+                b.extend_from_slice(s.as_bytes());
+        }
+
+        //   a child in the v2 layout: kind, nav, nav_page, event, tag, min_w, min_h, text
+        fn push_child(b: &mut Vec<u8>, kind: u8, nav: u8, nav_page: u16, event: u16, tag: u8, text: &str) {
+                b.push(kind);
+                b.push(nav);
+                b.extend_from_slice(&nav_page.to_le_bytes());
+                b.extend_from_slice(&event.to_le_bytes());
+                b.push(tag);
+                b.extend_from_slice(&0u16.to_le_bytes()); // min_w
+                b.extend_from_slice(&0u16.to_le_bytes()); // min_h
+                put_str(b, text);
+        }
+
+        fn header(b: &mut Vec<u8>, pages: u16) {
+                b.extend_from_slice(&MAGIC);
+                b.extend_from_slice(&pages.to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes()); // root
+                b.extend_from_slice(&172u16.to_le_bytes());
+                b.extend_from_slice(&640u16.to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes()); // corner
+                b.extend_from_slice(&0u16.to_le_bytes()); // reserved
+        }
+
+        fn assemble(pages: &[Vec<u8>]) -> Vec<u8> {
+                let mut b = Vec::new();
+                header(&mut b, pages.len() as u16);
+                let mut off = (HEADER_LEN + 4 * pages.len()) as u32;
+                for p in pages {
+                        b.extend_from_slice(&off.to_le_bytes());
+                        off += p.len() as u32;
+                }
+                for p in pages {
+                        b.extend_from_slice(p);
+                }
+                b
+        }
+
+        //   a hand-built blob: two pages, matching crush's v2 layout, so the reader is tested
+        // without depending on the compiler (which is std/heavy)
         fn blob() -> Vec<u8> {
                 let mut body0 = Vec::new();
                 put_str(&mut body0, "Main");
                 body0.push(code::LAYOUT_STACK);
-                body0.push(6);
+                body0.push(6); // gap
+                body0.push(0); // scroll
+                body0.push(0); // subtitle
                 body0.push(2); // children
-                                // button "Go" goto 1
-                body0.push(code::KIND_BUTTON);
-                body0.push(code::NAV_GOTO);
-                body0.extend_from_slice(&1u16.to_le_bytes());
-                put_str(&mut body0, "Go");
-                // label "hi"
-                body0.push(code::KIND_LABEL);
-                body0.push(code::NAV_NONE);
-                body0.extend_from_slice(&0u16.to_le_bytes());
-                put_str(&mut body0, "hi");
+                push_child(&mut body0, code::KIND_BUTTON, code::NAV_GOTO, 1, 0, 0, "Go");
+                push_child(&mut body0, code::KIND_LABEL, code::NAV_NONE, 0, 0, 0, "hi");
 
                 let mut body1 = Vec::new();
                 put_str(&mut body1, "Second");
                 body1.push(code::LAYOUT_STACK);
-                body1.push(4);
-                body1.push(0);
+                body1.push(4); // gap
+                body1.push(0); // scroll
+                body1.push(0); // subtitle
+                body1.push(0); // children
 
-                let mut b = Vec::new();
-                b.extend_from_slice(&MAGIC);
-                b.extend_from_slice(&2u16.to_le_bytes()); // pages
-                b.extend_from_slice(&0u16.to_le_bytes()); // root
-                b.extend_from_slice(&172u16.to_le_bytes());
-                b.extend_from_slice(&640u16.to_le_bytes());
-                b.extend_from_slice(&8u16.to_le_bytes());
-                b.extend_from_slice(&0u16.to_le_bytes()); // reserved
-                let mut off = (HEADER_LEN + 8) as u32;
-                b.extend_from_slice(&off.to_le_bytes());
-                off += body0.len() as u32;
-                b.extend_from_slice(&off.to_le_bytes());
-                b.extend_from_slice(&body0);
-                b.extend_from_slice(&body1);
-                b
-        }
-
-        fn put_str(b: &mut Vec<u8>, s: &str) {
-                b.push(s.len() as u8);
-                b.extend_from_slice(s.as_bytes());
+                assemble(&[body0, body1])
         }
 
         #[test]
@@ -303,7 +342,7 @@ mod tests {
                 let lui = Lui::parse(&data).unwrap();
                 assert_eq!(lui.page_count(), 2);
                 assert_eq!(lui.root(), 0);
-                assert_eq!(lui.device(), (172, 640, 8));
+                assert_eq!(lui.device(), (172, 640, 0));
 
                 let p0 = lui.page(0).unwrap();
                 assert_eq!(p0.title(), "Main");
@@ -336,31 +375,14 @@ mod tests {
                         let mut b = Vec::new();
                         put_str(&mut b, title);
                         b.push(code::LAYOUT_STACK);
-                        b.push(6);
-                        b.push(1);
-                        b.push(code::KIND_BUTTON);
-                        b.push(nav);
-                        b.extend_from_slice(&nav_page.to_le_bytes());
-                        put_str(&mut b, btn);
+                        b.push(6); // gap
+                        b.push(0); // scroll
+                        b.push(0); // subtitle
+                        b.push(1); // children
+                        push_child(&mut b, code::KIND_BUTTON, nav, nav_page, 0, 0, btn);
                         b
                 };
-                let body0 = page("Main", "Go", code::NAV_GOTO, 1);
-                let body1 = page("Second", "Back", code::NAV_BACK, 0);
-                let mut b = Vec::new();
-                b.extend_from_slice(&MAGIC);
-                b.extend_from_slice(&2u16.to_le_bytes());
-                b.extend_from_slice(&0u16.to_le_bytes());
-                b.extend_from_slice(&172u16.to_le_bytes());
-                b.extend_from_slice(&640u16.to_le_bytes());
-                b.extend_from_slice(&0u16.to_le_bytes());
-                b.extend_from_slice(&0u16.to_le_bytes());
-                let mut off = (HEADER_LEN + 8) as u32;
-                b.extend_from_slice(&off.to_le_bytes());
-                off += body0.len() as u32;
-                b.extend_from_slice(&off.to_le_bytes());
-                b.extend_from_slice(&body0);
-                b.extend_from_slice(&body1);
-                b
+                assemble(&[page("Main", "Go", code::NAV_GOTO, 1), page("Second", "Back", code::NAV_BACK, 0)])
         }
 
         #[test]
