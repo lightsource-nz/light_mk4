@@ -98,15 +98,23 @@ $openocdBin = Resolve-LightToolDir -Name 'openocd'       -Candidates @(
         "$tools/xpack-openocd-0.12.0-7/bin",
         "$tools/xpack-openocd/bin")
 
+#   rustup installs cargo to ~/.cargo/bin and does NOT put it on PATH. Corrosion (run inside every
+# firmware configure) and the host `cargo test` both need it. It belongs here, not in the wrapper
+# layer, so ANY script that dot-sources light-env -- a shared light-*.ps1 run directly, not only a
+# wrapper -- finds cargo. A distro-packaged cargo already on PATH is honoured either way.
+$cargoBin = Join-Path $HOME '.cargo/bin'
+
 if ($IsWindows) {
         $required = @($w64devkit, $armBin, $openocdBin, "$env:LOCALAPPDATA/Microsoft/WinGet/Links") |
                 Where-Object { $_ }
-        $optional = @()
+        #   cargo's bin is optional here: absent means rustup was not run, which the cargo check
+        # below reports; a distro/other cargo on PATH still works
+        $optional = @($cargoBin) | Where-Object { $_ }
 } else {
         # a packaged arm-none-eabi-gcc / openocd already on PATH is the norm here, so nothing is
         # required and nothing is warned about
         $required = @()
-        $optional = @($armBin, $openocdBin) | Where-Object { $_ }
+        $optional = @($armBin, $openocdBin, $cargoBin) | Where-Object { $_ }
 }
 
 #   exported so the things that CANNOT call this script can still avoid hardcoding: the riscv
@@ -158,7 +166,7 @@ if ($missing.Count -gt 0) {
 #   a build needs these three regardless of platform, and finding them missing here is a far
 # better message than cmake's. Not fatal: a HOST-only build of one project may legitimately
 # not have an ARM toolchain installed
-foreach ($t in @('cmake', 'ninja')) {
+foreach ($t in @('cmake', 'ninja', 'cargo')) {
         if (-not (Find-LightTool -Name $t)) {
                 Write-Warning "'$t' is not on PATH -- configure and build will fail"
         }
