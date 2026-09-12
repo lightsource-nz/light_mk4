@@ -2993,9 +2993,19 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         let f = &w.rect;
                         let (inner_x0, inner_x1) = (f.x0 + 1, f.x1 - 1);
                         let inner_h = f.y1 - f.y0 - 1;
-                        let tx = self.centre_x(inner_x0, inner_x1, label.len(), self.role_cw(FontRole::Body));
+                        //   centre the text that will ACTUALLY be drawn: a label too wide for the
+                        // button is truncated by draw_text_fitted, so centring the full length
+                        // would shove the visible part off to one side. Count the glyphs that fit,
+                        // then centre those.
+                        let cw = self.role_cw(FontRole::Body).max(1);
+                        let avail = inner_x1 - inner_x0 + 1;
+                        let mut fit = label.len().min((avail.max(0) / cw) as usize);
+                        while fit > 0 && !label.is_char_boundary(fit) {
+                                fit -= 1;
+                        }
+                        let tx = self.centre_x(inner_x0, inner_x1, fit, cw);
                         let ty = (f.y0 + 1 + (inner_h - self.role_ch(FontRole::Body)) / 2).max(f.y0 + 1);
-                        self.draw_text_fitted(c, style.fonts.font(FontRole::Body), tx, ty, label, inner_x1 - inner_x0 + 1);
+                        self.draw_text_fitted(c, style.fonts.font(FontRole::Body), tx, ty, label, avail);
                 }
                 c.fg = saved_fg;
                 // TODO a distinct look for disabled buttons wants a colour model 1 bpp lacks
