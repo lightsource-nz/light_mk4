@@ -31,7 +31,7 @@ function Get-LightUiDesigns {
 }
 
 if (-not $Crate) {
-        Write-Host "usage: edit-ui.ps1 -Crate <app crate>   (a crate under crates/ or module/ with a design.json)"
+        Write-Host "usage: $($MyInvocation.MyCommand.Name) -Crate <app crate>   (a crate under crates/ or module/ with a design.json)"
         $designs = Get-LightUiDesigns
         if ($designs) {
                 Write-Host "available UI designs:"
