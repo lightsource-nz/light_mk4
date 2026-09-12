@@ -10,13 +10,15 @@ name = "crush"
 path = "src/main.rs"
 
 [dependencies]
-light-font = { path = "../../crates/light-font", features = ["alloc"] }
+crush-core = { path = "../crush-core" }
 clap = { version = "4.5", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 #   bundled: FreeType is compiled into the binary, so a checkout builds with no system
-# library to find -- the same reason the C font-crusher vendored it as a submodule
+# library to find -- the same reason the C font-crusher vendored it as a submodule. crush still
+# probes a font's metadata directly on `font add`; the rasterising itself is in crush-core
 freetype-rs = { version = "0.38", features = ["bundled"] }
 
 [dev-dependencies]
+#   the CLI acceptance test parses crush's LGF output to check it
 light-font = { path = "../../crates/light-font", features = ["alloc"] }

@@ -1,0 +1,13 @@
+[package]
+name = "crush-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the pure asset-compilation core shared by crush and the host tools: TrueType -> LGF rasterising and theme JSON -> LTH compiling, with no CLI, file or logging concerns"
+
+[dependencies]
+light-font = { path = "../../crates/light-font", features = ["alloc"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+#   bundled: FreeType is compiled in, so a checkout builds with no system library to find
+freetype-rs = { version = "0.38", features = ["bundled"] }

@@ -87,7 +87,10 @@ impl Preview {
                         .unwrap_or_else(|| design::parse(DEFAULT_DESIGN_JSON).expect("the bundled design parses"));
 
                 let font = font::load(PIXEL_SIZE);
-                let theme = crate::theme::parse(THEME_JSON).expect("the bundled steel theme parses");
+                //   compile the theme JSON to an LTH blob with crush-core (the firmware's path) and
+                // parse it, rather than mirroring the theme schema here
+                let lth = crush_core::theme::compile_flat(THEME_JSON).expect("the bundled steel theme compiles");
+                let theme = Theme::parse(&lth).expect("the compiled theme parses");
                 let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(DEV_W, DEV_H)]);
                 let display = Display::new(NullDriver, buf, DEV_W, DEV_H, PixelFormat::Rgb565, now_us);
                 let mut layer = FrameLayer::new(DEV_W, DEV_H, PixelFormat::Rgb565);

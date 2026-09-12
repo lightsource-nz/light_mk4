@@ -426,6 +426,17 @@ name = "crush"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "crush-core",
+ "freetype-rs",
+ "light-font",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "crush-core"
+version = "0.1.0"
+dependencies = [
  "freetype-rs",
  "light-font",
  "serde",
@@ -1051,7 +1062,7 @@ name = "light-ui-editor"
 version = "0.1.0"
 dependencies = [
  "critical-section",
- "freetype-rs",
+ "crush-core",
  "light-core",
  "light-display",
  "light-draw",

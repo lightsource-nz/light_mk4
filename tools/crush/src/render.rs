@@ -1,25 +1,15 @@
-//! The render job: FreeType rasterises each character of the set into a fixed cell, and the
-//! result is written as an LGF blob and, for the C consumers, the same C pair the crush this
-//! replaces wrote.
-//!
-//! Ported from the C implementation's `crush_render_backend`, including the parts it learned
-//! the hard way: the cell comes from the font's nominal metrics rather than from scanning
-//! glyphs; an explicit pixel size is the VERTICAL size and the horizontal one is derived through
-//! the display's pixel aspect (FreeType's width=0 shorthand silently assumes square pixels); and
-//! glyph bitmaps are placed by their bearings relative to the shared baseline, clipping pixel by
-//! pixel, since a glyph's bitmap can be larger than the cell while its ink still lands inside
-//! it.
+//! The render job: the file-and-C-output shell around [`crush_core::render`]. The rasterising
+//! itself -- FreeType into a fixed cell, packed into an LGF -- lives in crush-core, shared with the
+//! host tools; this reads the font file, then writes the LGF blob and, for the C consumers, the same
+//! C pair the crush this replaces wrote.
 
 use std::fmt::Write as _;
 use std::fs;
 use std::path::PathBuf;
 
-use freetype::face::LoadFlag;
+pub use crush_core::render::CHAR_SET;
 
 use crate::context::Display;
-
-/// The characters every render covers: the C implementation's set, unchanged.
-pub const CHAR_SET: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz`1234567890-=~!@#$%^&*()_+[]\\{}|;':\",./<>?";
 
 pub struct Job {
         pub font_file: PathBuf,
@@ -39,97 +29,21 @@ pub struct Outcome {
 }
 
 pub fn run(job: &Job) -> Result<Outcome, String> {
-        let lib = freetype::Library::init().map_err(|e| format!("FreeType init failed: {e}"))?;
-        let face = lib
-                .new_face(&job.font_file, job.face_index as isize)
-                .map_err(|e| format!("FT_New_Face() failed for '{}': {e}", job.font_file.display()))?;
+        let ttf = fs::read(&job.font_file).map_err(|e| format!("could not read '{}': {e}", job.font_file.display()))?;
+        //   pixel_depth 1 renders monochrome, the 1 bpp the LGF stores
+        let mono = job.display.pixel_depth == 1;
+        let r = crush_core::render::rasterize(&ttf, job.face_index, job.pixel_size, job.point_size, job.display.ppi_h, job.display.ppi_v, mono)?;
 
-        if job.pixel_size > 0 {
-                // vertical size as given; horizontal through the pixel aspect, so glyphs come
-                // out the right shape on a display whose pixels are not square
-                let pixel_width = (f64::from(job.pixel_size) * (job.display.ppi_h / job.display.ppi_v) + 0.5) as u32;
-                face.set_pixel_sizes(pixel_width, u32::from(job.pixel_size)).map_err(|e| format!("FT_Set_Pixel_Sizes() failed: {e}"))?;
-        } else {
-                // 26.6 fixed point: 1/64 of a point
-                let size = (job.point_size * 64.0).round() as isize;
-                face.set_char_size(0, size, job.display.ppi_h.round() as u32, job.display.ppi_v.round() as u32)
-                        .map_err(|e| format!("FT_Set_Char_Size() failed: {e}"))?;
-        }
-        let metrics = face.size_metrics().ok_or("the face reports no size metrics")?;
-        //   what FreeType actually settled on, whichever call set it: it does not promise an
-        // exact match to either input, and the output is named by the real size
-        let pixel_size = metrics.y_ppem;
-        let cell_width = (metrics.max_advance >> 6) as u8;
-        let cell_height = (metrics.height >> 6) as u8;
-        let cell_ascent = (metrics.ascender >> 6) as u8;
-        if cell_width == 0 || cell_height == 0 {
-                return Err(format!("degenerate cell {cell_width}x{cell_height} -- check the display's pixel density"));
-        }
-        let pitch = (cell_width as usize).div_ceil(8);
-
-        let mut flags = LoadFlag::RENDER;
-        if job.display.pixel_depth == 1 {
-                flags |= LoadFlag::MONOCHROME;
-        }
-
-        let mut encoder = light_font::Encoder::new(cell_width, cell_height, cell_ascent, pixel_size);
-        let mut glyphs: Vec<(u8, Vec<u8>)> = Vec::with_capacity(CHAR_SET.len());
-        for c in CHAR_SET.bytes() {
-                face.load_char(c as usize, flags).map_err(|e| format!("FT_Load_Char() failed for {:?}: {e}", c as char))?;
-                let slot = face.glyph();
-                let bitmap = slot.bitmap();
-                let rows = copy_bitmap(
-                        bitmap.buffer(),
-                        bitmap.pitch(),
-                        bitmap.width() as u32,
-                        bitmap.rows() as u32,
-                        slot.bitmap_left(),
-                        slot.bitmap_top(),
-                        cell_width,
-                        cell_height,
-                        cell_ascent,
-                );
-                encoder.add(c, &rows).map_err(|e| format!("{e:?}"))?;
-                glyphs.push((c, rows));
-        }
-
-        let ident = format!("{}_{}px", sanitize_identifier(&job.font_name), pixel_size);
+        let ident = format!("{}_{}px", sanitize_identifier(&job.font_name), r.pixel_size);
         let lgf_path = job.out_dir.join(format!("{ident}_font.lgf"));
-        fs::write(&lgf_path, encoder.encode()).map_err(|e| format!("could not write '{}': {e}", lgf_path.display()))?;
+        fs::write(&lgf_path, &r.lgf).map_err(|e| format!("could not write '{}': {e}", lgf_path.display()))?;
 
+        let pitch = (r.cell_width as usize).div_ceil(8);
         let (c_path, h_path) = (job.out_dir.join(format!("{ident}_font.c")), job.out_dir.join(format!("{ident}_font.h")));
         fs::write(&h_path, c_header(&ident)).map_err(|e| format!("could not write '{}': {e}", h_path.display()))?;
-        fs::write(&c_path, c_source(&ident, &glyphs, cell_width, cell_height, pitch)).map_err(|e| format!("could not write '{}': {e}", c_path.display()))?;
+        fs::write(&c_path, c_source(&ident, &r.glyphs, r.cell_width, r.cell_height, pitch)).map_err(|e| format!("could not write '{}': {e}", c_path.display()))?;
 
-        Ok(Outcome { pixel_size, cell_width, cell_height, lgf_path })
-}
-
-/// Copies a rendered glyph into a zeroed cell, MSB-first packed, placed by its bearings relative
-/// to the baseline row `cell_ascent`, clipping pixel by pixel.
-#[allow(clippy::too_many_arguments)]
-fn copy_bitmap(buffer: &[u8], src_pitch: i32, width: u32, rows: u32, left: i32, top: i32, cell_width: u8, cell_height: u8, cell_ascent: u8) -> Vec<u8> {
-        let dest_pitch = (cell_width as usize).div_ceil(8);
-        let mut out = vec![0u8; dest_pitch * cell_height as usize];
-        let origin_x = left;
-        let origin_y = i32::from(cell_ascent) - top;
-        let abs_pitch = src_pitch.unsigned_abs() as usize;
-        for y in 0..rows {
-                let dest_y = origin_y + y as i32;
-                if dest_y < 0 || dest_y >= i32::from(cell_height) {
-                        continue;
-                }
-                for x in 0..width {
-                        let dest_x = origin_x + x as i32;
-                        if dest_x < 0 || dest_x >= i32::from(cell_width) {
-                                continue;
-                        }
-                        let byte = buffer[y as usize * abs_pitch + x as usize / 8];
-                        if byte >> (7 - x % 8) & 1 != 0 {
-                                out[dest_y as usize * dest_pitch + dest_x as usize / 8] |= 1 << (7 - dest_x % 8);
-                        }
-                }
-        }
-        out
+        Ok(Outcome { pixel_size: r.pixel_size, cell_width: r.cell_width, cell_height: r.cell_height, lgf_path })
 }
 
 fn sanitize_identifier(name: &str) -> String {
