@@ -36,6 +36,9 @@ use light_font::Font;
 pub mod theme;
 pub use theme::Theme;
 
+pub mod lui;
+pub use lui::{Lui, LuiChild, LuiError, LuiPage};
+
 /// Which typographic role a piece of text plays. A [`Style`] binds a font per role, so a title
 /// can be set in a different face or size from body text; today's UIs use one face for every
 /// role ([`Fonts::uniform`]). Add a role here and every consumer keeps compiling -- [`Fonts`]
@@ -3283,6 +3286,39 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.pending.clear();
                 self.pending_all = false;
                 self.dirty = false;
+        }
+}
+
+/// Building a page from an LUI blob. A blob UI's event type is `u16` -- a button emits its child
+/// index, since the blob carries no Rust event type; a caller resolves the blob child's navigation
+/// (or app meaning) from that index. See [`crate::lui`].
+impl<const N: usize> Ui<u16, N> {
+        /// Build `page` (from a parsed [`Lui`] blob) into the widget tree, replacing any current
+        /// page and laying it out to the canvas. The blob must be `'static` -- its strings become
+        /// the widgets' `&'static str`. There is no page transition; this is an in-place build (a
+        /// blob-driven caller animates, if at all, at its own layer).
+        pub fn build_lui(&mut self, page: &LuiPage<'static>) -> Result<(), Error> {
+                if let Some(root) = self.root {
+                        self.destroy(root);
+                }
+                let win = self.create_window(None, Rect::new(0, 0, 0, 0), Some(page.title()), false)?;
+                for (i, child) in page.children().enumerate() {
+                        let slot = i as u16;
+                        let id = match child.kind {
+                                lui::code::KIND_LABEL => self.create_label(Some(win), Rect::new(0, 0, 0, 0), child.text)?,
+                                //   a button, or any unknown kind treated as one, emits its slot
+                                _ => self.create_button(Some(win), Rect::new(0, 0, 0, 0), child.text, Some(slot), Nav::Stay)?,
+                        };
+                        //   tag = slot + 1 (tag 0 is "untagged"), so a caller can find a child by index
+                        self.w_mut(id).tag = (i + 1) as u8;
+                }
+                match page.layout() {
+                        lui::code::LAYOUT_ROW => self.layout_row(win, page.gap()),
+                        lui::code::LAYOUT_LINEAR => self.layout_linear(win, page.gap()),
+                        _ => self.layout_stack(win, page.gap()),
+                }
+                self.relayout();
+                Ok(())
         }
 }
 
