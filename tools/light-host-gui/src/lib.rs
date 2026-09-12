@@ -29,6 +29,7 @@ use light_display::{Display, DisplayDriver, FrameLayer, Frame, Region};
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::{ElementState, MouseButton, WindowEvent};
+use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -165,6 +166,16 @@ pub struct PointerEvent {
         pub phase: PointerPhase,
 }
 
+/// A key press, reduced to what a text field needs: a typed character, or an editing key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Key {
+        /// A printable character was typed.
+        Text(char),
+        Backspace,
+        Enter,
+        Escape,
+}
+
 /// A host GUI application. Implement it and pass it to [`run`].
 pub trait HostApp {
         /// The window title.
@@ -182,6 +193,9 @@ pub trait HostApp {
 
         /// A pointer event in canvas space. Default: ignored.
         fn on_pointer(&mut self, _event: PointerEvent) {}
+
+        /// A key press. Default: ignored.
+        fn on_key(&mut self, _key: Key) {}
 
         /// Draw one frame. Returns `true` to ask for another redraw -- an animation is in flight
         /// and the frame after this one will differ.
@@ -314,6 +328,28 @@ impl<A: HostApp> ApplicationHandler for Shell<A> {
                                 let phase = if gfx.pointer_down { PointerPhase::Pressed } else { PointerPhase::Released };
                                 app.on_pointer(PointerEvent { x: cx as i32 - ox, y: cy as i32 - oy, phase });
                                 gfx.window.request_redraw();
+                        }
+                        WindowEvent::KeyboardInput { event, .. } => {
+                                if event.state == ElementState::Pressed {
+                                        let named = match event.logical_key {
+                                                WinitKey::Named(NamedKey::Backspace) => Some(Key::Backspace),
+                                                WinitKey::Named(NamedKey::Enter) => Some(Key::Enter),
+                                                WinitKey::Named(NamedKey::Escape) => Some(Key::Escape),
+                                                _ => None,
+                                        };
+                                        if let Some(key) = named {
+                                                app.on_key(key);
+                                                gfx.window.request_redraw();
+                                        } else if let Some(text) = &event.text {
+                                                //   the character(s) this press produced, honouring the
+                                                // layout and modifiers; control chars are the editing
+                                                // keys handled above
+                                                for ch in text.chars().filter(|c| !c.is_control()) {
+                                                        app.on_key(Key::Text(ch));
+                                                }
+                                                gfx.window.request_redraw();
+                                        }
+                                }
                         }
                         WindowEvent::RedrawRequested => {
                                 let mut frame = HostFrame { layer: &mut gfx.layer, display: &mut gfx.display, now_us: now_us() };

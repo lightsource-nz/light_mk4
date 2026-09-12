@@ -227,6 +227,78 @@ impl Preview {
                 self.rebuild();
         }
 
+        /// Set the selected widget's text (its button or label string).
+        pub fn set_selected_text(&mut self, s: &str) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.button.is_some() {
+                                c.button = Some(s.to_owned());
+                        } else if c.label.is_some() {
+                                c.label = Some(s.to_owned());
+                        }
+                }
+                self.rebuild();
+        }
+
+        /// Cycle the selected button's action: none -> back -> goto(0) -> ... -> goto(last) -> none.
+        /// A no-op on a label.
+        pub fn cycle_selected_action(&mut self) {
+                let pages = self.design.pages.len();
+                {
+                        let Some(c) = self.selected_child_mut() else {
+                                return;
+                        };
+                        if c.button.is_none() {
+                                return;
+                        }
+                        if c.back {
+                                c.back = false;
+                                c.goto = if pages > 0 { Some(0) } else { None };
+                        } else if let Some(i) = c.goto {
+                                c.goto = if i + 1 < pages { Some(i + 1) } else { None };
+                        } else {
+                                c.back = true;
+                        }
+                }
+                self.rebuild();
+        }
+
+        fn selected_child(&self) -> Option<&ChildDef> {
+                self.design.pages.get(self.current())?.children.get(self.selected?)
+        }
+
+        fn selected_child_mut(&mut self) -> Option<&mut ChildDef> {
+                let cur = self.current();
+                let sel = self.selected?;
+                self.design.pages.get_mut(cur)?.children.get_mut(sel)
+        }
+
+        /// The selected widget's text, for the inspector's editable field.
+        pub fn selected_text(&self) -> Option<String> {
+                let c = self.selected_child()?;
+                c.button.clone().or_else(|| c.label.clone())
+        }
+
+        /// Whether the selected widget is a button (so an action applies).
+        pub fn selected_is_button(&self) -> bool {
+                self.selected_child().is_some_and(|c| c.button.is_some())
+        }
+
+        /// A label for the selected button's action ("none" / "back" / "goto <page>"), or `None`
+        /// for a label widget or no selection.
+        pub fn selected_action_label(&self) -> Option<String> {
+                let c = self.selected_child()?;
+                if c.button.is_none() {
+                        return None;
+                }
+                Some(if let Some(g) = c.goto {
+                        format!("goto {}", self.page_title(g))
+                } else if c.back {
+                        "back".to_owned()
+                } else {
+                        "none".to_owned()
+                })
+        }
+
         /// Re-materialise after a model change, reload the current page in place, and save.
         fn rebuild(&mut self) {
                 self.pages = design::materialize(&self.design);

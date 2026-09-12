@@ -12,7 +12,7 @@
 
 use light_draw::{Canvas, Point};
 use light_font::Font;
-use light_host_gui::{HostApp, HostFrame, PointerEvent, PointerPhase};
+use light_host_gui::{HostApp, HostFrame, Key, PointerEvent, PointerPhase};
 
 mod design;
 mod font;
@@ -75,9 +75,17 @@ fn page_row(i: usize) -> R {
         let y0 = BAR_H + 28 + i as i32 * 32;
         (14, y0, LEFT_W - 14, y0 + 26)
 }
+/// The inspector's editable text field for the selected widget.
+fn text_field() -> R {
+        (W - RIGHT_W + 14, BAR_H + 54, W - 14, BAR_H + 80)
+}
+/// The inspector's action-cycle button (buttons only).
+fn action_button() -> R {
+        (W - RIGHT_W + 14, BAR_H + 90, W - 14, BAR_H + 116)
+}
 /// The inspector's `n`th operation button (Move Up, Move Down, Delete, Add).
 fn insp_button(n: i32) -> R {
-        let y0 = BAR_H + 96 + n * 38;
+        let y0 = BAR_H + 134 + n * 36;
         (W - RIGHT_W + 14, y0, W - 14, y0 + 30)
 }
 const INSP_LABELS: [&str; 4] = ["Move Up", "Move Down", "Delete", "Add Button"];
@@ -105,6 +113,18 @@ struct Editor {
         mode: Mode,
         /// Whether a press began inside the stage, so a drag/release routes there.
         stage_press: bool,
+        /// The working buffer while the selected widget's text field is being edited; `None` when
+        /// not editing. Committed on Enter or a click elsewhere, discarded on Escape.
+        editing: Option<String>,
+}
+
+impl Editor {
+        /// Write the edit buffer back to the selected widget, if editing.
+        fn commit_edit(&mut self) {
+                if let Some(buf) = self.editing.take() {
+                        self.preview.set_selected_text(&buf);
+                }
+        }
 }
 
 /// Draw `s` at `(x, y)` in `color`.
@@ -136,7 +156,12 @@ impl HostApp for Editor {
                 let now = light_host_gui::now_us();
                 match ev.phase {
                         PointerPhase::Pressed => {
-                                // chrome first: toggles, page list, inspector ops
+                                //   a click anywhere but the text field commits the edit in progress
+                                let on_field = self.mode == Mode::Edit && hit(&ev, text_field());
+                                if self.editing.is_some() && !on_field {
+                                        self.commit_edit();
+                                }
+                                // chrome first: toggles, page list, inspector controls
                                 if hit(&ev, run_toggle()) {
                                         //   entering Run starts a fresh run from the root; the run
                                         // session, not the page list, owns navigation from here
@@ -150,16 +175,27 @@ impl HostApp for Editor {
                                         self.mode = Mode::Edit;
                                         return;
                                 }
-                                //   the page list is an Edit control; in Run the run owns the page
                                 if self.mode == Mode::Edit {
+                                        //   the page list is an Edit control; in Run the run owns the page
                                         for i in 0..self.preview.page_count() {
                                                 if hit(&ev, page_row(i)) {
                                                         self.preview.show_page(i);
                                                         return;
                                                 }
                                         }
-                                }
-                                if self.mode == Mode::Edit {
+                                        // the editable text field
+                                        if on_field {
+                                                if self.editing.is_none() && self.preview.selected().is_some() {
+                                                        self.editing = Some(self.preview.selected_text().unwrap_or_default());
+                                                }
+                                                return;
+                                        }
+                                        // the action-cycle button
+                                        if hit(&ev, action_button()) && self.preview.selected_is_button() {
+                                                self.preview.cycle_selected_action();
+                                                return;
+                                        }
+                                        // structural ops
                                         if hit(&ev, insp_button(0)) {
                                                 self.preview.move_selected(-1);
                                                 return;
@@ -203,6 +239,26 @@ impl HostApp for Editor {
                                 }
                         }
                         _ => {}
+                }
+        }
+
+        fn on_key(&mut self, key: Key) {
+                if self.editing.is_none() {
+                        return;
+                }
+                match key {
+                        Key::Text(c) => {
+                                if let Some(b) = self.editing.as_mut() {
+                                        b.push(c);
+                                }
+                        }
+                        Key::Backspace => {
+                                if let Some(b) = self.editing.as_mut() {
+                                        b.pop();
+                                }
+                        }
+                        Key::Enter => self.commit_edit(),
+                        Key::Escape => self.editing = None,
                 }
         }
 
@@ -254,6 +310,29 @@ impl HostApp for Editor {
                         Some(d) => text(&mut c, &self.font, rx, BAR_H + 34, TEXT, &d),
                         None => text(&mut c, &self.font, rx, BAR_H + 34, DIM, "no selection"),
                 }
+                //   the editable text field and the action cycle: only with a selection to edit
+                if self.mode == Mode::Edit && self.preview.selected().is_some() {
+                        let tf = text_field();
+                        fill(&mut c, tf, rgb(0x18, 0x1C, 0x22));
+                        let editing = self.editing.is_some();
+                        c.fg = if editing { ACCENT } else { LINE };
+                        c.rect(Point::new(tf.0, tf.1), Point::new(tf.2, tf.3), false);
+                        let shown = match &self.editing {
+                                Some(b) => format!("{b}_"),
+                                None => self.preview.selected_text().unwrap_or_default(),
+                        };
+                        //   clip so a long or mid-type string cannot bleed past the field
+                        c.set_clip(light_draw::Region::new(tf.0 as u16, tf.1 as u16, tf.2 as u16, tf.3 as u16));
+                        text(&mut c, &self.font, tf.0 + 6, tf.1 + 7, TEXT, &shown);
+                        c.clear_clip();
+
+                        if self.preview.selected_is_button() {
+                                let ab = action_button();
+                                fill(&mut c, ab, CHIP);
+                                let label = self.preview.selected_action_label().unwrap_or_default();
+                                text(&mut c, &self.font, ab.0 + 8, ab.1 + 7, TEXT, &format!("Action: {label}"));
+                        }
+                }
                 let ops_live = self.mode == Mode::Edit;
                 for (n, label) in INSP_LABELS.iter().enumerate() {
                         let r = insp_button(n as i32);
@@ -294,7 +373,7 @@ impl HostApp for Editor {
 }
 
 fn main() {
-        let editor = Editor { preview: Preview::new(), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false };
+        let editor = Editor { preview: Preview::new(), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false, editing: None };
         if let Err(e) = light_host_gui::run(editor) {
                 eprintln!("light-ui-editor: {e}");
                 std::process::exit(1);
