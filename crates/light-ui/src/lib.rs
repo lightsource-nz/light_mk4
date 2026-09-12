@@ -1306,10 +1306,33 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 self.show_page(page, None, false)
         }
 
+        /// Rebuild `page` in place with NO transition -- for reflecting an in-place data change
+        /// (a design editor re-materialising the page it just edited, a live-updated list). Unlike
+        /// [`navigate`](Self::navigate) it does not slide: the point is to show the same page,
+        /// changed, without a page-move animation.
+        pub fn reload(&mut self, page: &'static Page<A>) -> Result<(), Error> {
+                if let Some(root) = self.root {
+                        self.destroy(root);
+                }
+                self.page = Some(page);
+                self.return_page = None;
+                self.build(None, page.content)?;
+                self.invalidate_all();
+                Ok(())
+        }
+
         /// The same, but back from `page` goes to `return_page` -- for a cross-tree jump that
         /// should return to where it was reached from. The override lasts exactly one page.
         pub fn navigate_returning(&mut self, page: &'static Page<A>, return_page: &'static Page<A>) -> Result<(), Error> {
                 self.show_page(page, Some(return_page), false)
+        }
+
+        /// Navigate to an explicit `page` with the BACK-direction transition -- the mirror of
+        /// [`navigate`](Self::navigate). For a caller that keeps its own history (so the target is
+        /// known) rather than relying on the parent link that [`navigate_back`](Self::navigate_back)
+        /// follows.
+        pub fn navigate_back_to(&mut self, page: &'static Page<A>) -> Result<(), Error> {
+                self.show_page(page, None, true)
         }
 
         /// Go to the current page's return address if one was set, otherwise its parent. `false`,
