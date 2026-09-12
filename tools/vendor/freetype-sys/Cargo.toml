@@ -45,3 +45,11 @@ version = "0.3.11"
 
 [features]
 bundled = []
+
+#   vendored third-party code. This lint fires 14 times, from #[derive(Hash, PartialEq, Eq)] on
+# structs with function-pointer fields -- upstream noise nobody here will fix. A [patch.crates-io]
+# path override is NOT cap-lints'd the way a registry dependency is, so without this every build
+# (firmware, editor, host tests) repeats the warning. Silence it at the source so the build is quiet
+# everywhere, not filtered per-script.
+[lints.rust]
+unpredictable_function_pointer_comparisons = "allow"
