@@ -27,13 +27,30 @@ pub enum DesignEvent {
         Back,
 }
 
-/// A whole design: a list of pages and which one opens first.
+/// A whole design: the target device screen, a list of pages, and which one opens first.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Design {
         #[serde(default)]
+        pub device: Device,
+        #[serde(default)]
         pub root: usize,
         pub pages: Vec<PageDef>,
+}
+
+/// The target device screen size in pixels -- what the preview renders at.
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Device {
+        pub width: u16,
+        pub height: u16,
+}
+
+impl Default for Device {
+        fn default() -> Self {
+                //   a common portrait panel; a design says its own
+                Self { width: 240, height: 400 }
+        }
 }
 
 #[derive(Clone, Serialize, Deserialize)]

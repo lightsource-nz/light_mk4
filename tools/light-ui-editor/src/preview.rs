@@ -17,11 +17,6 @@ use light_ui::{Fonts, Page, Rect, Style, Theme, Touch, Ui};
 use crate::design::{self, ChildDef, Design, DesignEvent};
 use crate::font;
 
-/// The previewed device screen, in pixels. A portrait panel; a stand-in until the design carries
-/// its own target size.
-pub const DEV_W: u16 = 240;
-pub const DEV_H: u16 = 400;
-
 /// The preview font's pixel size.
 const PIXEL_SIZE: u16 = 18;
 
@@ -71,6 +66,9 @@ pub struct Preview {
         history: Vec<usize>,
         /// The selected child's index in the current page (Edit mode).
         selected: Option<usize>,
+        /// The device screen size the design targets; the render surfaces are sized to it.
+        dev_w: u16,
+        dev_h: u16,
         /// Where the design is loaded from and saved to.
         path: PathBuf,
 }
@@ -86,14 +84,16 @@ impl Preview {
                         .and_then(|j| design::parse(j).ok())
                         .unwrap_or_else(|| design::parse(DEFAULT_DESIGN_JSON).expect("the bundled design parses"));
 
+                //   the render surfaces are sized to the design's target device
+                let (dev_w, dev_h) = (design.device.width.max(1), design.device.height.max(1));
                 let font = font::load(PIXEL_SIZE);
                 //   compile the theme JSON to an LTH blob with crush-core (the firmware's path) and
                 // parse it, rather than mirroring the theme schema here
                 let lth = crush_core::theme::compile_flat(THEME_JSON).expect("the bundled steel theme compiles");
                 let theme = Theme::parse(&lth).expect("the compiled theme parses");
-                let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(DEV_W, DEV_H)]);
-                let display = Display::new(NullDriver, buf, DEV_W, DEV_H, PixelFormat::Rgb565, now_us);
-                let mut layer = FrameLayer::new(DEV_W, DEV_H, PixelFormat::Rgb565);
+                let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(dev_w, dev_h)]);
+                let display = Display::new(NullDriver, buf, dev_w, dev_h, PixelFormat::Rgb565, now_us);
+                let mut layer = FrameLayer::new(dev_w, dev_h, PixelFormat::Rgb565);
                 layer.bg = theme.bg;
                 let mut ui = Ui::new();
                 ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
@@ -107,7 +107,7 @@ impl Preview {
                 } else {
                         history.clear();
                 }
-                Self { ui, display, layer, theme, font, design, pages, history, selected: None, path }
+                Self { ui, display, layer, theme, font, design, pages, history, selected: None, dev_w, dev_h, path }
         }
 
         /// Render a frame into the off-screen buffer if anything changed. Returns `true` while an
@@ -353,9 +353,9 @@ impl Preview {
                 self.ui.get(id).map(|w| w.rect)
         }
 
-        /// The device screen size.
+        /// The device screen size the design targets.
         pub fn size(&self) -> (u16, u16) {
-                (DEV_W, DEV_H)
+                (self.dev_w, self.dev_h)
         }
 
         /// The rendered RGB565 image, `DEV_W * DEV_H` pixels big-endian, or empty if unavailable.

@@ -47,9 +47,24 @@ const BAR_H: i32 = 34;
 const LEFT_W: i32 = 190;
 const RIGHT_W: i32 = 230;
 
-/// The device screen the stage previews; its size is the preview's own.
-const DEV_W: i32 = preview::DEV_W as i32;
-const DEV_H: i32 = preview::DEV_H as i32;
+/// The stage column the device preview sits in: between the panels, below the bar.
+const fn stage_rect() -> R {
+        (LEFT_W + 1, BAR_H + 1, W - RIGHT_W - 2, H - 1)
+}
+
+/// Fit a `dw`x`dh` device into the stage, centred and never upscaled: returns the top-left in canvas
+/// coordinates and the scale. Shared by the composite, the pointer mapping and the selection
+/// outline so they cannot disagree about where a device pixel lands.
+fn device_placement(dw: u16, dh: u16) -> (i32, i32, f32) {
+        let s = stage_rect();
+        let (area_w, area_h) = (s.2 - s.0 + 1, s.3 - s.1 + 1);
+        //   leave room for the bezel drawn around the screen
+        const M: i32 = 12;
+        let (aw, ah) = ((area_w - 2 * M).max(1), (area_h - 2 * M).max(1));
+        let scale = (aw as f32 / dw as f32).min(ah as f32 / dh as f32).min(1.0);
+        let (vw, vh) = ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32);
+        (s.0 + (area_w - vw) / 2, s.1 + (area_h - vh) / 2, scale)
+}
 
 /// The chrome font's pixel size.
 const CHROME_PX: u16 = 14;
@@ -89,17 +104,6 @@ fn insp_button(n: i32) -> R {
 }
 const INSP_LABELS: [&str; 4] = ["Move Up", "Move Down", "Delete", "Add Button"];
 
-/// The device preview's top-left in canvas coordinates -- centred in the stage column. Shared by
-/// the render (where the preview is composited and the selection outlined) and the pointer mapping.
-const fn dev_x0() -> i32 {
-        let stage_x0 = LEFT_W + 1;
-        let stage_x1 = W - RIGHT_W - 2;
-        stage_x0 + ((stage_x1 - stage_x0) - DEV_W) / 2
-}
-const fn dev_y0() -> i32 {
-        BAR_H + ((H - BAR_H) - DEV_H) / 2
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
         Edit,
@@ -123,6 +127,17 @@ impl Editor {
                 if let Some(buf) = self.editing.take() {
                         self.preview.set_selected_text(&buf);
                 }
+        }
+
+        /// Map a canvas point to device pixels through the current fit: the clamped coordinate and
+        /// whether the point was actually inside the device.
+        fn to_device(&self, x: i32, y: i32) -> (u16, u16, bool) {
+                let (dw, dh) = self.preview.size();
+                let (ox, oy, scale) = device_placement(dw, dh);
+                let dx = ((x - ox) as f32 / scale) as i32;
+                let dy = ((y - oy) as f32 / scale) as i32;
+                let inside = dx >= 0 && dy >= 0 && dx < i32::from(dw) && dy < i32::from(dh);
+                (dx.clamp(0, i32::from(dw) - 1) as u16, dy.clamp(0, i32::from(dh) - 1) as u16, inside)
         }
 }
 
@@ -213,28 +228,24 @@ impl HostApp for Editor {
                                         }
                                 }
                                 // the stage
-                                let (px, py) = (ev.x - dev_x0(), ev.y - dev_y0());
-                                if px >= 0 && py >= 0 && px < DEV_W && py < DEV_H {
+                                let (dx, dy, inside) = self.to_device(ev.x, ev.y);
+                                if inside {
                                         self.stage_press = true;
                                         match self.mode {
-                                                Mode::Run => self.preview.interact(px as u16, py as u16, true, now),
-                                                Mode::Edit => self.preview.select_at(px, py),
+                                                Mode::Run => self.preview.interact(dx, dy, true, now),
+                                                Mode::Edit => self.preview.select_at(i32::from(dx), i32::from(dy)),
                                         }
                                 }
                         }
                         PointerPhase::Moved if self.stage_press && self.mode == Mode::Run => {
-                                let (dw, dh) = self.preview.size();
-                                let cx = (ev.x - dev_x0()).clamp(0, i32::from(dw) - 1) as u16;
-                                let cy = (ev.y - dev_y0()).clamp(0, i32::from(dh) - 1) as u16;
-                                self.preview.interact(cx, cy, true, now);
+                                let (dx, dy, _) = self.to_device(ev.x, ev.y);
+                                self.preview.interact(dx, dy, true, now);
                         }
                         PointerPhase::Released if self.stage_press => {
                                 self.stage_press = false;
                                 if self.mode == Mode::Run {
-                                        let (dw, dh) = self.preview.size();
-                                        let cx = (ev.x - dev_x0()).clamp(0, i32::from(dw) - 1) as u16;
-                                        let cy = (ev.y - dev_y0()).clamp(0, i32::from(dh) - 1) as u16;
-                                        self.preview.interact(cx, cy, false, now);
+                                        let (dx, dy, _) = self.to_device(ev.x, ev.y);
+                                        self.preview.interact(dx, dy, false, now);
                                 }
                         }
                         _ => {}
@@ -341,27 +352,37 @@ impl HostApp for Editor {
                         text(&mut c, &self.font, r.0 + 10, r.1 + 9, if enabled { TEXT } else { DIM }, label);
                 }
 
-                // the stage: device bezel, the composited preview, and the selection outline
-                let (dx0, dy0) = (dev_x0(), dev_y0());
-                let (dx1, dy1) = (dx0 + DEV_W - 1, dy0 + DEV_H - 1);
+                // the stage: device bezel, the composited preview scaled to fit, and the selection
+                // outline
+                let (dw, dh) = self.preview.size();
+                let (ox, oy, scale) = device_placement(dw, dh);
+                let (vw, vh) = ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32);
                 c.fg = BEZEL;
-                c.rect_rounded(Point::new(dx0 - 8, dy0 - 8), Point::new(dx1 + 8, dy1 + 8), 14, light_draw::corner::ALL, true);
+                c.rect_rounded(Point::new(ox - 8, oy - 8), Point::new(ox + vw + 7, oy + vh + 7), 14, light_draw::corner::ALL, true);
                 let px = self.preview.pixels();
-                if px.len() >= (DEV_W * DEV_H * 2) as usize {
-                        for cy in 0..DEV_H {
-                                for cx in 0..DEV_W {
-                                        let i = ((cy * DEV_W + cx) as usize) * 2;
+                if px.len() >= dw as usize * dh as usize * 2 {
+                        //   nearest-neighbour sample per screen pixel, so any device size fits
+                        for vy in 0..vh {
+                                let dev_y = (((vy as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dh) - 1);
+                                for vx in 0..vw {
+                                        let dev_x = (((vx as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dw) - 1);
+                                        let i = ((dev_y * i32::from(dw) + dev_x) as usize) * 2;
                                         let color = u16::from_be_bytes([px[i], px[i + 1]]);
-                                        c.set(dx0 + cx, dy0 + cy, color);
+                                        c.set(ox + vx, oy + vy, color);
                                 }
                         }
                 }
                 if self.mode == Mode::Edit {
                         if let Some(r) = self.preview.selected_rect() {
                                 c.fg = ACCENT;
-                                //   a two-pixel outline so it reads over any widget colour
-                                c.rect(Point::new(dx0 + r.x0, dy0 + r.y0), Point::new(dx0 + r.x1, dy0 + r.y1), false);
-                                c.rect(Point::new(dx0 + r.x0 - 1, dy0 + r.y0 - 1), Point::new(dx0 + r.x1 + 1, dy0 + r.y1 + 1), false);
+                                //   device rect scaled into the stage; a two-pixel outline so it reads
+                                // over any widget colour
+                                let x0 = ox + (r.x0 as f32 * scale) as i32;
+                                let y0 = oy + (r.y0 as f32 * scale) as i32;
+                                let x1 = ox + ((r.x1 + 1) as f32 * scale) as i32 - 1;
+                                let y1 = oy + ((r.y1 + 1) as f32 * scale) as i32 - 1;
+                                c.rect(Point::new(x0, y0), Point::new(x1, y1), false);
+                                c.rect(Point::new(x0 - 1, y0 - 1), Point::new(x1 + 1, y1 + 1), false);
                         }
                 }
 

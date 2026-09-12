@@ -1,4 +1,5 @@
 {
+        "device": { "width": 240, "height": 400 },
         "root": 0,
         "pages": [
                 {
