@@ -1260,6 +1260,13 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 })
         }
 
+        /// The direct children of `id`, in build order. For walking a built tree from outside -- an
+        /// editor correlating each widget with the design node that produced it (the two are 1:1 and
+        /// in the same order), to hit-test a point or outline a selection, frames included.
+        pub fn child_ids(&self, id: WidgetId) -> impl Iterator<Item = WidgetId> + '_ {
+                self.children(id)
+        }
+
         // --- navigation ---
 
         fn show_page(&mut self, page: &'static Page<A>, return_page: Option<&'static Page<A>>, back: bool) -> Result<(), Error> {

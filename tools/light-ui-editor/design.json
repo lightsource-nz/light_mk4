@@ -19,6 +19,17 @@
                         "children": [
                                 { "button": "REC_0001" },
                                 { "button": "REC_0002" },
+                                {
+                                        "layout": "row",
+                                        "gap": 6,
+                                        "scroll": "horizontal",
+                                        "grow": true,
+                                        "children": [
+                                                { "button": "Tag A" },
+                                                { "button": "Tag B" },
+                                                { "button": "Tag C" }
+                                        ]
+                                },
                                 { "button": "< Back", "back": true }
                         ]
                 }

@@ -14,10 +14,18 @@ use light_display::{Display, DisplayDriver, Frame, FrameLayer, Region};
 use light_draw::PixelFormat;
 use light_host_gui::now_us;
 use light_ui::lui::code;
-use light_ui::{Fonts, Lui, Rect, Style, Theme, Touch, Ui};
+use light_ui::{Fonts, Lui, Rect, Style, Theme, Touch, Ui, WidgetId};
 
 use crate::design::{self, ChildDef, Design};
 use crate::font;
+
+/// A selected node in the current page: a top-level child (`sub` = `None`), or the `sub`-th child
+/// inside the frame at `top`. One level deep, matching the format.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Sel {
+        pub top: usize,
+        pub sub: Option<usize>,
+}
 
 /// The preview font's pixel size.
 const PIXEL_SIZE: u16 = 18;
@@ -65,8 +73,8 @@ pub struct Preview {
         lui: Lui<'static>,
         /// The visited-page stack; its last entry is the page shown.
         history: Vec<usize>,
-        /// The selected child's index in the current page (Edit mode).
-        selected: Option<usize>,
+        /// The selected node in the current page (Edit mode): a top-level child or one inside a frame.
+        selected: Option<Sel>,
         dev_w: u16,
         dev_h: u16,
         path: PathBuf,
@@ -151,21 +159,37 @@ impl Preview {
 
         // --- Edit mode: selection and structural edits --------------------------------------
 
-        /// Select the widget at a point in device pixels, or clear the selection.
+        /// Select the widget at a point in device pixels, or clear the selection. Walks the built
+        /// tree in step with the design (the two are 1:1 and in the same order): a hit inside a
+        /// frame selects the child under the point, or the frame itself if the point is between its
+        /// children.
         pub fn select_at(&mut self, x: i32, y: i32) {
-                let count = self.design.pages.get(self.current()).map_or(0, |p| p.children.len());
                 self.selected = None;
-                for i in 0..count {
-                        if let Some(id) = self.ui.find((i + 1) as u8) {
-                                if let Some(w) = self.ui.get(id) {
-                                        let r = w.rect;
-                                        if x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1 {
-                                                self.selected = Some(i);
-                                                break;
+                let Some(root) = self.ui.root() else { return };
+                let cur = self.current();
+                let top_ids: Vec<_> = self.ui.child_ids(root).collect();
+                for (i, &top_id) in top_ids.iter().enumerate() {
+                        if !self.hit_widget(top_id, x, y) {
+                                continue;
+                        }
+                        let is_frame = self.design.pages.get(cur).and_then(|p| p.children.get(i)).is_some_and(ChildDef::is_frame);
+                        if is_frame {
+                                let sub_ids: Vec<_> = self.ui.child_ids(top_id).collect();
+                                for (j, &sub_id) in sub_ids.iter().enumerate() {
+                                        if self.hit_widget(sub_id, x, y) {
+                                                self.selected = Some(Sel { top: i, sub: Some(j) });
+                                                return;
                                         }
                                 }
                         }
+                        self.selected = Some(Sel { top: i, sub: None });
+                        return;
                 }
+        }
+
+        /// Whether a built widget's rect contains a device point.
+        fn hit_widget(&self, id: WidgetId, x: i32, y: i32) -> bool {
+                self.ui.get(id).map(|w| w.rect).is_some_and(|r| x >= r.x0 && x <= r.x1 && y >= r.y0 && y <= r.y1)
         }
 
         /// Show a page for editing.
@@ -177,11 +201,35 @@ impl Preview {
                 }
         }
 
+        /// Add a button. Into the selected frame when one (or a child of one) is selected, so a frame
+        /// can be filled; otherwise at top level. Selects the new button.
         pub fn add_button(&mut self) {
                 let cur = self.current();
+                let into_frame = self.selected_frame_top();
                 if let Some(page) = self.design.pages.get_mut(cur) {
-                        page.children.push(ChildDef::new_button());
-                        self.selected = Some(page.children.len() - 1);
+                        if let Some(top) = into_frame {
+                                if let Some(frame) = page.children.get_mut(top) {
+                                        frame.children.push(ChildDef::new_button());
+                                        self.selected = Some(Sel { top, sub: Some(frame.children.len() - 1) });
+                                }
+                        } else {
+                                page.children.push(ChildDef::new_button());
+                                self.selected = Some(Sel { top: page.children.len() - 1, sub: None });
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Add an empty frame at top level (frames do not nest) and select it, ready to fill.
+        pub fn add_frame(&mut self) {
+                let cur = self.current();
+                if let Some(page) = self.design.pages.get_mut(cur) {
+                        let mut frame = ChildDef::new_button();
+                        frame.button = None;
+                        frame.layout = Some("linear".to_owned());
+                        frame.children.push(ChildDef::new_button());
+                        page.children.push(frame);
+                        self.selected = Some(Sel { top: page.children.len() - 1, sub: None });
                 }
                 self.recompile();
         }
@@ -189,10 +237,17 @@ impl Preview {
         pub fn delete_selected(&mut self) {
                 let cur = self.current();
                 if let Some(sel) = self.selected {
-                        if let Some(page) = self.design.pages.get_mut(cur) {
-                                if sel < page.children.len() {
-                                        page.children.remove(sel);
-                                        self.selected = if page.children.is_empty() { None } else { Some(sel.min(page.children.len() - 1)) };
+                        if let Some(list) = self.container_mut(cur, sel) {
+                                let idx = sel.sub.unwrap_or(sel.top);
+                                if idx < list.len() {
+                                        list.remove(idx);
+                                        let len = list.len();
+                                        self.selected = match sel.sub {
+                                                _ if len == 0 && sel.sub.is_some() => Some(Sel { top: sel.top, sub: None }),
+                                                Some(_) => Some(Sel { top: sel.top, sub: Some(idx.min(len - 1)) }),
+                                                None if len == 0 => None,
+                                                None => Some(Sel { top: idx.min(len - 1), sub: None }),
+                                        };
                                 }
                         }
                 }
@@ -202,18 +257,22 @@ impl Preview {
         pub fn move_selected(&mut self, delta: i32) {
                 let cur = self.current();
                 if let Some(sel) = self.selected {
-                        if let Some(page) = self.design.pages.get_mut(cur) {
-                                let target = sel as i32 + delta;
-                                if target >= 0 && (target as usize) < page.children.len() {
-                                        page.children.swap(sel, target as usize);
-                                        self.selected = Some(target as usize);
+                        let idx = sel.sub.unwrap_or(sel.top);
+                        if let Some(list) = self.container_mut(cur, sel) {
+                                let target = idx as i32 + delta;
+                                if target >= 0 && (target as usize) < list.len() {
+                                        list.swap(idx, target as usize);
+                                        self.selected = Some(match sel.sub {
+                                                Some(_) => Sel { top: sel.top, sub: Some(target as usize) },
+                                                None => Sel { top: target as usize, sub: None },
+                                        });
                                 }
                         }
                 }
                 self.recompile();
         }
 
-        /// Set the selected widget's text.
+        /// Set the selected widget's text (a no-op on a frame, which has none).
         pub fn set_selected_text(&mut self, s: &str) {
                 if let Some(c) = self.selected_child_mut() {
                         if c.button.is_some() {
@@ -245,6 +304,61 @@ impl Preview {
                         }
                 }
                 self.recompile();
+        }
+
+        /// Cycle a selected frame's layout: stack -> row -> linear -> stack.
+        pub fn cycle_frame_layout(&mut self) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.is_frame() {
+                                c.layout = Some(match c.layout.as_deref() {
+                                        Some("row") => "linear",
+                                        Some("linear") => "stack",
+                                        _ => "row",
+                                }
+                                .to_owned());
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Cycle a selected frame's scroll: none -> vertical -> horizontal -> none.
+        pub fn cycle_frame_scroll(&mut self) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.is_frame() {
+                                c.scroll = match c.scroll.as_deref() {
+                                        None => Some("vertical".to_owned()),
+                                        Some("vertical") => Some("horizontal".to_owned()),
+                                        _ => None,
+                                };
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Toggle whether the selected node grows to take a linear layout's surplus.
+        pub fn toggle_selected_grow(&mut self) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.grow = !c.grow;
+                }
+                self.recompile();
+        }
+
+        /// The top index of the frame the selection sits in or on, for adding into it.
+        fn selected_frame_top(&self) -> Option<usize> {
+                let sel = self.selected?;
+                let page = self.design.pages.get(self.current())?;
+                let top = page.children.get(sel.top)?;
+                top.is_frame().then_some(sel.top)
+        }
+
+        /// The child list the selection lives in: a frame's children when `sub` is set, else the
+        /// page's top-level children.
+        fn container_mut(&mut self, cur: usize, sel: Sel) -> Option<&mut Vec<ChildDef>> {
+                let page = self.design.pages.get_mut(cur)?;
+                match sel.sub {
+                        Some(_) => page.children.get_mut(sel.top).map(|f| &mut f.children),
+                        None => Some(&mut page.children),
+                }
         }
 
         /// Recompile the design to a fresh blob, rebuild the current page, and save.
@@ -280,13 +394,33 @@ impl Preview {
         }
 
         fn selected_child(&self) -> Option<&ChildDef> {
-                self.design.pages.get(self.current())?.children.get(self.selected?)
+                let sel = self.selected?;
+                let top = self.design.pages.get(self.current())?.children.get(sel.top)?;
+                match sel.sub {
+                        Some(j) => top.children.get(j),
+                        None => Some(top),
+                }
         }
 
         fn selected_child_mut(&mut self) -> Option<&mut ChildDef> {
-                let cur = self.current();
                 let sel = self.selected?;
-                self.design.pages.get_mut(cur)?.children.get_mut(sel)
+                let cur = self.current();
+                let top = self.design.pages.get_mut(cur)?.children.get_mut(sel.top)?;
+                match sel.sub {
+                        Some(j) => top.children.get_mut(j),
+                        None => Some(top),
+                }
+        }
+
+        /// The built widget for the selection, walking the tree in step with the design path.
+        fn selected_widget(&self) -> Option<WidgetId> {
+                let sel = self.selected?;
+                let root = self.ui.root()?;
+                let top_id = self.ui.child_ids(root).nth(sel.top)?;
+                match sel.sub {
+                        Some(j) => self.ui.child_ids(top_id).nth(j),
+                        None => Some(top_id),
+                }
         }
 
         pub fn page_count(&self) -> usize {
@@ -301,8 +435,28 @@ impl Preview {
                 self.current()
         }
 
-        pub fn selected(&self) -> Option<usize> {
+        pub fn selected(&self) -> Option<Sel> {
                 self.selected
+        }
+
+        pub fn selected_is_frame(&self) -> bool {
+                self.selected_child().is_some_and(ChildDef::is_frame)
+        }
+
+        /// A frame's layout name for the inspector (`None` off a frame).
+        pub fn selected_layout_label(&self) -> Option<String> {
+                let c = self.selected_child()?;
+                c.is_frame().then(|| c.layout.clone().unwrap_or_else(|| "stack".to_owned()))
+        }
+
+        /// A frame's scroll name for the inspector (`None` off a frame).
+        pub fn selected_scroll_label(&self) -> Option<String> {
+                let c = self.selected_child()?;
+                c.is_frame().then(|| c.scroll.clone().unwrap_or_else(|| "none".to_owned()))
+        }
+
+        pub fn selected_grow(&self) -> bool {
+                self.selected_child().is_some_and(|c| c.grow)
         }
 
         pub fn selected_describe(&self) -> Option<String> {
@@ -333,7 +487,7 @@ impl Preview {
         }
 
         pub fn selected_rect(&self) -> Option<Rect> {
-                let id = self.ui.find((self.selected? + 1) as u8)?;
+                let id = self.selected_widget()?;
                 self.ui.get(id).map(|w| w.rect)
         }
 

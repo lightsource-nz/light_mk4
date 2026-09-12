@@ -118,16 +118,18 @@ fn page_row(i: usize) -> R {
 fn text_field() -> R {
         (W - RIGHT_W + 14, BAR_H + 54, W - 14, BAR_H + 80)
 }
-/// The inspector's action-cycle button (buttons only).
-fn action_button() -> R {
-        (W - RIGHT_W + 14, BAR_H + 90, W - 14, BAR_H + 116)
+/// The inspector's `n`th property button: action/layout (0), scroll (1), grow (2). What each shows
+/// depends on whether a leaf or a frame is selected.
+fn prop_button(n: i32) -> R {
+        let y0 = BAR_H + 88 + n * 28;
+        (W - RIGHT_W + 14, y0, W - 14, y0 + 24)
 }
-/// The inspector's `n`th operation button (Move Up, Move Down, Delete, Add).
+/// The inspector's `n`th operation button (Move Up, Move Down, Delete, Add Button, Add Frame).
 fn insp_button(n: i32) -> R {
-        let y0 = BAR_H + 134 + n * 36;
-        (W - RIGHT_W + 14, y0, W - 14, y0 + 30)
+        let y0 = BAR_H + 178 + n * 34;
+        (W - RIGHT_W + 14, y0, W - 14, y0 + 28)
 }
-const INSP_LABELS: [&str; 4] = ["Move Up", "Move Down", "Delete", "Add Button"];
+const INSP_LABELS: [&str; 5] = ["Move Up", "Move Down", "Delete", "Add Button", "Add Frame"];
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -229,9 +231,21 @@ impl HostApp for Editor {
                                                 }
                                                 return;
                                         }
-                                        // the action-cycle button
-                                        if hit(&ev, action_button()) && self.preview.selected_is_button() {
-                                                self.preview.cycle_selected_action();
+                                        // property buttons: action/layout, scroll, grow -- by kind
+                                        if hit(&ev, prop_button(0)) {
+                                                if self.preview.selected_is_frame() {
+                                                        self.preview.cycle_frame_layout();
+                                                } else if self.preview.selected_is_button() {
+                                                        self.preview.cycle_selected_action();
+                                                }
+                                                return;
+                                        }
+                                        if hit(&ev, prop_button(1)) && self.preview.selected_is_frame() {
+                                                self.preview.cycle_frame_scroll();
+                                                return;
+                                        }
+                                        if hit(&ev, prop_button(2)) && self.preview.selected().is_some() {
+                                                self.preview.toggle_selected_grow();
                                                 return;
                                         }
                                         // structural ops
@@ -249,6 +263,10 @@ impl HostApp for Editor {
                                         }
                                         if hit(&ev, insp_button(3)) {
                                                 self.preview.add_button();
+                                                return;
+                                        }
+                                        if hit(&ev, insp_button(4)) {
+                                                self.preview.add_frame();
                                                 return;
                                         }
                                 }
@@ -345,34 +363,55 @@ impl HostApp for Editor {
                         Some(d) => text(&mut c, &self.font, rx, BAR_H + 34, TEXT, &d),
                         None => text(&mut c, &self.font, rx, BAR_H + 34, DIM, "no selection"),
                 }
-                //   the editable text field and the action cycle: only with a selection to edit
+                //   the inspector controls: only in Edit with a selection
                 if self.mode == Mode::Edit && self.preview.selected().is_some() {
-                        let tf = text_field();
-                        fill(&mut c, tf, rgb(0x18, 0x1C, 0x22));
-                        let editing = self.editing.is_some();
-                        c.fg = if editing { ACCENT } else { LINE };
-                        c.rect(Point::new(tf.0, tf.1), Point::new(tf.2, tf.3), false);
-                        let shown = match &self.editing {
-                                Some(b) => format!("{b}_"),
-                                None => self.preview.selected_text().unwrap_or_default(),
-                        };
-                        //   clip so a long or mid-type string cannot bleed past the field
-                        c.set_clip(light_draw::Region::new(tf.0 as u16, tf.1 as u16, tf.2 as u16, tf.3 as u16));
-                        text(&mut c, &self.font, tf.0 + 6, tf.1 + 7, TEXT, &shown);
-                        c.clear_clip();
-
-                        if self.preview.selected_is_button() {
-                                let ab = action_button();
-                                fill(&mut c, ab, CHIP);
-                                let label = self.preview.selected_action_label().unwrap_or_default();
-                                text(&mut c, &self.font, ab.0 + 8, ab.1 + 7, TEXT, &format!("Action: {label}"));
+                        let is_frame = self.preview.selected_is_frame();
+                        //   the editable text field: leaves only (a frame has no text)
+                        if !is_frame {
+                                let tf = text_field();
+                                fill(&mut c, tf, rgb(0x18, 0x1C, 0x22));
+                                let editing = self.editing.is_some();
+                                c.fg = if editing { ACCENT } else { LINE };
+                                c.rect(Point::new(tf.0, tf.1), Point::new(tf.2, tf.3), false);
+                                let shown = match &self.editing {
+                                        Some(b) => format!("{b}_"),
+                                        None => self.preview.selected_text().unwrap_or_default(),
+                                };
+                                //   clip so a long or mid-type string cannot bleed past the field
+                                c.set_clip(light_draw::Region::new(tf.0 as u16, tf.1 as u16, tf.2 as u16, tf.3 as u16));
+                                text(&mut c, &self.font, tf.0 + 6, tf.1 + 7, TEXT, &shown);
+                                c.clear_clip();
                         }
+
+                        //   prop(0): a frame's layout, or a button's nav action
+                        if is_frame {
+                                let p = prop_button(0);
+                                fill(&mut c, p, CHIP);
+                                let l = self.preview.selected_layout_label().unwrap_or_default();
+                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Layout: {l}"));
+                                //   prop(1): a frame's scroll axis
+                                let p = prop_button(1);
+                                fill(&mut c, p, CHIP);
+                                let s = self.preview.selected_scroll_label().unwrap_or_default();
+                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Scroll: {s}"));
+                        } else if self.preview.selected_is_button() {
+                                let p = prop_button(0);
+                                fill(&mut c, p, CHIP);
+                                let label = self.preview.selected_action_label().unwrap_or_default();
+                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Action: {label}"));
+                        }
+
+                        //   prop(2): grow, for any selection
+                        let p = prop_button(2);
+                        fill(&mut c, p, CHIP);
+                        let g = if self.preview.selected_grow() { "on" } else { "off" };
+                        text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Grow: {g}"));
                 }
                 let ops_live = self.mode == Mode::Edit;
                 for (n, label) in INSP_LABELS.iter().enumerate() {
                         let r = insp_button(n as i32);
-                        //   Add is always available in Edit; the others need a selection
-                        let enabled = ops_live && (n == 3 || self.preview.selected().is_some());
+                        //   Add Button/Add Frame are always available in Edit; the others need a selection
+                        let enabled = ops_live && (n >= 3 || self.preview.selected().is_some());
                         fill(&mut c, r, if enabled { CHIP } else { rgb(0x20, 0x25, 0x2D) });
                         text(&mut c, &self.font, r.0 + 10, r.1 + 9, if enabled { TEXT } else { DIM }, label);
                 }
