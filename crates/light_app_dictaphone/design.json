@@ -1,0 +1,37 @@
+{
+        "device": { "width": 172, "height": 640, "corner_radius": 0 },
+        "root": 0,
+        "pages": [
+                {
+                        "title": "Dictaphone",
+                        "subtitle": true,
+                        "layout": "linear",
+                        "gap": 6,
+                        "children": [
+                                { "button": "* Record", "event": 1, "tag": 2, "min_h": 88 },
+                                { "button": "Play last", "event": 2, "tag": 3, "min_h": 56 },
+                                { "button": "Recordings >", "event": 3, "min_h": 56 }
+                        ]
+                },
+                {
+                        "title": "Recordings",
+                        "subtitle": true,
+                        "layout": "linear",
+                        "gap": 6,
+                        "scroll": true,
+                        "children": [
+                                { "button": "< Newer", "event": 5, "tag": 4, "min_h": 56 },
+                                { "button": "-", "event": 16, "tag": 16, "min_h": 56 },
+                                { "button": "-", "event": 17, "tag": 17, "min_h": 56 },
+                                { "button": "-", "event": 18, "tag": 18, "min_h": 56 },
+                                { "button": "-", "event": 19, "tag": 19, "min_h": 56 },
+                                { "button": "-", "event": 20, "tag": 20, "min_h": 56 },
+                                { "button": "-", "event": 21, "tag": 21, "min_h": 56 },
+                                { "button": "-", "event": 22, "tag": 22, "min_h": 56 },
+                                { "button": "-", "event": 23, "tag": 23, "min_h": 56 },
+                                { "button": "Older >", "event": 4, "tag": 5, "min_h": 56 },
+                                { "button": "< Back", "event": 6, "min_h": 56 }
+                        ]
+                }
+        ]
+}

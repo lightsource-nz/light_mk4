@@ -31,4 +31,11 @@ light_mk4_add_theme(dictaphone_touch349_theme
         CRATE dictaphone_touch349_app ENV LIGHT_THEME_LTH
 )
 
+#   the portrait interface itself, as data: light_app_dictaphone's design compiled to an LUI
+# blob. light_dictaphone_core reads it and drives navigation from the design's event ids.
+light_mk4_add_ui(dictaphone_touch349_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone/design.json
+        CRATE dictaphone_touch349_app ENV LIGHT_UI_LUI
+)
+
 light_mk4_shell_configure(dictaphone_touch349)

@@ -11,13 +11,13 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone as dict;
-use dict::{dictaphone_commands, dictaphone_pages, keep_recording, AudioStatus, Axis, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, Axis, AudioSlots, Command, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
-use light_ui::{Fonts, Style, Theme, Ui};
+use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, AudioStream, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
@@ -59,6 +59,9 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
 /// color support. A board-specific override would be a local theme file extending it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The portrait interface, as data: `light_app_dictaphone/design.json` compiled by crush to an
+/// LUI blob (see the module CMakeLists' `light_mk4_add_ui`), read here and displayed by the core.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -140,14 +143,6 @@ pub extern "C" fn light_app_core1_service() {
 //   Bar glass, corners unmeasured: the theme's screen_radius keeps its default of 0
 // until the glass says otherwise.
 const FPS: u32 = 30;
-
-dictaphone_pages! {
-        event: AppEvent,
-        row_gap: 6,
-        //   a 640-tall list has room; rows sized for a finger on the narrow bar
-        list_min_row: 56,
-        rec_min_h: 88
-}
 
 /// Portrait only, MEASURED: the bar rests near-landscape on its long edge, so ordinary
 /// handling flapped LandscapeL/R -- a 180-degree relayout per touch, and every tap then
@@ -687,6 +682,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+        //   the portrait interface, from the embedded blob: a bad blob is a build-system bug
+        // worth halting on, like the theme
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI design does not parse: {e:?}"),
+        };
         type BoardDisplayMod = DisplayMod<Axs15231b<PioQspiDisplayBus>, SysClock, Ext>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(
@@ -703,7 +704,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         desc: "AXS15231B over PIO-QSPI, double-buffered",
                         rotation_map,
                         initial_rotation: Rotation::R0,
-                        main_page: &PAGE_MAIN,
+                        source: UiSource::Blob(lui),
                         // the portrait interface keeps the toolkit's layout-derived flow
                         default_descent: None,
                         // portrait: the generic (Linear) windows stack top to bottom

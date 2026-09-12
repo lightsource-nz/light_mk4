@@ -35,7 +35,7 @@ use light_font::Font;
 use light_fs::{Fat, File as FsFile, FsError};
 use light_input::imu::Orientation;
 use light_input::touch::Gesture;
-use light_ui::{Fonts, IndicatorShape, Style, SwipeDir, TextSlot, Touch, Ui};
+use light_ui::{Fonts, IndicatorShape, Lui, LuiChild, Style, SwipeDir, TextSlot, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
@@ -187,7 +187,54 @@ pub enum UiAction {
         /// The recordings list's "next"/"previous" page buttons.
         FilesNext,
         FilesPrev,
+        /// Return to the main page -- the recordings page's back button, on the data-driven
+        /// (blob) interface. The const-page interface navigates back structurally instead, so it
+        /// never emits this.
+        Back,
         DragConsumed,
+}
+
+/// The blob-interface event ids: a design's button carries one in its `event` field, and the
+/// display module maps it back to a [`UiAction`] with [`ui_action`]. Ids `1..16` are the fixed
+/// actions; a recordings-list row `i` carries `ROW_BASE + i`. A JSON design cannot hold comments,
+/// so this module is the readable side of that contract -- the numbers in `design.json` mean these.
+pub mod ui_event {
+        pub const REC_TOGGLE: u16 = 1;
+        pub const PLAY_TOGGLE: u16 = 2;
+        pub const FILES_OPEN: u16 = 3;
+        pub const FILES_NEXT: u16 = 4;
+        pub const FILES_PREV: u16 = 5;
+        pub const BACK: u16 = 6;
+        /// Row `i` carries `ROW_BASE + i` (and, by the same offset, tag `TAG_ROW_BASE + i`).
+        pub const ROW_BASE: u16 = 0x10;
+}
+
+/// A blob child's `event` id, as the design authored it, to the [`UiAction`] the app runs.
+/// Unknown ids (and the reserved 0) map to `None`, so a button with no event emits nothing.
+pub fn ui_action(event: u16) -> Option<UiAction> {
+        use ui_event::*;
+        match event {
+                REC_TOGGLE => Some(UiAction::RecToggle),
+                PLAY_TOGGLE => Some(UiAction::PlayToggle),
+                FILES_OPEN => Some(UiAction::FilesOpen),
+                FILES_NEXT => Some(UiAction::FilesNext),
+                FILES_PREV => Some(UiAction::FilesPrev),
+                BACK => Some(UiAction::Back),
+                e if e >= ROW_BASE && (e - ROW_BASE) < LIST_ROWS as u16 => Some(UiAction::PlayRow((e - ROW_BASE) as u8)),
+                _ => None,
+        }
+}
+
+/// The blob interface's page indices, fixed for the dictaphone's two pages -- the `design.json`
+/// must order them this way (the main page first). The const-page interface follows parent links
+/// and does not use these.
+pub const PAGE_MAIN: usize = 0;
+pub const PAGE_FILES: usize = 1;
+
+/// Map a blob child to the app event its button emits: the design's `event` id through
+/// [`ui_action`]. The child index is unused -- the id, not the position, carries the meaning.
+fn map_ui_event<X: Copy>(_: usize, child: &LuiChild<'static>) -> Option<Event<X>> {
+        ui_action(child.event).map(Event::Ui)
 }
 
 // --- shared state --------------------------------------------------------------------------
@@ -421,6 +468,18 @@ fn fs_command<S: Store>(store: &mut S, op: FsOp, path: &str, arg: &str) {
 
 // --- the display module --------------------------------------------------------------------
 
+/// Where the display module's page tree comes from. A const-fn [`Page`] tree follows the pages'
+/// parent links for navigation; an LUI blob (UI as data, authored as `design.json` and compiled by
+/// crush) drives navigation from the design's app-event ids, with the page transition preserved by
+/// [`Ui::navigate_lui`]. A blob is window-plus-flat-children, so an interface with a nested
+/// scrolling strip -- the landscape recordings list -- stays on the const path until the format
+/// grows nesting; the upright interface, whose list is a flat scrolling window, is a blob.
+#[derive(Clone, Copy)]
+pub enum UiSource<X: Copy + 'static> {
+        Pages(&'static Page<Event<X>>),
+        Blob(Lui<'static>),
+}
+
 /// What a tangible board tells [`DisplayMod`] about its panel.
 pub struct DisplayConfig<X: Copy + 'static> {
         pub width: u16,
@@ -433,7 +492,8 @@ pub struct DisplayConfig<X: Copy + 'static> {
         pub initial_rotation: Rotation,
         /// The board's measured orientation-to-rotation table.
         pub rotation_map: fn(Orientation) -> Option<Rotation>,
-        pub main_page: &'static Page<Event<X>>,
+        /// Where the page tree comes from: a const-`Page` tree or an LUI design blob.
+        pub source: UiSource<X>,
         /// The direction child pages open across this interface. `None` keeps the toolkit's
         /// layout-derived flow (a `Row` page rises, everything else slides left); a landscape
         /// interface points it one way for the whole tree. It is expressed logically, so it
@@ -458,6 +518,9 @@ pub struct DisplayMod<D: DisplayDriver, C: Clock, X: Copy + 'static> {
         bus: &'static dyn Bus<Event<X>>,
         sub: Subscription,
         mode: RenderMode,
+        /// The blob interface's current page index (see [`PAGE_MAIN`]/[`PAGE_FILES`]); the display
+        /// drives navigation itself on that path. Unused on the const-`Page` path.
+        page: usize,
         /// What the title bar shows, and what gates the recording light.
         status: AudioStatus,
         /// The recording light's current phase, and when it last toggled: the flash runs
@@ -481,7 +544,7 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                 cfg: DisplayConfig<X>,
         ) -> Self {
                 let sub = bus.subscribe().expect("subscriber slot");
-                Self { display, layer, font, ui, clock, cfg, bus, sub, mode: RenderMode::Normal, status: AudioStatus::Idle, blink_on: false, blink_last_us: 0, drag_reported: false, draw_us_max: 0, push_us_max: 0, push_started_us: None }
+                Self { display, layer, font, ui, clock, cfg, bus, sub, mode: RenderMode::Normal, page: PAGE_MAIN, status: AudioStatus::Idle, blink_on: false, blink_last_us: 0, drag_reported: false, draw_us_max: 0, push_us_max: 0, push_started_us: None }
         }
 
         fn publish(bus: &dyn Bus<Event<X>>, ev: Option<Event<X>>) {
@@ -532,13 +595,22 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                                         self.flush_display();
                                                 }
                                                 Self::publish(self.bus, emitted);
+                                                //   navigation is the display's own on the blob path:
+                                                // the emitted event still rides the bus (the recorder
+                                                // scans on FilesOpen), but the page move happens here,
+                                                // in step with the tap, not through a bus round-trip.
+                                                // A no-op on the const-page path (that navigates
+                                                // structurally from the button itself)
+                                                if let Some(Event::Ui(action)) = emitted {
+                                                        self.nav_for(action);
+                                                }
                                         }
                                         Touch::DragEnd | Touch::None => self.drag_reported = false,
                                         _ => {}
                                 }
                         }
                         Event::Gesture(g) => {
-                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.ui.navigate_back() {
+                                if self.ui.swipe_direction(g.start, g.end) == Some(SwipeDir::Right) && self.back() {
                                         debug!("swipe: returned to the previous page");
                                 }
                         }
@@ -559,11 +631,17 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                         Event::Command(Command::UiActivate) => {
                                 let emitted = self.ui.activate();
                                 Self::publish(self.bus, emitted);
+                                if let Some(Event::Ui(action)) = emitted {
+                                        self.nav_for(action);
+                                }
                         }
                         Event::Command(Command::UiPress { x, y }) => {
                                 let (hit, emitted) = self.ui.press_at(x, y);
                                 info!("ui press {x} {y}: {}", if hit { "hit" } else { "no widget there" });
                                 Self::publish(self.bus, emitted);
+                                if let Some(Event::Ui(action)) = emitted {
+                                        self.nav_for(action);
+                                }
                         }
                         Event::Command(Command::RenderMode(m)) => {
                                 //   coming back to Normal, the glass is untrusted: a pause
@@ -576,27 +654,14 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                 info!("render mode {m:?}");
                         }
                         Event::Command(Command::UiBack) => {
-                                if !self.ui.navigate_back() {
+                                if !self.back() {
                                         info!("ui back: nowhere to go from this page");
                                 }
                         }
                         Event::Status(s) => {
-                                //   the action buttons follow the audio module's state;
-                                // find() returns None for tags on the page that is not
-                                // built, which is exactly the right no-op
                                 self.status = s;
                                 self.render_status();
-                                let (rec_label, play_label) = match s {
-                                        AudioStatus::Idle => ("* Record", "Play last"),
-                                        AudioStatus::Recording { .. } => ("# Stop", "Play last"),
-                                        AudioStatus::Playing { .. } => ("* Record", "# Stop"),
-                                };
-                                if let Some(id) = self.ui.find(TAG_REC) {
-                                        self.ui.set_label(id, rec_label);
-                                }
-                                if let Some(id) = self.ui.find(TAG_PLAY) {
-                                        self.ui.set_label(id, play_label);
-                                }
+                                self.set_transport_labels();
                         }
                         Event::RowText { row, name } => {
                                 //   an unused row (an empty name, e.g. the tail of the last page) is
@@ -630,6 +695,76 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                                 self.push_us_max = 0;
                         }
                         _ => {}
+                }
+        }
+
+        /// The record/play button labels, following the audio module's state. `find` is `None`
+        /// for a tag on a page that is not built (the recordings page has neither button), which
+        /// is exactly the right no-op. Called on every status change and after a page is (re)built,
+        /// so a page entered mid-recording shows `# Stop`, not the design's static `* Record`.
+        fn set_transport_labels(&mut self) {
+                let (rec_label, play_label) = match self.status {
+                        AudioStatus::Idle => ("* Record", "Play last"),
+                        AudioStatus::Recording { .. } => ("# Stop", "Play last"),
+                        AudioStatus::Playing { .. } => ("* Record", "# Stop"),
+                };
+                if let Some(id) = self.ui.find(TAG_REC) {
+                        self.ui.set_label(id, rec_label);
+                }
+                if let Some(id) = self.ui.find(TAG_PLAY) {
+                        self.ui.set_label(id, play_label);
+                }
+        }
+
+        /// Move to a page of the blob interface with the transition ([`Ui::navigate_lui`]) and
+        /// re-apply the live transport state onto it (a `# Stop` mid-recording, the title-bar time
+        /// and indicator), which the design's static labels do not carry. A no-op off the blob path.
+        fn show_lui_page(&mut self, page: usize, back: bool) {
+                let UiSource::Blob(lui) = self.cfg.source else { return };
+                let Some(p) = lui.page(page) else {
+                        warn!("dictaphone: the design has no page {page}");
+                        return;
+                };
+                if let Err(e) = self.ui.navigate_lui(&p, back, map_ui_event::<X>) {
+                        warn!("dictaphone: design page {page} did not build: {e:?}");
+                        return;
+                }
+                self.page = page;
+                self.set_transport_labels();
+                self.render_status();
+        }
+
+        /// Navigate for a tapped action on the blob path: open the recordings list, or return from
+        /// it. The const-page path navigates structurally from the button itself, so this no-ops
+        /// there (its buttons carry `Nav::To`/`Nav::Back`, and swipe/`UiBack` reach [`Self::back`]).
+        fn nav_for(&mut self, action: UiAction) {
+                if !matches!(self.cfg.source, UiSource::Blob(_)) {
+                        return;
+                }
+                match action {
+                        UiAction::FilesOpen => self.show_lui_page(PAGE_FILES, false),
+                        UiAction::Back => {
+                                if self.page != PAGE_MAIN {
+                                        self.show_lui_page(PAGE_MAIN, true);
+                                }
+                        }
+                        _ => {}
+                }
+        }
+
+        /// Go back one page: follow the parent link on the const path, or return to the main page on
+        /// the blob path. `false`, changing nothing, when there is nowhere to go -- so a swipe or
+        /// `UiBack` at the top means nothing there, as it did before.
+        fn back(&mut self) -> bool {
+                match self.cfg.source {
+                        UiSource::Pages(_) => self.ui.navigate_back(),
+                        UiSource::Blob(_) => {
+                                if self.page == PAGE_MAIN {
+                                        return false;
+                                }
+                                self.show_lui_page(PAGE_MAIN, true);
+                                true
+                        }
                 }
         }
 
@@ -759,8 +894,15 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> Module fo
                 }
                 self.ui.set_default_descent(self.cfg.default_descent);
                 self.ui.set_layout_axis(self.cfg.layout_axis);
-                if let Err(e) = self.ui.navigate(self.cfg.main_page) {
-                        warn!("the main page did not build: {e:?}");
+                //   the root is empty, so this first build snaps (navigate/navigate_lui start no
+                // transition until there is an outgoing page to slide off)
+                match self.cfg.source {
+                        UiSource::Pages(main) => {
+                                if let Err(e) = self.ui.navigate(main) {
+                                        warn!("the main page did not build: {e:?}");
+                                }
+                        }
+                        UiSource::Blob(_) => self.show_lui_page(PAGE_MAIN, false),
                 }
                 self.ui.invalidate_all();
                 self.render();

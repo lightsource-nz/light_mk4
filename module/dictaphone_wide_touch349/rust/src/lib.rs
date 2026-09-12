@@ -12,7 +12,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone_wide as dict;
-use dict::{dictaphone_commands, dictaphone_wide_pages, keep_recording, AudioStatus, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString};
+use dict::{dictaphone_commands, dictaphone_wide_pages, keep_recording, AudioStatus, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -710,7 +710,10 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         //   the resting pose is LandscapeL (R270): boot in it, or the
                         // first frames flash upside down until the IMU's first report
                         initial_rotation: Rotation::R270,
-                        main_page: &PAGE_MAIN,
+                        //   the landscape recordings list nests a scrolling strip inside pinned
+                        // paging buttons, which the flat LUI format cannot express yet, so this
+                        // interface stays a const-Page tree while the upright one is a design blob
+                        source: UiSource::Pages(&PAGE_MAIN),
                         //   the landscape interface flows downward: a child page enters from
                         // the BOTTOM and rises into place, back sinks it back down. Logical, so
                         // it reads the same in both landscape poses.
