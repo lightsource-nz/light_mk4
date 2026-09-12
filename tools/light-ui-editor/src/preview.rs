@@ -358,6 +358,12 @@ impl Preview {
                 (self.dev_w, self.dev_h)
         }
 
+        /// The device screen's corner arc radius in device pixels (clamped to half the shorter
+        /// side); 0 is square.
+        pub fn corner_radius(&self) -> u16 {
+                self.design.device.corner_radius.min(self.dev_w.min(self.dev_h) / 2)
+        }
+
         /// The rendered RGB565 image, `DEV_W * DEV_H` pixels big-endian, or empty if unavailable.
         pub fn pixels(&self) -> &[u8] {
                 self.display.front().unwrap_or(&[])

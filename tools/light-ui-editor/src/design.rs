@@ -38,19 +38,32 @@ pub struct Design {
         pub pages: Vec<PageDef>,
 }
 
-/// The target device screen size in pixels -- what the preview renders at.
+/// The target device screen -- what the preview renders at, and its physical shape.
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Device {
+        #[serde(default = "default_dev_w")]
         pub width: u16,
+        #[serde(default = "default_dev_h")]
         pub height: u16,
+        /// The screen's rounded-corner arc radius, in device pixels: 0 is square. What the preview
+        /// rounds the screen and bezel by; clamped to half the shorter side.
+        #[serde(default)]
+        pub corner_radius: u16,
 }
 
 impl Default for Device {
         fn default() -> Self {
-                //   a common portrait panel; a design says its own
-                Self { width: 240, height: 400 }
+                Self { width: default_dev_w(), height: default_dev_h(), corner_radius: 0 }
         }
+}
+
+fn default_dev_w() -> u16 {
+        240
+}
+
+fn default_dev_h() -> u16 {
+        400
 }
 
 #[derive(Clone, Serialize, Deserialize)]

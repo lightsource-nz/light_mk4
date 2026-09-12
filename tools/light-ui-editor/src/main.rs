@@ -66,6 +66,31 @@ fn device_placement(dw: u16, dh: u16) -> (i32, i32, f32) {
         (s.0 + (area_w - vw) / 2, s.1 + (area_h - vh) / 2, scale)
 }
 
+/// Whether pixel `(x, y)` is inside a `w`x`h` rectangle with corner arcs of radius `r` -- so the
+/// composite can leave the rounded corners as bezel.
+fn inside_rounded(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
+        if r <= 0 {
+                return true;
+        }
+        //   the arc centre for whichever corner this pixel is in; only the corner boxes are curved
+        let cx = if x < r {
+                r
+        } else if x > w - 1 - r {
+                w - 1 - r
+        } else {
+                return true;
+        };
+        let cy = if y < r {
+                r
+        } else if y > h - 1 - r {
+                h - 1 - r
+        } else {
+                return true;
+        };
+        let (dx, dy) = (x - cx, y - cy);
+        dx * dx + dy * dy <= r * r
+}
+
 /// The chrome font's pixel size.
 const CHROME_PX: u16 = 14;
 
@@ -357,14 +382,20 @@ impl HostApp for Editor {
                 let (dw, dh) = self.preview.size();
                 let (ox, oy, scale) = device_placement(dw, dh);
                 let (vw, vh) = ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32);
+                //   the screen's rounded corners, scaled into the stage; the bezel follows it
+                let rr = (self.preview.corner_radius() as f32 * scale) as i32;
                 c.fg = BEZEL;
-                c.rect_rounded(Point::new(ox - 8, oy - 8), Point::new(ox + vw + 7, oy + vh + 7), 14, light_draw::corner::ALL, true);
+                c.rect_rounded(Point::new(ox - 8, oy - 8), Point::new(ox + vw + 7, oy + vh + 7), (rr + 8) as u16, light_draw::corner::ALL, true);
                 let px = self.preview.pixels();
                 if px.len() >= dw as usize * dh as usize * 2 {
-                        //   nearest-neighbour sample per screen pixel, so any device size fits
+                        //   nearest-neighbour sample per screen pixel, so any device size fits;
+                        // pixels outside the rounded corners are left as bezel
                         for vy in 0..vh {
                                 let dev_y = (((vy as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dh) - 1);
                                 for vx in 0..vw {
+                                        if !inside_rounded(vx, vy, vw, vh, rr) {
+                                                continue;
+                                        }
                                         let dev_x = (((vx as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dw) - 1);
                                         let i = ((dev_y * i32::from(dw) + dev_x) as usize) * 2;
                                         let color = u16::from_be_bytes([px[i], px[i + 1]]);
