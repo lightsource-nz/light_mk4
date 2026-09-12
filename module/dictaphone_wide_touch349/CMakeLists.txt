@@ -31,4 +31,11 @@ light_mk4_add_theme(dictaphone_wide_touch349_theme
         CRATE dictaphone_wide_touch349_app ENV LIGHT_THEME_LTH
 )
 
+#   the landscape interface itself, as data: light_app_dictaphone_wide's design (a one-level
+# frame holds the scrolling recordings strip) compiled to an LUI blob
+light_mk4_add_ui(dictaphone_wide_touch349_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone_wide/design.json
+        CRATE dictaphone_wide_touch349_app ENV LIGHT_UI_LUI
+)
+
 light_mk4_shell_configure(dictaphone_wide_touch349)

@@ -12,13 +12,13 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_dictaphone_wide as dict;
-use dict::{dictaphone_commands, dictaphone_wide_pages, keep_recording, AudioStatus, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, Axis, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
-use light_ui::{Fonts, Style, Theme, Ui};
+use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, AudioStream, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
@@ -60,6 +60,10 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
 /// color support. A board-specific override would be a local theme file extending it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The landscape interface, as data: `light_app_dictaphone_wide/design.json` compiled by crush to
+/// an LUI blob (a one-level frame holds the scrolling recordings strip); read here, navigated by
+/// the core.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -141,19 +145,6 @@ pub extern "C" fn light_app_core1_service() {
 //   Bar glass, corners unmeasured: the theme's screen_radius keeps its default of 0
 // until the glass says otherwise.
 const FPS: u32 = 30;
-
-dictaphone_wide_pages! {
-        event: AppEvent,
-        gap: 6,
-        //   across the 640 with the 16 px font's 13 px cell: the record button is pinned
-        // at its 8-character label (8*13 + the 1 px insets, plus slack), and a recordings
-        // column prints a 12-character file name ("REC_0007.WAV") in full. The freed
-        // width lands on the play and recordings columns -- "Recordings >" needs 158.
-        // "< Back" is 6 characters, pinned left of the scrolling recordings strip
-        rec_w: 108,
-        list_col_w: 160,
-        back_w: 84
-}
 
 /// Landscape only: the two horizontal poses follow the IMU end-for-end; the portrait
 /// poses are ignored, so tilting the bar upright never leaves the sideways layout.
@@ -692,6 +683,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+        //   the landscape interface, from the embedded blob: a bad blob is a build-system bug worth
+        // halting on, like the theme
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI design does not parse: {e:?}"),
+        };
         type BoardDisplayMod = DisplayMod<Axs15231b<PioQspiDisplayBus>, SysClock, Ext>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(
@@ -710,10 +707,9 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         //   the resting pose is LandscapeL (R270): boot in it, or the
                         // first frames flash upside down until the IMU's first report
                         initial_rotation: Rotation::R270,
-                        //   the landscape recordings list nests a scrolling strip inside pinned
-                        // paging buttons, which the flat LUI format cannot express yet, so this
-                        // interface stays a const-Page tree while the upright one is a design blob
-                        source: UiSource::Pages(&PAGE_MAIN),
+                        //   the landscape interface, as a design blob: the recordings strip is a
+                        // one-level frame (see design.json), so LUI expresses it now
+                        source: UiSource::Blob(lui),
                         //   the landscape interface flows downward: a child page enters from
                         // the BOTTOM and rises into place, back sinks it back down. Logical, so
                         // it reads the same in both landscape poses.

@@ -3310,19 +3310,41 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                                 w.scroll = scroll::VERTICAL;
                         }
                 }
-                for (i, child) in page.children().enumerate() {
-                        let id = match child.kind {
-                                lui::code::KIND_LABEL => self.create_label(Some(win), Rect::new(0, 0, 0, 0), child.text)?,
-                                //   a button, or any unknown kind treated as one; its emitted value is
-                                // the caller's to decide from the child
-                                _ => self.create_button(Some(win), Rect::new(0, 0, 0, 0), child.text, emit(i, &child), Nav::Stay)?,
-                        };
-                        //   the design's tag, or index + 1 as a default (tag 0 is "untagged"), so a
-                        // caller finds a child by a stable id or by index
-                        let w = self.w_mut(id);
-                        w.tag = if child.tag != 0 { child.tag } else { (i + 1) as u8 };
-                        w.min_w = i32::from(child.min_w);
-                        w.min_h = i32::from(child.min_h);
+                //   a single running index over every widget built, so a button's emit value and a
+                // default tag (index + 1, when the design gives none) stay unique across a frame's
+                // children too; on a flat page it is just the child position, as before
+                let mut index = 0usize;
+                for child in page.children() {
+                        if child.kind == lui::code::KIND_FRAME {
+                                //   a frame is a titleless window with its own layout: create it,
+                                // size it, fill it with its (leaf) children, then lay it out. It
+                                // takes ONLY an explicit tag -- a structural container is never
+                                // addressed by position, and an auto tag would collide with an
+                                // app's own (a frame landing on TAG_PLAY once wore "Play last" as a
+                                // title). It also consumes no emit index, for the same reason
+                                let frame = self.create_window(Some(win), Rect::new(0, 0, 0, 0), None, false)?;
+                                if child.scroll() != 0 {
+                                        if let Some(w) = self.w_mut(frame).window_mut() {
+                                                w.scroll = child.scroll();
+                                        }
+                                }
+                                self.apply_lui_size(frame, &child);
+                                self.w_mut(frame).tag = child.tag;
+                                for sub in child.children() {
+                                        let id = self.create_lui_leaf(frame, &sub, index, &emit)?;
+                                        self.apply_lui_leaf_box(id, &sub, index);
+                                        index += 1;
+                                }
+                                match child.layout() {
+                                        lui::code::LAYOUT_ROW => self.layout_row(frame, child.gap()),
+                                        lui::code::LAYOUT_LINEAR => self.layout_linear(frame, child.gap()),
+                                        _ => self.layout_stack(frame, child.gap()),
+                                }
+                        } else {
+                                let id = self.create_lui_leaf(win, &child, index, &emit)?;
+                                self.apply_lui_leaf_box(id, &child, index);
+                                index += 1;
+                        }
                 }
                 match page.layout() {
                         lui::code::LAYOUT_ROW => self.layout_row(win, page.gap()),
@@ -3331,6 +3353,35 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                 }
                 self.relayout();
                 Ok(())
+        }
+
+        /// Create a leaf child (a button or label) under `parent`, its button emitting
+        /// `emit(index, child)`.
+        fn create_lui_leaf(&mut self, parent: WidgetId, child: &LuiChild<'static>, index: usize, emit: &impl Fn(usize, &LuiChild<'static>) -> Option<A>) -> Result<WidgetId, Error> {
+                match child.kind {
+                        lui::code::KIND_LABEL => self.create_label(Some(parent), Rect::new(0, 0, 0, 0), child.text),
+                        //   a button, or any unknown kind treated as one; its emitted value is the
+                        // caller's to decide from the child
+                        _ => self.create_button(Some(parent), Rect::new(0, 0, 0, 0), child.text, emit(index, child), Nav::Stay),
+                }
+        }
+
+        /// Apply a blob child's size metrics (min/max, grow) to a built widget.
+        fn apply_lui_size(&mut self, id: WidgetId, child: &LuiChild<'static>) {
+                let w = self.w_mut(id);
+                w.min_w = i32::from(child.min_w);
+                w.min_h = i32::from(child.min_h);
+                w.max_w = i32::from(child.max_w);
+                w.max_h = i32::from(child.max_h);
+                w.grow = child.grow;
+        }
+
+        /// A leaf's size plus its tag -- the design's, or `index + 1` as a default (tag 0 stays
+        /// "untagged"), so a caller can find a leaf by a stable id or by position. Only leaves get
+        /// the positional default; a frame takes an explicit tag only (see `build_lui_with`).
+        fn apply_lui_leaf_box(&mut self, id: WidgetId, child: &LuiChild<'static>, index: usize) {
+                self.apply_lui_size(id, child);
+                self.w_mut(id).tag = if child.tag != 0 { child.tag } else { (index + 1) as u8 };
         }
 
         /// Navigate to an LUI-blob `page` WITH the page-transition animation -- the blob analogue of
@@ -3829,12 +3880,15 @@ mod tests {
                         b.push(0); // tag (0 -> default index+1)
                         b.extend_from_slice(&0u16.to_le_bytes()); // min_w
                         b.extend_from_slice(&0u16.to_le_bytes()); // min_h
+                        b.extend_from_slice(&0u16.to_le_bytes()); // max_w
+                        b.extend_from_slice(&0u16.to_le_bytes()); // max_h
+                        b.push(0); // grow
                         put_str(&mut b, btn);
                         b
                 };
                 let bodies = [page("One", "Go", 7), page("Two", "Back", 8)];
                 let mut blob = StdVec::new();
-                blob.extend_from_slice(b"LUI2");
+                blob.extend_from_slice(b"LUI3");
                 blob.extend_from_slice(&2u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
                 blob.extend_from_slice(&64u16.to_le_bytes()); // width
@@ -3898,6 +3952,81 @@ mod tests {
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (-fwd.0, 0), "back mirrors forward");
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Go"));
+        }
+
+        //   one page: a leaf button then a frame (horizontal-scroll linear strip) of two rows -- the
+        // one-level nesting the wide dictaphone needs
+        fn nested_lui_blob() -> StdVec<u8> {
+                fn put_str(b: &mut StdVec<u8>, s: &str) {
+                        b.push(s.len() as u8);
+                        b.extend_from_slice(s.as_bytes());
+                }
+                fn prefix(b: &mut StdVec<u8>, kind: u8, tag: u8, grow: bool) {
+                        b.push(kind);
+                        b.push(crate::lui::code::NAV_NONE);
+                        b.extend_from_slice(&0u16.to_le_bytes()); // nav_page
+                        b.extend_from_slice(&0u16.to_le_bytes()); // event
+                        b.push(tag);
+                        b.extend_from_slice(&0u16.to_le_bytes()); // min_w
+                        b.extend_from_slice(&0u16.to_le_bytes()); // min_h
+                        b.extend_from_slice(&0u16.to_le_bytes()); // max_w
+                        b.extend_from_slice(&0u16.to_le_bytes()); // max_h
+                        b.push(grow as u8);
+                }
+                let mut body = StdVec::new();
+                put_str(&mut body, "P");
+                body.push(crate::lui::code::LAYOUT_LINEAR);
+                body.push(2); // gap
+                body.push(0); // scroll
+                body.push(0); // subtitle
+                body.push(2); // two top-level children
+                prefix(&mut body, crate::lui::code::KIND_BUTTON, 5, false);
+                put_str(&mut body, "top");
+                //   the frame: UNtagged (like the real scrolling strip), grows; then
+                // layout/gap/scroll/count, then two leaf rows
+                prefix(&mut body, crate::lui::code::KIND_FRAME, 0, true);
+                body.push(crate::lui::code::LAYOUT_LINEAR);
+                body.push(2); // gap
+                body.push(crate::scroll::HORIZONTAL);
+                body.push(2); // two children
+                prefix(&mut body, crate::lui::code::KIND_BUTTON, 0x30, false);
+                put_str(&mut body, "R0");
+                prefix(&mut body, crate::lui::code::KIND_BUTTON, 0x31, false);
+                put_str(&mut body, "R1");
+
+                let mut blob = StdVec::new();
+                blob.extend_from_slice(b"LUI3");
+                blob.extend_from_slice(&1u16.to_le_bytes()); // page_count
+                blob.extend_from_slice(&0u16.to_le_bytes()); // root
+                blob.extend_from_slice(&64u16.to_le_bytes()); // width
+                blob.extend_from_slice(&48u16.to_le_bytes()); // height
+                blob.extend_from_slice(&0u16.to_le_bytes()); // corner
+                blob.extend_from_slice(&0u16.to_le_bytes()); // reserved
+                blob.extend_from_slice(&((16 + 4) as u32).to_le_bytes()); // page 0 offset
+                blob.extend_from_slice(&body);
+                blob
+        }
+
+        /// build_lui_with realises a one-level frame: the frame's leaf rows are built under it and
+        /// findable by tag, alongside the top-level leaf -- what puts the landscape dictaphone's
+        /// scrolling strip on the data path.
+        #[test]
+        fn build_lui_with_builds_a_nested_frame() {
+                let fb = font_blob();
+                let font = Font::parse(&fb).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, _display) = rig(&mut buf);
+                let data: &'static [u8] = StdVec::leak(nested_lui_blob());
+                let page = crate::Lui::parse(data).unwrap().page(0).unwrap();
+                let mut ui: Ui<Ev, 16> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                let _ = &mut layer;
+                ui.build_lui_with(&page, |_i, c: &crate::LuiChild<'static>| Some(Ev::Item(c.event as u8))).unwrap();
+                assert_eq!(ui.widget_text(ui.find(5).expect("top button")), Some("top"));
+                //   the strip's rows, built under the frame, are found by their own tags
+                assert_eq!(ui.widget_text(ui.find(0x30).expect("row 0")), Some("R0"));
+                assert_eq!(ui.widget_text(ui.find(0x31).expect("row 1")), Some("R1"));
         }
 
         /// A per-page [`Descent`] override and the tree-wide default both steer the transition,

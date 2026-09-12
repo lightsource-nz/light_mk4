@@ -4,21 +4,26 @@
 //! reader; the two must agree (the codes below are the contract).
 //!
 //! Layout, little-endian:
-//! - Header (16 bytes): magic "LUI2", `page_count` u16, `root` u16, device `width`/`height`/
+//! - Header (16 bytes): magic "LUI3", `page_count` u16, `root` u16, device `width`/`height`/
 //!   `corner_radius` u16 each, then u16 reserved.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
 //! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
-//!   `child_count` u8, then each child: `kind` u8, `nav` u8, `nav_page` u16, `event` u16, `tag` u8,
-//!   `min_w` u16, `min_h` u16, `text` (u8 len + bytes).
+//!   `child_count` u8, then each child.
+//! - Child: a common prefix -- `kind` u8, `nav` u8, `nav_page` u16, `event` u16, `tag` u8, `min_w`
+//!   u16, `min_h` u16, `max_w` u16, `max_h` u16, `grow` u8 -- then, by kind:
+//!   - a FRAME: `layout` u8, `gap` u8, `scroll` u8 (flags), `child_count` u8, then that many LEAF
+//!     children (a frame's children are leaves -- nesting is one level deep).
+//!   - a BUTTON/LABEL (leaf): `text` (u8 len + bytes).
 //!
 //! Strings are inline and length-prefixed, so a reader returns `&str` views into the blob with no
 //! copy -- the LGF pattern.
 
+use crate::design::ChildDef;
 use crate::design::Design;
 
-/// The blob magic: "LUI2", Light UI, format 2 (adds per-child event/tag/min-size and window
-/// scroll/subtitle over format 1).
-pub const MAGIC: &[u8; 4] = b"LUI2";
+/// The blob magic: "LUI3", Light UI, format 3 (adds one-level frame nesting and per-child
+/// max-size/grow over format 2).
+pub const MAGIC: &[u8; 4] = b"LUI3";
 /// The fixed header length.
 pub const HEADER_LEN: usize = 16;
 
@@ -30,6 +35,12 @@ pub const LAYOUT_LINEAR: u8 = 2;
 // Child kinds.
 pub const KIND_BUTTON: u8 = 0;
 pub const KIND_LABEL: u8 = 1;
+pub const KIND_FRAME: u8 = 2;
+
+// Scroll flags (a frame's scroll axis), matching light-ui's `scroll` module.
+pub const SCROLL_NONE: u8 = 0;
+pub const SCROLL_VERTICAL: u8 = 1 << 0;
+pub const SCROLL_HORIZONTAL: u8 = 1 << 1;
 
 // Navigation actions a button carries.
 pub const NAV_NONE: u8 = 0;
@@ -42,6 +53,62 @@ fn layout_code(s: &str) -> u8 {
                 "linear" => LAYOUT_LINEAR,
                 _ => LAYOUT_STACK,
         }
+}
+
+fn scroll_code(s: Option<&str>) -> u8 {
+        match s {
+                Some("vertical") => SCROLL_VERTICAL,
+                Some("horizontal") => SCROLL_HORIZONTAL,
+                _ => SCROLL_NONE,
+        }
+}
+
+/// Write one child (its common prefix, then its kind-specific body). `depth` guards the one-level
+/// rule: a frame's children must be leaves.
+fn put_child(b: &mut Vec<u8>, c: &ChildDef, depth: u8) -> Result<(), String> {
+        let is_frame = c.is_frame();
+        let (kind, text) = if is_frame {
+                (KIND_FRAME, "")
+        } else if let Some(t) = &c.button {
+                (KIND_BUTTON, t.as_str())
+        } else if let Some(t) = &c.label {
+                (KIND_LABEL, t.as_str())
+        } else {
+                (KIND_LABEL, "")
+        };
+        b.push(kind);
+        let (nav, nav_page) = match (c.goto, c.back) {
+                (Some(g), _) => (NAV_GOTO, g.min(u16::MAX as usize) as u16),
+                (None, true) => (NAV_BACK, 0),
+                (None, false) => (NAV_NONE, 0),
+        };
+        b.push(nav);
+        b.extend_from_slice(&nav_page.to_le_bytes());
+        b.extend_from_slice(&c.event.to_le_bytes());
+        b.push(c.tag);
+        b.extend_from_slice(&c.min_w.to_le_bytes());
+        b.extend_from_slice(&c.min_h.to_le_bytes());
+        b.extend_from_slice(&c.max_w.to_le_bytes());
+        b.extend_from_slice(&c.max_h.to_le_bytes());
+        b.push(c.grow as u8);
+        if is_frame {
+                if depth > 0 {
+                        return Err(format!("frame nesting is one level deep; a frame with {} children nests further", c.children.len()));
+                }
+                b.push(layout_code(c.layout.as_deref().unwrap_or("stack")));
+                b.push(c.gap.unwrap_or(6));
+                b.push(scroll_code(c.scroll.as_deref()));
+                if c.children.len() > u8::MAX as usize {
+                        return Err("a frame has too many children for the format".to_owned());
+                }
+                b.push(c.children.len() as u8);
+                for sub in &c.children {
+                        put_child(b, sub, depth + 1)?;
+                }
+        } else {
+                put_str(b, text)?;
+        }
+        Ok(())
 }
 
 /// Compile a design into an LUI blob.
@@ -64,26 +131,7 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                 }
                 b.push(page.children.len() as u8);
                 for c in &page.children {
-                        let (kind, text) = if let Some(t) = &c.button {
-                                (KIND_BUTTON, t.as_str())
-                        } else if let Some(t) = &c.label {
-                                (KIND_LABEL, t.as_str())
-                        } else {
-                                (KIND_LABEL, "")
-                        };
-                        b.push(kind);
-                        let (nav, nav_page) = match (c.goto, c.back) {
-                                (Some(g), _) => (NAV_GOTO, g.min(u16::MAX as usize) as u16),
-                                (None, true) => (NAV_BACK, 0),
-                                (None, false) => (NAV_NONE, 0),
-                        };
-                        b.push(nav);
-                        b.extend_from_slice(&nav_page.to_le_bytes());
-                        b.extend_from_slice(&c.event.to_le_bytes());
-                        b.push(c.tag);
-                        b.extend_from_slice(&c.min_w.to_le_bytes());
-                        b.extend_from_slice(&c.min_h.to_le_bytes());
-                        put_str(&mut b, text)?;
+                        put_child(&mut b, c, 0)?;
                 }
                 bodies.push(b);
         }
@@ -150,15 +198,57 @@ mod tests {
                 assert_eq!(blob[off0 + 7], 0, "no scroll");
                 assert_eq!(blob[off0 + 8], 1, "subtitle");
                 assert_eq!(blob[off0 + 9], 2, "child count");
-                // first child: button "Go" goto 1, event 5, tag 9; header is 11 bytes then text
+                // first child: button "Go" goto 1, event 5, tag 9; the common prefix is 16 bytes then text
                 let c0 = off0 + 10;
                 assert_eq!(blob[c0], KIND_BUTTON);
                 assert_eq!(blob[c0 + 1], NAV_GOTO);
                 assert_eq!(u16::from_le_bytes([blob[c0 + 2], blob[c0 + 3]]), 1, "goto page 1");
                 assert_eq!(u16::from_le_bytes([blob[c0 + 4], blob[c0 + 5]]), 5, "event id");
                 assert_eq!(blob[c0 + 6], 9, "tag");
-                assert_eq!(blob[c0 + 11], 2, "text len 'Go'");
-                assert_eq!(&blob[c0 + 12..c0 + 14], b"Go");
+                assert_eq!(blob[c0 + 16], 2, "text len 'Go'");
+                assert_eq!(&blob[c0 + 17..c0 + 19], b"Go");
+        }
+
+        #[test]
+        fn compiles_a_frame_with_leaf_children() {
+                //   a page with one frame (a horizontal-scrolling linear strip) holding two rows
+                let d = design::parse(
+                        r#"{ "pages": [ { "title": "P", "children": [
+                                { "layout": "linear", "gap": 4, "scroll": "horizontal", "grow": true, "max_w": 50,
+                                  "children": [ { "button": "A", "event": 1 }, { "button": "B", "event": 2 } ] }
+                        ] } ] }"#,
+                )
+                .unwrap();
+                let blob = compile(&d).unwrap();
+                let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
+                // page body: title "P" (2), layout/gap/scroll/subtitle (4), child_count (1)
+                let c = off + 2 + 4 + 1;
+                assert_eq!(blob[c], KIND_FRAME);
+                // common prefix: max_w at +11, grow at +15
+                assert_eq!(u16::from_le_bytes([blob[c + 11], blob[c + 12]]), 50, "frame max_w");
+                assert_eq!(blob[c + 15], 1, "frame grows");
+                // frame body follows the 16-byte prefix: layout, gap, scroll, child_count
+                assert_eq!(blob[c + 16], LAYOUT_LINEAR);
+                assert_eq!(blob[c + 17], 4, "gap");
+                assert_eq!(blob[c + 18], SCROLL_HORIZONTAL);
+                assert_eq!(blob[c + 19], 2, "two leaf children");
+                // first sub-child: button "A" event 1, its own 16-byte prefix then text
+                let s0 = c + 20;
+                assert_eq!(blob[s0], KIND_BUTTON);
+                assert_eq!(u16::from_le_bytes([blob[s0 + 4], blob[s0 + 5]]), 1, "sub event");
+                assert_eq!(blob[s0 + 16], 1, "text len 'A'");
+                assert_eq!(blob[s0 + 17], b'A');
+        }
+
+        #[test]
+        fn rejects_a_frame_nested_in_a_frame() {
+                let d = design::parse(
+                        r#"{ "pages": [ { "title": "P", "children": [
+                                { "children": [ { "children": [ { "button": "deep" } ] } ] }
+                        ] } ] }"#,
+                )
+                .unwrap();
+                assert!(compile(&d).is_err(), "nesting past one level is rejected");
         }
 
         #[test]

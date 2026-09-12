@@ -11,21 +11,28 @@ use crate::{Touch, Ui};
 
 /// Format codes, shared with crush's `lui` compiler.
 pub mod code {
-        /// Window child arrangement.
+        /// Window (and frame) child arrangement.
         pub const LAYOUT_STACK: u8 = 0;
         pub const LAYOUT_ROW: u8 = 1;
         pub const LAYOUT_LINEAR: u8 = 2;
-        /// Child kinds.
+        /// Child kinds. A FRAME is a container with its own layout and a flat list of leaf children
+        /// (nesting is one level deep).
         pub const KIND_BUTTON: u8 = 0;
         pub const KIND_LABEL: u8 = 1;
+        pub const KIND_FRAME: u8 = 2;
         /// A button's navigation action.
         pub const NAV_NONE: u8 = 0;
         pub const NAV_BACK: u8 = 1;
         pub const NAV_GOTO: u8 = 2;
 }
 
-const MAGIC: [u8; 4] = *b"LUI2";
+const MAGIC: [u8; 4] = *b"LUI3";
 const HEADER_LEN: usize = 16;
+/// A child's common prefix: kind, nav, nav_page, event, tag, min_w, min_h, max_w, max_h, grow.
+const CHILD_PREFIX_LEN: usize = 16;
+/// The deepest child nesting the reader will parse: a page's children, and a frame's children. A
+/// blob that nests further (which the compiler never emits) is rejected as truncated.
+const MAX_DEPTH: u8 = 1;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LuiError {
@@ -124,13 +131,15 @@ impl<'a> LuiPage<'a> {
                 self.subtitle
         }
 
-        /// The children in order.
+        /// The children in order (a page's children may be frames).
         pub fn children(&self) -> LuiChildren<'a> {
-                LuiChildren { blob: self.blob, at: self.children_at, remaining: self.child_count }
+                LuiChildren { blob: self.blob, at: self.children_at, remaining: self.child_count, depth: MAX_DEPTH }
         }
 }
 
-/// One child widget: a button or a label, with its text, navigation, app event, tag and min-size.
+/// One child widget: a button, a label, or a FRAME. Carries the common fields (navigation, app
+/// event, tag, min/max size, grow) and, by kind, either `text` (a leaf) or a layout plus a flat
+/// list of leaf [`children`](Self::children) (a frame). Zero-copy: `text` views into the blob.
 #[derive(Clone, Copy)]
 pub struct LuiChild<'a> {
         pub kind: u8,
@@ -140,14 +149,51 @@ pub struct LuiChild<'a> {
         pub tag: u8,
         pub min_w: u16,
         pub min_h: u16,
+        pub max_w: u16,
+        pub max_h: u16,
+        pub grow: bool,
+        /// A leaf's text; `""` for a frame.
         pub text: &'a str,
+        blob: &'a [u8],
+        //   frame fields; `frame_count` is 0 for a leaf
+        frame_layout: u8,
+        frame_gap: u8,
+        frame_scroll: u8,
+        frame_count: usize,
+        frame_children_at: usize,
 }
 
-/// Iterator over a page's children.
+impl<'a> LuiChild<'a> {
+        /// Whether this child is a frame (a container) rather than a leaf.
+        pub fn is_frame(&self) -> bool {
+                self.kind == code::KIND_FRAME
+        }
+        /// A frame's child arrangement (`code::LAYOUT_*`); meaningless for a leaf.
+        pub fn layout(&self) -> u8 {
+                self.frame_layout
+        }
+        /// A frame's gap between children.
+        pub fn gap(&self) -> u8 {
+                self.frame_gap
+        }
+        /// A frame's scroll flags (`crate::scroll::*`).
+        pub fn scroll(&self) -> u8 {
+                self.frame_scroll
+        }
+        /// A frame's children, in order (empty for a leaf). One level deep -- these are all leaves.
+        pub fn children(&self) -> LuiChildren<'a> {
+                LuiChildren { blob: self.blob, at: self.frame_children_at, remaining: self.frame_count, depth: MAX_DEPTH }
+        }
+}
+
+/// Iterator over a page's or a frame's children.
 pub struct LuiChildren<'a> {
         blob: &'a [u8],
         at: usize,
         remaining: usize,
+        /// How much further nesting the children may carry: a page's children may be frames
+        /// (`MAX_DEPTH`), a frame's children may not (`0`).
+        depth: u8,
 }
 
 impl<'a> Iterator for LuiChildren<'a> {
@@ -157,19 +203,67 @@ impl<'a> Iterator for LuiChildren<'a> {
                 if self.remaining == 0 {
                         return None;
                 }
-                let b = self.blob;
-                let at = self.at;
-                let kind = *b.get(at)?;
-                let nav = *b.get(at + 1)?;
-                let nav_page = u16::from_le_bytes([*b.get(at + 2)?, *b.get(at + 3)?]);
-                let event = u16::from_le_bytes([*b.get(at + 4)?, *b.get(at + 5)?]);
-                let tag = *b.get(at + 6)?;
-                let min_w = u16::from_le_bytes([*b.get(at + 7)?, *b.get(at + 8)?]);
-                let min_h = u16::from_le_bytes([*b.get(at + 9)?, *b.get(at + 10)?]);
-                let (text, next) = read_str(b, at + 11)?;
+                let (child, next) = parse_child(self.blob, self.at, self.depth)?;
                 self.at = next;
                 self.remaining -= 1;
-                Some(LuiChild { kind, nav, nav_page, event, tag, min_w, min_h, text })
+                Some(child)
+        }
+}
+
+/// Parse one child at `at`, returning it and the offset just past it (its whole subtree, for a
+/// frame). `depth` is how much further nesting is allowed; a frame at `depth == 0` is a malformed
+/// blob and returns `None`.
+fn parse_child(b: &[u8], at: usize, depth: u8) -> Option<(LuiChild<'_>, usize)> {
+        let kind = *b.get(at)?;
+        let nav = *b.get(at + 1)?;
+        let nav_page = u16::from_le_bytes([*b.get(at + 2)?, *b.get(at + 3)?]);
+        let event = u16::from_le_bytes([*b.get(at + 4)?, *b.get(at + 5)?]);
+        let tag = *b.get(at + 6)?;
+        let min_w = u16::from_le_bytes([*b.get(at + 7)?, *b.get(at + 8)?]);
+        let min_h = u16::from_le_bytes([*b.get(at + 9)?, *b.get(at + 10)?]);
+        let max_w = u16::from_le_bytes([*b.get(at + 11)?, *b.get(at + 12)?]);
+        let max_h = u16::from_le_bytes([*b.get(at + 13)?, *b.get(at + 14)?]);
+        let grow = *b.get(at + 15)? != 0;
+        let body = at + CHILD_PREFIX_LEN;
+        let common = |text, frame_layout, frame_gap, frame_scroll, frame_count, frame_children_at| LuiChild {
+                kind,
+                nav,
+                nav_page,
+                event,
+                tag,
+                min_w,
+                min_h,
+                max_w,
+                max_h,
+                grow,
+                text,
+                blob: b,
+                frame_layout,
+                frame_gap,
+                frame_scroll,
+                frame_count,
+                frame_children_at,
+        };
+        if kind == code::KIND_FRAME {
+                if depth == 0 {
+                        return None; // a frame deeper than the format allows
+                }
+                let frame_layout = *b.get(body)?;
+                let frame_gap = *b.get(body + 1)?;
+                let frame_scroll = *b.get(body + 2)?;
+                let frame_count = usize::from(*b.get(body + 3)?);
+                let children_at = body + 4;
+                //   walk the children to find where this frame ends (the next sibling); its
+                // children carry no further nesting
+                let mut p = children_at;
+                for _ in 0..frame_count {
+                        let (_, next) = parse_child(b, p, depth - 1)?;
+                        p = next;
+                }
+                Some((common("", frame_layout, frame_gap, frame_scroll, frame_count, children_at), p))
+        } else {
+                let (text, next) = read_str(b, body)?;
+                Some((common(text, 0, 0, 0, 0, body), next))
         }
 }
 
@@ -276,8 +370,14 @@ mod tests {
                 b.extend_from_slice(s.as_bytes());
         }
 
-        //   a child in the v2 layout: kind, nav, nav_page, event, tag, min_w, min_h, text
+        //   a LEAF child in the v3 layout: the 16-byte common prefix then text
         fn push_child(b: &mut Vec<u8>, kind: u8, nav: u8, nav_page: u16, event: u16, tag: u8, text: &str) {
+                push_prefix(b, kind, nav, nav_page, event, tag);
+                put_str(b, text);
+        }
+
+        //   the 16-byte common prefix: kind, nav, nav_page, event, tag, min_w, min_h, max_w, max_h, grow
+        fn push_prefix(b: &mut Vec<u8>, kind: u8, nav: u8, nav_page: u16, event: u16, tag: u8) {
                 b.push(kind);
                 b.push(nav);
                 b.extend_from_slice(&nav_page.to_le_bytes());
@@ -285,7 +385,9 @@ mod tests {
                 b.push(tag);
                 b.extend_from_slice(&0u16.to_le_bytes()); // min_w
                 b.extend_from_slice(&0u16.to_le_bytes()); // min_h
-                put_str(b, text);
+                b.extend_from_slice(&0u16.to_le_bytes()); // max_w
+                b.extend_from_slice(&0u16.to_le_bytes()); // max_h
+                b.push(0); // grow
         }
 
         fn header(b: &mut Vec<u8>, pages: u16) {
@@ -361,6 +463,52 @@ mod tests {
                 assert_eq!(p1.title(), "Second");
                 assert_eq!(p1.children().count(), 0);
                 assert!(lui.page(2).is_none());
+        }
+
+        //   a page with a leaf, a frame (linear, horizontal-scroll, two leaf children), then a leaf
+        // after it -- so reading proves the sibling-skip lands past the frame's subtree
+        fn frame_blob() -> Vec<u8> {
+                let mut body = Vec::new();
+                put_str(&mut body, "P");
+                body.push(code::LAYOUT_STACK);
+                body.push(6); // gap
+                body.push(0); // scroll
+                body.push(0); // subtitle
+                body.push(3); // three top-level children
+                push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 0, 0, "Go");
+                // a frame: prefix, then layout/gap/scroll/count, then two leaves
+                push_prefix(&mut body, code::KIND_FRAME, code::NAV_NONE, 0, 0, 7);
+                body.push(code::LAYOUT_LINEAR);
+                body.push(4); // gap
+                body.push(crate::scroll::HORIZONTAL);
+                body.push(2); // two leaf children
+                push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 1, 0, "A");
+                push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 2, 0, "B");
+                push_child(&mut body, code::KIND_LABEL, code::NAV_NONE, 0, 0, 0, "end");
+                assemble(&[body])
+        }
+
+        #[test]
+        fn reads_a_frame_and_skips_to_the_sibling_past_it() {
+                let data = frame_blob();
+                let lui = Lui::parse(&data).unwrap();
+                let kids: Vec<_> = lui.page(0).unwrap().children().collect();
+                assert_eq!(kids.len(), 3, "leaf, frame, leaf");
+                assert_eq!(kids[0].text, "Go");
+                assert!(!kids[0].is_frame());
+                let frame = kids[1];
+                assert!(frame.is_frame());
+                assert_eq!(frame.tag, 7);
+                assert_eq!(frame.layout(), code::LAYOUT_LINEAR);
+                assert_eq!(frame.gap(), 4);
+                assert_eq!(frame.scroll(), crate::scroll::HORIZONTAL);
+                let subs: Vec<_> = frame.children().collect();
+                assert_eq!(subs.len(), 2);
+                assert_eq!((subs[0].text, subs[0].event), ("A", 1));
+                assert_eq!((subs[1].text, subs[1].event), ("B", 2));
+                //   the third top-level child proves next() skipped the whole frame subtree
+                assert_eq!(kids[2].text, "end");
+                assert!(!kids[2].is_frame());
         }
 
         #[test]

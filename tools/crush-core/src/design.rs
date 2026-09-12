@@ -54,8 +54,10 @@ pub struct PageDef {
         pub children: Vec<ChildDef>,
 }
 
-/// One widget in a page: a button (with an optional action) or a label. Flat fields keep the JSON
-/// terse.
+/// One widget in a page: a button (with an optional action), a label, or a FRAME -- a container
+/// with its own layout, gap and scroll that groups a flat list of `children` (one level deep: a
+/// frame's children are leaves, not frames). Flat fields keep the JSON terse. `max_w`/`max_h` pin a
+/// size (equal min and max fixes it); `grow` takes a linear layout's surplus.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ChildDef {
@@ -82,17 +84,62 @@ pub struct ChildDef {
         pub min_w: u16,
         #[serde(default, skip_serializing_if = "is_zero_u16")]
         pub min_h: u16,
+        /// Maximum size in pixels (0 = unset). `min == max` fixes the size.
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub max_w: u16,
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub max_h: u16,
+        /// Take the surplus a linear layout leaves after the fixed/min-sized siblings.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub grow: bool,
+        /// A frame's child arrangement (`stack`/`row`/`linear`); defaults to `stack`. Only read
+        /// when `children` is non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub layout: Option<String>,
+        /// A frame's gap between children (defaults to 6). Only read when `children` is non-empty.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub gap: Option<u8>,
+        /// A frame's scroll axis: `vertical`, `horizontal`, or absent for none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub scroll: Option<String>,
+        /// A frame's children -- a flat list of leaves (not frames). A non-empty list makes this
+        /// child a frame; `button`/`label` are then ignored.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub children: Vec<ChildDef>,
 }
 
 impl ChildDef {
         /// A fresh plain button, the default an "add" inserts.
         pub fn new_button() -> Self {
-                Self { button: Some("Button".to_owned()), label: None, goto: None, back: false, event: 0, tag: 0, min_w: 0, min_h: 0 }
+                Self {
+                        button: Some("Button".to_owned()),
+                        label: None,
+                        goto: None,
+                        back: false,
+                        event: 0,
+                        tag: 0,
+                        min_w: 0,
+                        min_h: 0,
+                        max_w: 0,
+                        max_h: 0,
+                        grow: false,
+                        layout: None,
+                        gap: None,
+                        scroll: None,
+                        children: Vec::new(),
+                }
+        }
+
+        /// Whether this child is a frame (a container) rather than a leaf.
+        pub fn is_frame(&self) -> bool {
+                !self.children.is_empty()
         }
 
         /// A short human label for the inspector: the kind and its text.
         pub fn describe(&self) -> String {
-                if let Some(t) = &self.button {
+                if self.is_frame() {
+                        format!("frame: {} children", self.children.len())
+                } else if let Some(t) = &self.button {
                         let action = if self.goto.is_some() {
                                 " -> goto"
                         } else if self.back {
