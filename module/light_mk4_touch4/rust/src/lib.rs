@@ -33,7 +33,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_input::touch::Tracker;
 use light_rtc::{Datetime, Pcf85063a};
-use light_ui::{Theme, Ui};
+use light_ui::{Fonts, Style, Theme, Ui};
 mod board;
 use board::*;
 use light_rp2::adc::Adc;
@@ -619,8 +619,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Err(e) => panic!("the embedded theme does not parse: {e:?}"),
         };
         layer.bg = theme.bg;
-        ui.set_theme(theme);
-        ui.set_font(&font);
+        ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
         type BoardDisplayMod = DisplayMod<Scanout, SysClock, Ext, Hook>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(

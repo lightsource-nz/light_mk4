@@ -9,7 +9,7 @@
 use core::fmt::Write;
 use light_core::button::{Button, ButtonEvent};
 use light_display::st7735::St7735;
-use light_ui::{scroll, Desc, Page, Theme, Ui};
+use light_ui::{scroll, Desc, Fonts, Page, Style, Theme, Ui};
 use light_core::cli::{Cli, Command, Outcome, Parsed, Words};
 use light_core::{info, log, warn, Blinker, ConstStaticCell, EventBus, LineReader, Mailbox, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer, UpdateError};
@@ -173,7 +173,8 @@ impl Module for DisplayMod {
                         warn!("the main page did not build: {e:?}");
                 }
                 self.ui.invalidate_all();
-                self.ui.render(self.layer, &mut self.display, &self.font, now_us());
+                let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
+                self.ui.render(self.layer, &mut self.display, &style, now_us());
                 // the first frame is on the glass: light it
                 self.backlight.set(false);
                 info!("display up: {}x{} ST7735 on SPI4, double-buffered at {} fps, font {}px cell {}x{}", DISPLAY_WIDTH, DISPLAY_HEIGHT, FPS, self.font.pixel_size(), self.font.cell_width(), self.font.cell_height());
@@ -188,7 +189,8 @@ impl Module for DisplayMod {
                 while let Some(ev) = EVENTS.poll(&self.events) {
                         self.handle(ev);
                 }
-                self.ui.render(self.layer, &mut self.display, &self.font, now_us());
+                let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
+                self.ui.render(self.layer, &mut self.display, &style, now_us());
                 if self.ui.is_dirty() || self.ui.is_animating() || self.layer.busy(&self.display) { Poll::Busy } else { Poll::Idle }
         }
         fn unload(&mut self) {
@@ -388,8 +390,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Err(e) => panic!("the embedded theme does not parse: {e:?}"),
         };
         layer.bg = theme.bg;
-        ui.set_theme(theme);
-        ui.set_font(&font);
+        ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
 
         static DISPLAY_MOD: StaticCell<DisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod { display, layer, font, ui, backlight: p.backlight, events: EVENTS.subscribe().expect("slot"), toggled: [false; 2] });

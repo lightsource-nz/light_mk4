@@ -29,7 +29,7 @@ use light_draw::Rotation;
 use light_font::Font;
 use light_input::imu::Orientation;
 use light_input::touch::Gesture;
-use light_ui::{SwipeDir, Touch, Ui};
+use light_ui::{Fonts, Style, SwipeDir, Touch, Ui};
 
 //   what the page-tree macro and the board crates build against, from one place
 pub use light_input::cst816t::Event as TouchSample;
@@ -423,7 +423,10 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static, H: BoardH
                 }
                 let now = log::now_us();
                 //   through Ui::render, which also runs the rotation and page animations
-                let drew = self.ui.render(self.layer, &mut self.display, &self.font, now);
+                //   one face for every role today; the theme is the UI's own, so the metrics it
+                // laid out with and these glyphs are the one style
+                let style = Style::new(*self.ui.theme(), Fonts::uniform(&self.font));
+                let drew = self.ui.render(self.layer, &mut self.display, &style, now);
                 let done = log::now_us();
                 if drew || self.ui.is_animating() {
                         self.draw_us_max = self.draw_us_max.max(done - now);

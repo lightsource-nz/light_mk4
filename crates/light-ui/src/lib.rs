@@ -36,6 +36,71 @@ use light_font::Font;
 pub mod theme;
 pub use theme::Theme;
 
+/// Which typographic role a piece of text plays. A [`Style`] binds a font per role, so a title
+/// can be set in a different face or size from body text; today's UIs use one face for every
+/// role ([`Fonts::uniform`]). Add a role here and every consumer keeps compiling -- [`Fonts`]
+/// takes a font for each role, and `uniform` fills them all from one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontRole {
+        /// Window titles and the title bar: subtitle and status indicator.
+        Title,
+        /// Everything else -- button labels, list rows, labels -- and the fallback role.
+        Body,
+}
+
+impl FontRole {
+        /// The number of roles: the width of a [`Style`]'s font set and the metric arrays.
+        pub const COUNT: usize = 2;
+        /// Every role, for iterating the set.
+        pub const ALL: [FontRole; Self::COUNT] = [FontRole::Title, FontRole::Body];
+}
+
+/// The fonts a [`Style`] binds, one per [`FontRole`]. Borrowed, never owned: glyph data stays
+/// transient -- handed to [`Ui::render`] each frame -- so a UI's font can be swapped freely and
+/// the [`Ui`] carries no font lifetime (it keeps only the cell METRICS, taken at
+/// [`Ui::set_style`]).
+#[derive(Clone, Copy)]
+pub struct Fonts<'f> {
+        title: &'f Font<'f>,
+        body: &'f Font<'f>,
+}
+
+impl<'f> Fonts<'f> {
+        /// One face for every role: the single-font look every current UI uses.
+        pub const fn uniform(font: &'f Font<'f>) -> Self {
+                Self { title: font, body: font }
+        }
+
+        /// A distinct face -- or size -- per role.
+        pub const fn new(title: &'f Font<'f>, body: &'f Font<'f>) -> Self {
+                Self { title, body }
+        }
+
+        /// The font bound to `role`.
+        pub const fn font(&self, role: FontRole) -> &'f Font<'f> {
+                match role {
+                        FontRole::Title => self.title,
+                        FontRole::Body => self.body,
+                }
+        }
+}
+
+/// A complete look to render with: a [`Theme`] (colours and metrics) plus the [`Fonts`] for
+/// every [`FontRole`]. Bound into a [`Ui`] with [`Ui::set_style`] and handed to
+/// [`Ui::render`] each frame -- the same value for both, so the metrics a UI lays out with and
+/// the glyphs it paints with can never come from different fonts.
+#[derive(Clone, Copy)]
+pub struct Style<'f> {
+        pub theme: Theme,
+        pub fonts: Fonts<'f>,
+}
+
+impl<'f> Style<'f> {
+        pub const fn new(theme: Theme, fonts: Fonts<'f>) -> Self {
+                Self { theme, fonts }
+        }
+}
+
 /// A widget rectangle: inclusive, logical, signed -- a widget positioned partly off the canvas
 /// is clipped here before anything reaches the rasteriser.
 pub type Rect = LogicalRegion;
@@ -710,9 +775,10 @@ pub struct Ui<A: 'static, const N: usize> {
         width: i32,
         height: i32,
         transform: Transform,
-        /// The font's cell, for layout and truncation; fonts are fixed-pitch.
-        cell_w: i32,
-        cell_h: i32,
+        /// Each role's font cell, for layout and truncation; fonts are fixed-pitch. Indexed by
+        /// [`FontRole`], set at [`set_style`](Self::set_style).
+        cell_w: [i32; FontRole::COUNT],
+        cell_h: [i32; FontRole::COUNT],
         /// Pixels kept clear on every edge, for glass that does not show the whole grid. Uniform
         /// rather than per-edge because the interface rotates while the corners are fixed in the
         /// panel's frame: a uniform inset is the only value invariant under rotation.
@@ -820,8 +886,8 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         width: 0,
                         height: 0,
                         transform: Transform::IDENTITY,
-                        cell_w: 0,
-                        cell_h: 0,
+                        cell_w: [0; FontRole::COUNT],
+                        cell_h: [0; FontRole::COUNT],
                         safe_inset: 0,
                         theme: Theme::DEFAULT,
                         touch_down: false,
@@ -880,10 +946,28 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         /// The font's cell metrics, which layout and truncation need; fonts are fixed-pitch.
-        pub fn set_font(&mut self, font: &Font<'_>) {
-                self.cell_w = i32::from(font.cell_width());
-                self.cell_h = i32::from(font.cell_height());
+        /// Bind the look: the theme (its colours and metrics, via [`set_theme`](Self::set_theme))
+        /// and each role's font cell metrics. The glyphs themselves stay transient -- pass the
+        /// SAME [`Style`] to [`render`](Self::render). Re-lays-out, since a metric or the theme's
+        /// radius may have moved.
+        pub fn set_style(&mut self, style: &Style<'_>) {
+                self.set_theme(style.theme);
+                for role in FontRole::ALL {
+                        let font = style.fonts.font(role);
+                        self.cell_w[role as usize] = i32::from(font.cell_width());
+                        self.cell_h[role as usize] = i32::from(font.cell_height());
+                }
                 self.relayout();
+        }
+
+        /// A role's font cell width, in logical pixels.
+        fn role_cw(&self, role: FontRole) -> i32 {
+                self.cell_w[role as usize]
+        }
+
+        /// A role's font cell height, in logical pixels.
+        fn role_ch(&self, role: FontRole) -> i32 {
+                self.cell_h[role as usize]
         }
 
         /// Take the canvas geometry from the layer: its logical size and transform. Re-lays-out and
@@ -1307,7 +1391,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // it -- its corner_drop clears the curve by more than this -- so the max()
                         // leaves those unchanged and only gives a square window the same spacing.
                         const HEADER_GAP: i32 = 4;
-                        let header_bottom = w.rect.y0 + if win.border { 1 } else { 0 } + Self::title_rows(win) * self.cell_h + 2;
+                        let header_bottom = w.rect.y0 + if win.border { 1 } else { 0 } + Self::title_rows(win) * self.role_ch(FontRole::Title) + 2;
                         content.y0 = content.y0.max(header_bottom + HEADER_GAP);
                 }
                 content
@@ -1927,7 +2011,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         }
 
         /// One step of a page transition; the same contract as `rotation_step`.
-        fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> Step {
+        fn page_step<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, style: &Style<'_>, now_us: u64) -> Step {
                 if !self.page_move_started {
                         //   with a back buffer, the outgoing image is captured and slid off the
                         // incoming tree; without one (a single-buffered scanned panel), the
@@ -1975,7 +2059,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                         };
                                         let mut c = layer.canvas(back);
                                         c.clear();
-                                        self.paint(&mut c, font);
+                                        self.paint(&mut c, style);
                                         drop(c);
                                 } else if !display.freeze() {
                                         return Step::Waiting; // busy: capture next pass
@@ -2030,7 +2114,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         // slides in over
                         let Some(mut c) = layer.frame_begin_over(display, now_us) else { return Step::Waiting };
                         c.set_offset(self.page_move_dx * (self.page_move_span - travel), self.page_move_dy * (self.page_move_span - travel));
-                        self.paint(&mut c, font);
+                        self.paint(&mut c, style);
                         drop(c);
                 } else if cover {
                         //   COVER: the incoming page (already rendered into the back buffer at
@@ -2079,7 +2163,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                                                 Rect::new(b0, 0, b1, lh - 1)
                                         };
                                         if let Some(root) = self.root {
-                                                self.paint_clipped(&mut c, font, root, band);
+                                                self.paint_clipped(&mut c, style, root, band);
                                         }
                                         c.clear_clip();
                                 }
@@ -2585,11 +2669,14 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// per pixel; what this owes it is bounding the STRING so a long label is cut to its widget
         /// rather than painted across the clip, and refusing an origin the canvas cannot hold.
         fn draw_text_fitted(&self, c: &mut Canvas<'_>, font: &Font<'_>, x: i32, y: i32, text: &str, max_width: i32) {
-                if self.cell_w == 0 || x < 0 || y < 0 || x >= self.width || y >= self.height {
+                //   the truncation math uses the cell of the font actually being drawn, so it is
+                // correct for any role without the toolkit knowing which one this is
+                let cell_w = i32::from(font.cell_width());
+                if cell_w == 0 || x < 0 || y < 0 || x >= self.width || y >= self.height {
                         return;
                 }
-                let fit_widget = (max_width.max(0) / self.cell_w) as usize;
-                let fit_canvas = ((self.width - x) / self.cell_w) as usize;
+                let fit_widget = (max_width.max(0) / cell_w) as usize;
+                let fit_canvas = ((self.width - x) / cell_w) as usize;
                 let mut len = text.len().min(fit_widget).min(fit_canvas).min(TEXT_MAX);
                 while !text.is_char_boundary(len) {
                         len -= 1;
@@ -2600,10 +2687,11 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 c.text(font, Point::new(x, y), &text[..len]);
         }
 
-        /// Horizontally centre `len` glyphs within `[x0, x1]`, never left of `x0`.
-        fn centre_x(&self, x0: i32, x1: i32, len: usize) -> i32 {
+        /// Horizontally centre `len` glyphs of cell width `cell_w` within `[x0, x1]`, never left
+        /// of `x0`.
+        fn centre_x(&self, x0: i32, x1: i32, len: usize, cell_w: i32) -> i32 {
                 let avail = x1 - x0 + 1;
-                let used = len as i32 * self.cell_w;
+                let used = len as i32 * cell_w;
                 if used >= avail { x0 } else { x0 + (avail - used) / 2 }
         }
 
@@ -2614,7 +2702,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 Rect::new(r.x0.max(0), r.y0.max(0), r.x1.min(self.width - 1), r.y1.min(self.height - 1))
         }
 
-        fn paint_window(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, clip: &Rect) {
+        fn paint_window(&self, c: &mut Canvas<'_>, style: &Style<'_>, id: WidgetId, clip: &Rect) {
                 let w = self.w(id);
                 let win = w.window().expect("a window");
                 let mut visible = w.rect;
@@ -2650,7 +2738,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // the theme's bar colour, falling back to the background when the theme sets none
                 let header_inset = if win.border { 1 } else { 0 };
                 let header_bottom = if win.title.is_some() {
-                        (r.y0 + header_inset + Self::title_rows(win) * self.cell_h + 2).min(r.y1 + 1)
+                        (r.y0 + header_inset + Self::title_rows(win) * self.role_ch(FontRole::Title) + 2).min(r.y1 + 1)
                 } else {
                         r.y0
                 };
@@ -2706,15 +2794,16 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let tx = f.x0 + indent + inset + 1;
                 c.fg = self.theme.title;
                 let text_right = f.x1 - indent - inset;
-                self.draw_text_fitted(c, font, tx, ty, title, text_right - tx + 1);
+                self.draw_text_fitted(c, style.fonts.font(FontRole::Title), tx, ty, title, text_right - tx + 1);
                 //   an INLINE status symbol, centred on the title cell the caller left blank
                 // for it (e.g. the space in "REC 0:12"); sized to sit inside one cell so it
                 // never touches the glyphs either side. Only drawn when lit -- the dark
                 // phase shows the blank cell, so a flash never reflows the title
                 if let Some((shape, true, col)) = win.indicator {
-                        let d = (self.cell_h * 3 / 5).clamp(3, self.cell_w);
-                        let cx = tx + i32::from(col) * self.cell_w + self.cell_w / 2;
-                        let cy = ty + self.cell_h / 2;
+                        let (cw, ch) = (self.role_cw(FontRole::Title), self.role_ch(FontRole::Title));
+                        let d = (ch * 3 / 5).clamp(3, cw);
+                        let cx = tx + i32::from(col) * cw + cw / 2;
+                        let cy = ty + ch / 2;
                         let (bx0, by0) = (cx - d / 2, cy - d / 2);
                         let (bx1, by1) = (bx0 + d - 1, by0 + d - 1);
                         if bx0 >= 0 && by0 >= 0 && bx1 <= text_right {
@@ -2745,12 +2834,12 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 if let Some(sub) = win.subtitle {
                         if sub.len > 0 {
                                 c.fg = self.theme.title;
-                                self.draw_text_fitted(c, font, tx, ty + self.cell_h, sub.as_str(), text_right - tx + 1);
+                                self.draw_text_fitted(c, style.fonts.font(FontRole::Title), tx, ty + self.role_ch(FontRole::Title), sub.as_str(), text_right - tx + 1);
                         }
                 }
                 // the separator sits below the title row(s), where the arc has come most of the way out
                 c.fg = self.theme.frame;
-                let sep_y = ty + Self::title_rows(win) * self.cell_h;
+                let sep_y = ty + Self::title_rows(win) * self.role_ch(FontRole::Title);
                 let sep_indent = corner_indent(win.corner_radius, i32::from(win.corner_radius) - (sep_y - f.y0));
                 let sep_x0 = f.x0 + sep_indent + inset;
                 if sep_y <= f.y1 && sep_y >= 0 && sep_x0 >= 0 {
@@ -2759,7 +2848,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 c.fg = saved_fg;
         }
 
-        fn paint_button(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, clip: &Rect) {
+        fn paint_button(&self, c: &mut Canvas<'_>, style: &Style<'_>, id: WidgetId, clip: &Rect) {
                 let w = self.w(id);
                 let btn = w.button().expect("a button");
                 let mut visible = w.rect;
@@ -2871,9 +2960,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         let f = &w.rect;
                         let (inner_x0, inner_x1) = (f.x0 + 1, f.x1 - 1);
                         let inner_h = f.y1 - f.y0 - 1;
-                        let tx = self.centre_x(inner_x0, inner_x1, label.len());
-                        let ty = (f.y0 + 1 + (inner_h - self.cell_h) / 2).max(f.y0 + 1);
-                        self.draw_text_fitted(c, font, tx, ty, label, inner_x1 - inner_x0 + 1);
+                        let tx = self.centre_x(inner_x0, inner_x1, label.len(), self.role_cw(FontRole::Body));
+                        let ty = (f.y0 + 1 + (inner_h - self.role_ch(FontRole::Body)) / 2).max(f.y0 + 1);
+                        self.draw_text_fitted(c, style.fonts.font(FontRole::Body), tx, ty, label, inner_x1 - inner_x0 + 1);
                 }
                 c.fg = saved_fg;
                 // TODO a distinct look for disabled buttons wants a colour model 1 bpp lacks
@@ -2984,7 +3073,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 true
         }
 
-        fn paint_label(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, clip: &Rect) {
+        fn paint_label(&self, c: &mut Canvas<'_>, style: &Style<'_>, id: WidgetId, clip: &Rect) {
                 let w = self.w(id);
                 let Kind::Label(l) = &w.kind else { return };
                 let mut visible = w.rect;
@@ -3001,14 +3090,14 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 let text = if w.text.len > 0 { w.text.as_str() } else { l.text };
                 let saved_fg = c.fg;
                 c.fg = self.theme.text;
-                self.draw_text_fitted(c, font, w.rect.x0, w.rect.y0, text, w.rect.x1 - w.rect.x0 + 1);
+                self.draw_text_fitted(c, style.fonts.font(FontRole::Body), w.rect.x0, w.rect.y0, text, w.rect.x1 - w.rect.x0 + 1);
                 c.fg = saved_fg;
         }
 
         /// `clip` is by value so each subtree narrows its own copy: a scrolling window's children
         /// paint only inside its viewport. The same narrowing happens in `hit_test`, and the two
         /// must agree: what cannot be seen must not respond.
-        fn paint_clipped(&self, c: &mut Canvas<'_>, font: &Font<'_>, id: WidgetId, mut clip: Rect) {
+        fn paint_clipped(&self, c: &mut Canvas<'_>, style: &Style<'_>, id: WidgetId, mut clip: Rect) {
                 if !self.w(id).visible {
                         return;
                 }
@@ -3017,9 +3106,9 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // ever intersects
                 c.set_clip(Region::new(clip.x0 as u16, clip.y0 as u16, clip.x1 as u16, clip.y1 as u16));
                 match &self.w(id).kind {
-                        Kind::Window(_) => self.paint_window(c, font, id, &clip),
-                        Kind::Button(_) => self.paint_button(c, font, id, &clip),
-                        Kind::Label(_) => self.paint_label(c, font, id, &clip),
+                        Kind::Window(_) => self.paint_window(c, style, id, &clip),
+                        Kind::Button(_) => self.paint_button(c, style, id, &clip),
+                        Kind::Label(_) => self.paint_label(c, style, id, &clip),
                 }
                 // a scrolling window confines its children to its viewport; its own frame and
                 // title were drawn against the wider clip, which keeps the frame visible while
@@ -3036,7 +3125,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 }
                 // children after the parent, in sibling order: later draws on top
                 for child in self.children(id) {
-                        self.paint_clipped(c, font, child, clip);
+                        self.paint_clipped(c, style, child, clip);
                 }
                 //   the curve belongs to the CONTAINER, not to whichever row is passing: a
                 // rounded scrolling window re-masks its bottom corners after its children,
@@ -3102,11 +3191,11 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// Paint the whole tree onto a cleared canvas. The ENTIRE tree, not just the dirty
         /// widgets, because every frame is a full repaint; only the pushed REGION is optimised,
         /// which is where the cost that scales with panel size lives.
-        pub fn paint(&self, c: &mut Canvas<'_>, font: &Font<'_>) {
+        pub fn paint(&self, c: &mut Canvas<'_>, style: &Style<'_>) {
                 //   the theme's ground: every bg wash in the walk paints with this
                 c.bg = self.theme.bg;
                 if let Some(root) = self.root {
-                        self.paint_clipped(c, font, root, self.canvas_rect());
+                        self.paint_clipped(c, style, root, self.canvas_rect());
                 }
                 // the clip is canvas state: left narrowed it would crop whatever draws next
                 c.clear_clip();
@@ -3115,7 +3204,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
         /// Repaint and push, if anything is dirty. Call every pass; the layer's pacing decides
         /// when a frame happens, and this is a no-op on the passes in between. On a refused frame
         /// the dirty flag and the regions survive, so the repaint happens on a later pass.
-        pub fn render<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, font: &Font<'_>, now_us: u64) -> bool {
+        pub fn render<D: DisplayDriver>(&mut self, layer: &mut FrameLayer, display: &mut Display<'_, D>, style: &Style<'_>, now_us: u64) -> bool {
                 //   a lapsed press flash reverts here: cleared and the button re-drawn normal.
                 // Guarded against a widget the flash outlived (it should have been cleared on
                 // destroy, but a stale id must never be dereferenced)
@@ -3133,7 +3222,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                 // hands a rotation on when it finishes; a step that finishes falls through to
                 // draw the settled tree below rather than waiting a pass
                 if self.page_moving {
-                        match self.page_step(layer, display, font, now_us) {
+                        match self.page_step(layer, display, style, now_us) {
                                 Step::Drew => return true,
                                 Step::Waiting => return false,
                                 Step::Finished => {}
@@ -3150,7 +3239,7 @@ impl<A: Copy, const N: usize> Ui<A, N> {
                         return false;
                 }
                 let Some(mut c) = layer.frame_begin(display, now_us) else { return false };
-                self.paint(&mut c, font);
+                self.paint(&mut c, style);
                 drop(c);
                 self.commit(layer);
                 layer.frame_end(display);
@@ -3281,6 +3370,13 @@ mod tests {
                 e.encode()
         }
 
+        /// A style over one font for every role, on the default theme -- what these tests bind and
+        /// render with; a test that wants a specific theme sets it separately with `set_theme`,
+        /// which `render` reads from the [`Ui`], not from this style's theme field.
+        fn styled<'a>(font: &'a Font<'a>) -> Style<'a> {
+                Style::new(Theme::DEFAULT, Fonts::uniform(font))
+        }
+
         struct Mock {
                 pushed: StdVec<Region>,
         }
@@ -3325,7 +3421,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 let root = ui.root().unwrap();
@@ -3353,7 +3449,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 // the first button took focus on creation
@@ -3378,7 +3474,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 let root = ui.root().unwrap();
@@ -3409,7 +3505,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_LIST).unwrap();
                 let root = ui.root().unwrap();
@@ -3447,7 +3543,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_ROW).unwrap();
                 let root = ui.root().unwrap();
@@ -3487,7 +3583,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_PINNED).unwrap();
                 let root = ui.root().unwrap();
@@ -3526,7 +3622,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 12> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 let read = |ui: &Ui<Ev, 12>| {
                         let root = ui.root().unwrap();
@@ -3563,14 +3659,14 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 let mut now = 0u64;
                 let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, now: &mut u64| {
                         let mut frames = 0;
                         while ui.is_animating() {
                                 *now += 50_000;
-                                ui.render(layer, display, &font, *now);
+                                ui.render(layer, display, &styled(&font), *now);
                                 while layer.poll(display).unwrap() {}
                                 frames += 1;
                                 assert!(frames < 100, "a transition that never ends");
@@ -3581,19 +3677,19 @@ mod tests {
                 // forward into a Row page: the incoming enters from logical DOWN (+y), cover-style
                 ui.navigate_returning(&PAGE_PINNED, &PAGE_MAIN).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1));
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 // back OUT of the Row page: mirrored -- the motion reverses to the other end
                 assert!(ui.navigate_back());
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, -1));
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 // forward into a Stack page: the horizontal slide as ever
                 ui.navigate(&PAGE_DETAIL).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0));
         }
 
@@ -3608,14 +3704,14 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 let mut now = 0u64;
                 let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, now: &mut u64| {
                         let mut frames = 0;
                         while ui.is_animating() {
                                 *now += 50_000;
-                                ui.render(layer, display, &font, *now);
+                                ui.render(layer, display, &styled(&font), *now);
                                 while layer.poll(display).unwrap() {}
                                 frames += 1;
                                 assert!(frames < 100, "a transition that never ends");
@@ -3634,12 +3730,12 @@ mod tests {
                 ] {
                         ui.navigate_returning(page, &PAGE_MAIN).unwrap();
                         now += 50_000;
-                        ui.render(&mut layer, &mut display, &font, now);
+                        ui.render(&mut layer, &mut display, &styled(&font), now);
                         assert_eq!((ui.page_move_dx, ui.page_move_dy), fwd, "forward into an overridden page");
                         settle(&mut ui, &mut layer, &mut display, &mut now);
                         assert!(ui.navigate_back());
                         now += 50_000;
-                        ui.render(&mut layer, &mut display, &font, now);
+                        ui.render(&mut layer, &mut display, &styled(&font), now);
                         assert_eq!((ui.page_move_dx, ui.page_move_dy), rev, "back out mirrors the arrival");
                         settle(&mut ui, &mut layer, &mut display, &mut now);
                 }
@@ -3648,7 +3744,7 @@ mod tests {
                 ui.set_default_descent(Some(Descent::FromTop));
                 ui.navigate_returning(&PAGE_DETAIL, &PAGE_MAIN).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, -1), "tree default overrides the seed");
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 assert!(ui.navigate_back());
@@ -3657,7 +3753,7 @@ mod tests {
                 //   ...but a page's own override still wins over the tree default
                 ui.navigate_returning(&PAGE_D_RIGHT, &PAGE_MAIN).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0), "page override beats the tree default");
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 assert!(ui.navigate_back());
@@ -3668,7 +3764,7 @@ mod tests {
                 assert_eq!(ui.default_descent(), None);
                 ui.navigate_returning(&PAGE_PINNED, &PAGE_MAIN).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "cleared default falls back to the seed");
         }
 
@@ -3713,7 +3809,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
 
                 // the default axis is vertical
@@ -3735,7 +3831,7 @@ mod tests {
                 let mut now = 0u64;
                 ui.navigate(&PAGE_LINEAR_2).unwrap();
                 now += 50_000;
-                ui.render(&mut layer, &mut display, &font, now);
+                ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (0, 1), "a horizontal-tree Linear page seeds from the bottom");
         }
 
@@ -3753,7 +3849,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PICK_PAGE).unwrap();
 
@@ -3789,7 +3885,7 @@ mod tests {
                 let (layer, _d) = rig(&mut buf);
                 let cell_h = i32::from(font.cell_height());
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
 
                 ui.navigate(&PLAIN_PAGE).unwrap();
@@ -3819,7 +3915,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PLAIN_PAGE).unwrap();
                 let root = ui.root().unwrap();
@@ -3841,7 +3937,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PLAIN_PAGE).unwrap();
                 let btn = ui.children(ui.root().unwrap()).next().unwrap();
@@ -3855,9 +3951,9 @@ mod tests {
                 assert!(ui.is_animating(), "the press flash keeps the loop rendering");
 
                 // a render before the deadline keeps it; one after clears it
-                ui.render(&mut layer, &mut display, &font, up + ACTIVATE_FLASH_US / 2);
+                ui.render(&mut layer, &mut display, &styled(&font), up + ACTIVATE_FLASH_US / 2);
                 assert!(ui.is_animating(), "still flashing mid-window");
-                ui.render(&mut layer, &mut display, &font, up + ACTIVATE_FLASH_US + 1);
+                ui.render(&mut layer, &mut display, &styled(&font), up + ACTIVATE_FLASH_US + 1);
                 assert!(!ui.is_animating(), "the flash lapses on its own");
         }
 
@@ -3875,12 +3971,12 @@ mod tests {
                 display.set_back_buffer(&mut back);
                 let mut layer = FrameLayer::new(64, 48, PixelFormat::Rgb565);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 let mut t = 0u64;
                 let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| loop {
-                        ui.render(layer, display, &font, *t);
+                        ui.render(layer, display, &styled(&font), *t);
                         while layer.poll(display).unwrap() {}
                         *t += 50_000;
                         if !ui.is_animating() && !ui.is_dirty() {
@@ -3903,7 +3999,7 @@ mod tests {
                 ui.navigate(&PAGE_PINNED).unwrap();
                 // the first step freezes (render-mode) and renders the incoming into the back
                 let t0 = t;
-                assert!(ui.render(&mut layer, &mut display, &font, t0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), t0));
                 assert!(display.is_frozen());
                 while layer.poll(&mut display).unwrap() {}
                 let m = layer.transform();
@@ -3911,7 +4007,7 @@ mod tests {
                 assert_ne!((ux, uy), (0, 0));
                 let span = if ux != 0 { 64 } else { 48 };
                 // at the midpoint the blit offset is span/2 (span - travel, travel = span/2)
-                assert!(ui.render(&mut layer, &mut display, &font, t0 + u64::from(ui.page_move_ms) * 500));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), t0 + u64::from(ui.page_move_ms) * 500));
                 while layer.poll(&mut display).unwrap() {}
                 let off = span / 2;
                 let (off_x, off_y) = (ux * off, uy * off);
@@ -3945,23 +4041,23 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 0));
                 assert_eq!(flush(&mut layer, &mut display), [Region::full(64, 48)]);
-                assert!(!ui.render(&mut layer, &mut display, &font, 0), "nothing dirty");
+                assert!(!ui.render(&mut layer, &mut display, &styled(&font), 0), "nothing dirty");
                 // moving focus dirties exactly the two buttons
                 let root = ui.root().unwrap();
                 let rows: StdVec<Rect> = ui.children(root).map(|c| ui.get(c).unwrap().rect).collect();
                 ui.focus_next();
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 0));
                 let mut pushed = flush(&mut layer, &mut display);
                 pushed.sort_by_key(|r| r.y0);
                 // the previous frame's full-canvas invalidation carries forward once
                 assert_eq!(pushed, [Region::full(64, 48)]);
                 ui.focus_next();
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 0));
                 let mut pushed = flush(&mut layer, &mut display);
                 pushed.sort_by_key(|r| r.y0);
                 // rows 0 and 1 from last frame's invalidation, rows 1 and 2 from this one: three
@@ -3979,13 +4075,13 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (mut layer, mut display) = rig(&mut buf);
                 let mut ui: Ui<Ev, 8> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&PAGE_MAIN).unwrap();
                 ui.set_rotation(&mut layer, Rotation::R90);
                 // a mono, single-buffered panel cannot animate: the rotation snaps at the next
                 // render, which is where it is applied
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 0));
                 assert!(!ui.is_animating());
                 assert_eq!(ui.logical_size(), (48, 64));
                 let root = ui.root().unwrap();
@@ -4038,7 +4134,7 @@ mod tests {
                 display.set_back_buffer(&mut back);
                 let mut layer = FrameLayer::new(240, 280, PixelFormat::Rgb565);
                 let mut ui: Ui<Ev, 12> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&T_PAGE_MAIN).unwrap();
                 // time advances 50 ms per pass, so the animations run their course
@@ -4046,7 +4142,7 @@ mod tests {
                 let settle = |ui: &mut Ui<Ev, 12>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, t: &mut u64| {
                         let mut frames = 0;
                         loop {
-                                if ui.render(layer, display, &font, *t) {
+                                if ui.render(layer, display, &styled(&font), *t) {
                                         frames += 1;
                                 }
                                 let _ = flush(layer, display);
@@ -4120,25 +4216,25 @@ mod tests {
                 display.set_back_buffer(&mut back);
                 let mut layer = FrameLayer::new(240, 280, PixelFormat::Rgb565);
                 let mut ui: Ui<Ev, 12> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 ui.navigate(&T_PAGE_MAIN).unwrap();
-                assert!(ui.render(&mut layer, &mut display, &font, 0));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 0));
                 let _ = flush(&mut layer, &mut display);
                 ui.set_rotation(&mut layer, Rotation::R90);
                 // the first step captures the frame and freezes swapping; the layer is still
                 // at R0 and the tree still laid out for it
-                assert!(ui.render(&mut layer, &mut display, &font, 1_000), "an animation frame was drawn");
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 1_000), "an animation frame was drawn");
                 assert!(display.is_frozen());
                 assert_eq!(layer.rotation(), Rotation::R0);
                 assert_eq!(flush(&mut layer, &mut display), [Region::full(240, 280)], "an animation frame is a whole-panel push");
                 // taps are refused mid-turn
                 assert_eq!(ui.press_at(120, 100), (false, None));
                 assert_eq!(ui.touch(120, 100, true, 0), Touch::None);
-                assert!(ui.render(&mut layer, &mut display, &font, 150_000));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 150_000));
                 let _ = flush(&mut layer, &mut display);
                 // past the duration: thawed, committed, the settled tree drawn in one call
-                assert!(ui.render(&mut layer, &mut display, &font, 300_000));
+                assert!(ui.render(&mut layer, &mut display, &styled(&font), 300_000));
                 assert!(!display.is_frozen());
                 assert!(!ui.is_animating());
                 assert_eq!(layer.rotation(), Rotation::R90);
@@ -4153,7 +4249,7 @@ mod tests {
                 let mut buf = [0u8; 64 * 48 / 8];
                 let (layer, _d) = rig(&mut buf);
                 let mut ui: Ui<Ev, 3> = Ui::new();
-                ui.set_font(&font);
+                ui.set_style(&styled(&font));
                 ui.fit(&layer);
                 assert_eq!(ui.navigate(&PAGE_MAIN), Err(Error::Full));
                 assert!(ui.root().is_none());

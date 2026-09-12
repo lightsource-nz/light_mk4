@@ -19,7 +19,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::Tracker;
-use light_ui::{Theme, Ui};
+use light_ui::{Fonts, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::{PowerManager, PowerMechanism};
@@ -524,8 +524,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Err(e) => panic!("the embedded theme does not parse: {e:?}"),
         };
         layer.bg = theme.bg;
-        ui.set_theme(theme);
-        ui.set_font(&font);
+        ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
         ui.set_safe_inset(SAFE_INSET);
         // module state is 'static in any case: the runtime never returns
         type BoardDisplayMod = DisplayMod<St7789<Spi1Display>, SysClock, Ext, Hook>;

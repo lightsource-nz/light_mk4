@@ -21,7 +21,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
-use light_ui::{Theme, Ui};
+use light_ui::{Fonts, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
@@ -1385,8 +1385,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 Err(e) => panic!("the embedded theme does not parse: {e:?}"),
         };
         layer.bg = theme.bg;
-        ui.set_theme(theme);
-        ui.set_font(&font);
+        ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
         type BoardDisplayMod = DisplayMod<Axs15231b<PioQspiDisplayBus>, SysClock, Ext, Hook>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(
