@@ -1050,8 +1050,13 @@ dependencies = [
 name = "light-ui-editor"
 version = "0.1.0"
 dependencies = [
+ "critical-section",
+ "freetype-rs",
+ "light-display",
  "light-draw",
+ "light-font",
  "light-host-gui",
+ "light-ui",
 ]
 
 [[package]]

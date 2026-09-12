@@ -14,6 +14,11 @@
 use light_draw::Point;
 use light_host_gui::{HostApp, HostFrame};
 
+mod font;
+mod preview;
+
+use preview::Preview;
+
 /// Pack 8-bit RGB into RGB565 (the canvas's colour type).
 const fn rgb(r: u8, g: u8, b: u8) -> u16 {
         (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
@@ -39,11 +44,13 @@ const BAR_H: i32 = 34;
 const LEFT_W: i32 = 190;
 const RIGHT_W: i32 = 230;
 
-/// The device screen the stage previews, portrait. A stand-in until a real light-ui tree loads.
-const DEV_W: i32 = 240;
-const DEV_H: i32 = 400;
+/// The device screen the stage previews, portrait; its size is the preview's own.
+const DEV_W: i32 = preview::DEV_W as i32;
+const DEV_H: i32 = preview::DEV_H as i32;
 
-struct Editor;
+struct Editor {
+        preview: Preview,
+}
 
 impl HostApp for Editor {
         fn title(&self) -> &str {
@@ -59,6 +66,9 @@ impl HostApp for Editor {
         }
 
         fn render(&mut self, frame: &mut HostFrame<'_>) {
+                //   render the device UI into its own off-screen buffer first; it is composited
+                // into the stage below
+                self.preview.paint();
                 //   full repaint every frame: invalidate the whole canvas so the flush pushes it
                 frame.layer.invalidate_all();
                 let Some(mut c) = frame.layer.frame_begin(frame.display, frame.now_us) else {
@@ -117,12 +127,19 @@ impl HostApp for Editor {
                 let dev_y0 = BAR_H + ((h - BAR_H) - DEV_H) / 2;
                 let dev_x1 = dev_x0 + DEV_W - 1;
                 let dev_y1 = dev_y0 + DEV_H - 1;
-                // body bezel, then the (blank) screen inside, then an accent frame
+                // body bezel around the screen
                 c.fg = BEZEL;
                 c.rect_rounded(Point::new(dev_x0 - 8, dev_y0 - 8), Point::new(dev_x1 + 8, dev_y1 + 8), 14, light_draw::corner::ALL, true);
-                fill(&mut c, dev_x0, dev_y0, dev_x1, dev_y1, rgb(0x0A, 0x0C, 0x10));
-                c.fg = ACCENT;
-                c.rect(Point::new(dev_x0, dev_y0), Point::new(dev_x1, dev_y1), false);
+                //   the live device UI, composited pixel-for-pixel into the screen area: RGB565 to
+                // RGB565, so each pixel is copied straight through
+                let px = self.preview.pixels();
+                for cy in 0..DEV_H {
+                        for cx in 0..DEV_W {
+                                let i = ((cy * DEV_W + cx) as usize) * 2;
+                                let color = u16::from_be_bytes([px[i], px[i + 1]]);
+                                c.set(dev_x0 + cx, dev_y0 + cy, color);
+                        }
+                }
 
                 drop(c);
                 frame.layer.frame_end(frame.display);
@@ -130,7 +147,8 @@ impl HostApp for Editor {
 }
 
 fn main() {
-        if let Err(e) = light_host_gui::run(Editor) {
+        let editor = Editor { preview: Preview::new() };
+        if let Err(e) = light_host_gui::run(editor) {
                 eprintln!("light-ui-editor: {e}");
                 std::process::exit(1);
         }
