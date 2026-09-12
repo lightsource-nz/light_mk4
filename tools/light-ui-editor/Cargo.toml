@@ -3,7 +3,7 @@ name = "light-ui-editor"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "a prototype desktop editor for light-ui embedded UIs, built on the light-host-gui shell"
+description = "a prototype desktop editor for light-ui embedded UIs, built on the light-host-gui runtime"
 
 [[bin]]
 name = "light-ui-editor"

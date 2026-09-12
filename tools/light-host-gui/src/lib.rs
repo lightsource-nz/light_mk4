@@ -1,4 +1,8 @@
-//! A host-side GUI shell for the light framework.
+//! A host-side GUI runtime for the light framework.
+//!
+//! This is a HOST library, not the embedded shell: it links no C shell (`light_mk4_shell` is only
+//! for firmware) and never reaches a device -- a desktop app depends on this crate the way firmware
+//! depends on the shell, and the two never meet.
 //!
 //! The framework already renders a whole UI on the host: `light-ui`, `light-draw` and
 //! `light-display` all build and test off-device, and the one hardware-facing seam is the
@@ -14,8 +18,7 @@
 //!
 //! An application implements [`HostApp`] and hands it to [`run`]. Each frame it is given a
 //! [`HostFrame`] -- the live `FrameLayer` and `Display` -- and draws through the ordinary
-//! toolkit API; the shell flushes the frame into the window and presents it. This first cut
-//! establishes that whole pipeline; input and a `light-ui` event loop layer over it next.
+//! toolkit API; the runtime flushes the frame into the window and presents it.
 
 use std::num::NonZeroU32;
 use std::rc::Rc;
@@ -33,7 +36,7 @@ use winit::keyboard::{Key as WinitKey, NamedKey};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
-/// The frame buffer format the shell presents. RGB565 is what the panels take, so the host path
+/// The frame buffer format the runtime presents. RGB565 is what the panels take, so the host path
 /// stays byte-for-byte the same as a device's -- the only extra step is expanding to 8888 at the
 /// window, where the desktop wants full-width color.
 const FORMAT: PixelFormat = PixelFormat::Rgb565;
@@ -48,7 +51,7 @@ const MARGIN_XRGB: u32 = 0x0014_181C;
 // clock is a process-global monotonic base set on first read.
 static START: OnceLock<Instant> = OnceLock::new();
 
-/// Microseconds since the shell first asked the time; monotonic, the host's `now_us`.
+/// Microseconds since the runtime first asked the time; monotonic, the host's `now_us`.
 pub fn now_us() -> u64 {
         START.get_or_init(Instant::now).elapsed().as_micros() as u64
 }
@@ -156,7 +159,7 @@ pub enum PointerPhase {
 }
 
 /// A pointer event delivered in CANVAS space (the app's logical canvas, origin top-left). The
-/// shell has already undone the window centring, so `(0,0)` is the canvas's top-left however the
+/// runtime has already undone the window centring, so `(0,0)` is the canvas's top-left however the
 /// window is sized; coordinates may fall outside `0..canvas_size` when the pointer is on the
 /// margin.
 #[derive(Clone, Copy, Debug)]
@@ -202,7 +205,7 @@ pub trait HostApp {
         fn render(&mut self, frame: &mut HostFrame<'_>) -> bool;
 }
 
-// --- the shell -----------------------------------------------------------------------------
+// --- the runtime ---------------------------------------------------------------------------
 
 /// Everything a live window owns. Built on `resumed`; the display borrows a leaked framebuffer,
 /// so it is `'static` -- one buffer for the window's life, allocated once.
@@ -273,12 +276,12 @@ impl Gfx {
 }
 
 /// The winit application: an app plus its window state.
-struct Shell<A: HostApp> {
+struct Runner<A: HostApp> {
         app: A,
         gfx: Option<Gfx>,
 }
 
-impl<A: HostApp> ApplicationHandler for Shell<A> {
+impl<A: HostApp> ApplicationHandler for Runner<A> {
         fn resumed(&mut self, event_loop: &ActiveEventLoop) {
                 if self.gfx.is_some() {
                         return;
@@ -305,7 +308,7 @@ impl<A: HostApp> ApplicationHandler for Shell<A> {
         }
 
         fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
-                let Shell { app, gfx } = self;
+                let Runner { app, gfx } = self;
                 let Some(gfx) = gfx.as_mut() else {
                         return;
                 };
@@ -373,8 +376,8 @@ impl<A: HostApp> ApplicationHandler for Shell<A> {
 pub fn run<A: HostApp + 'static>(app: A) -> Result<(), Box<dyn std::error::Error>> {
         let event_loop = EventLoop::new()?;
         event_loop.set_control_flow(ControlFlow::Wait);
-        let mut shell = Shell { app, gfx: None };
-        event_loop.run_app(&mut shell)?;
+        let mut runner = Runner { app, gfx: None };
+        event_loop.run_app(&mut runner)?;
         Ok(())
 }
 

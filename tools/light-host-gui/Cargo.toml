@@ -3,7 +3,7 @@ name = "light-host-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "host-side GUI shell for the light framework: a native window (winit) with the light-display stack blitting into it, so a light-ui UI renders on the desktop exactly as it does on a panel"
+description = "host-side GUI runtime for the light framework: a native window (winit) with the light-display stack blitting into it, so a light-ui UI renders on the desktop exactly as it does on a panel. A host library -- it never links the embedded C shell"
 
 [dependencies]
 winit = "0.30"
