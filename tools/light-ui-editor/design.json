@@ -1,5 +1,5 @@
 {
-        "device": { "width": 240, "height": 400, "corner_radius": 20 },
+        "device": { "width": 240, "height": 400, "corner_radius": 0 },
         "root": 0,
         "pages": [
                 {

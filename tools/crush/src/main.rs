@@ -58,8 +58,24 @@ pub enum Command {
                 #[command(subcommand)]
                 cmd: ThemeCmd,
         },
+        /// UI designs: compile a JSON design to an LUI blob
+        Ui {
+                #[command(subcommand)]
+                cmd: UiCmd,
+        },
         /// Run commands from a script, a single --command, or an interactive prompt
         Console(ConsoleArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum UiCmd {
+        /// Compile a JSON design into the binary UI blob the firmware displays
+        Compile {
+                /// The design source (JSON)
+                input: PathBuf,
+                /// Where the LUI blob goes
+                output: PathBuf,
+        },
 }
 
 #[derive(Subcommand, Debug)]
@@ -240,6 +256,22 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                 Command::Theme { cmd } => match cmd {
                         ThemeCmd::Compile { input, output, themes, default } => theme::compile(&input, &output, themes.as_deref(), default.as_deref()),
                 },
+                Command::Ui { cmd } => match cmd {
+                        UiCmd::Compile { input, output } => ui_compile(&input, &output),
+                },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
+}
+
+/// Compile a JSON design to an LUI blob.
+fn ui_compile(input: &std::path::Path, output: &std::path::Path) -> CmdResult {
+        let text = std::fs::read_to_string(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
+        let design = crush_core::design::parse(&text)?;
+        let blob = crush_core::lui::compile(&design)?;
+        if let Some(dir) = output.parent() {
+                std::fs::create_dir_all(dir).map_err(|e| format!("could not create '{}': {e}", dir.display()))?;
+        }
+        std::fs::write(output, &blob).map_err(|e| format!("could not write '{}': {e}", output.display()))?;
+        log::info(&format!("design '{}': {} pages, {} bytes -> {}", input.display(), design.pages.len(), blob.len(), output.display()));
+        Ok(())
 }

@@ -1,10 +1,11 @@
 //! The device-UI preview and the design it edits.
 //!
-//! A real light-ui tree, materialised from a loaded design and rendered through the same rasteriser
-//! and `Ui::render` path the panels use, into an off-screen RGB565 buffer. The editor composites it
-//! into the stage. The preview owns the editable [`Design`]: it can be interacted with (Run mode:
-//! taps navigate) or edited (Edit mode: a tap selects a widget, and structural operations mutate
-//! the model, re-materialise the tree with `Ui::reload`, and save the JSON back to disk).
+//! The preview DISPLAYS through the LUI binary path -- it compiles the design to a blob with
+//! crush-core and renders it with `light_ui::Ui::build_lui`, exactly as firmware would. So what the
+//! editor shows is what a device shows from the same blob; there is no separate host render path to
+//! drift. The editable `Design` is kept alongside for editing, navigation resolution and the
+//! inspector; every edit recompiles the blob and rebuilds. Buttons emit their child index, which the
+//! preview resolves against the design's navigation (goto/back).
 
 use std::path::PathBuf;
 
@@ -12,19 +13,19 @@ use light_core::hal::Clock;
 use light_display::{Display, DisplayDriver, Frame, FrameLayer, Region};
 use light_draw::PixelFormat;
 use light_host_gui::now_us;
-use light_ui::{Fonts, Page, Rect, Style, Theme, Touch, Ui};
+use light_ui::lui::code;
+use light_ui::{Fonts, Lui, Rect, Style, Theme, Touch, Ui};
 
-use crate::design::{self, ChildDef, Design, DesignEvent};
+use crate::design::{self, ChildDef, Design};
 use crate::font;
 
 /// The preview font's pixel size.
 const PIXEL_SIZE: u16 = 18;
 
-/// Widget arena capacity per page. Generous; a page with more widgets than this fails to build
-/// (and is left as it was) rather than drawing half a tree.
+/// Widget arena capacity per page.
 const UI_WIDGETS: usize = 32;
 
-/// The look, loaded from the framework's real steel theme -- the same JSON the firmware compiles.
+/// The look, loaded from the framework's real steel theme.
 const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 
 /// The design shipped as the default; a saved file beside the executable overrides it.
@@ -52,43 +53,36 @@ impl DisplayDriver for NullDriver {
 }
 
 pub struct Preview {
-        ui: Ui<DesignEvent, UI_WIDGETS>,
+        ui: Ui<u16, UI_WIDGETS>,
         display: Display<'static, NullDriver>,
         layer: FrameLayer,
         theme: Theme,
         font: light_font::Font<'static>,
         /// The editable model; the source of truth, saved back to [`path`](Self::path).
         design: Design,
-        /// The materialised pages, regenerated whenever the model changes.
-        pages: Vec<&'static Page<DesignEvent>>,
-        /// The visited-page stack; its last entry is the page shown. Run-mode `back` pops it, an
-        /// Edit-mode page switch resets it.
+        /// The design compiled to an LUI blob (leaked `'static`), reparsed on each recompile -- what
+        /// the preview actually reads and displays.
+        lui: Lui<'static>,
+        /// The visited-page stack; its last entry is the page shown.
         history: Vec<usize>,
         /// The selected child's index in the current page (Edit mode).
         selected: Option<usize>,
-        /// The device screen size the design targets; the render surfaces are sized to it.
         dev_w: u16,
         dev_h: u16,
-        /// Where the design is loaded from and saved to.
         path: PathBuf,
 }
 
 impl Preview {
         pub fn new() -> Self {
                 let path = save_path();
-                //   a saved file beside the exe wins; otherwise the bundled default. A corrupt
-                // saved file falls back rather than refusing to open
-                let json = std::fs::read_to_string(&path).ok();
-                let design = json
+                let design = std::fs::read_to_string(&path)
+                        .ok()
                         .as_deref()
                         .and_then(|j| design::parse(j).ok())
                         .unwrap_or_else(|| design::parse(DEFAULT_DESIGN_JSON).expect("the bundled design parses"));
 
-                //   the render surfaces are sized to the design's target device
                 let (dev_w, dev_h) = (design.device.width.max(1), design.device.height.max(1));
                 let font = font::load(PIXEL_SIZE);
-                //   compile the theme JSON to an LTH blob with crush-core (the firmware's path) and
-                // parse it, rather than mirroring the theme schema here
                 let lth = crush_core::theme::compile_flat(THEME_JSON).expect("the bundled steel theme compiles");
                 let theme = Theme::parse(&lth).expect("the compiled theme parses");
                 let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(dev_w, dev_h)]);
@@ -99,19 +93,14 @@ impl Preview {
                 ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
                 ui.fit(&layer);
 
-                let pages = design::materialize(&design);
-                let root = design.root.min(pages.len().saturating_sub(1));
-                let mut history = vec![root];
-                if let Some(&page) = pages.get(root) {
-                        let _ = ui.reload(page);
-                } else {
-                        history.clear();
-                }
-                Self { ui, display, layer, theme, font, design, pages, history, selected: None, dev_w, dev_h, path }
+                let lui = compile_blob(&design);
+                let root = lui.root().min(lui.page_count().saturating_sub(1));
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path };
+                this.build_current();
+                this
         }
 
-        /// Render a frame into the off-screen buffer if anything changed. Returns `true` while an
-        /// animation is in flight, so the caller keeps redrawing.
+        /// Render a frame into the off-screen buffer if anything changed.
         pub fn render(&mut self, now_us: u64) -> bool {
                 let style = Style::new(self.theme, Fonts::uniform(&self.font));
                 let drew = self.ui.render(&mut self.layer, &mut self.display, &style, now_us);
@@ -119,57 +108,54 @@ impl Preview {
                 drew || self.ui.is_animating()
         }
 
-        // --- Run mode: taps navigate --------------------------------------------------------
+        // --- Run mode: taps navigate ---------------------------------------------------------
 
-        /// Feed a touch that drives the UI as the device would: focus, flash, and navigation.
+        /// Feed a touch that drives the UI as the device would. A tapped button's child index is
+        /// resolved against the design's navigation (goto/back).
         pub fn interact(&mut self, x: u16, y: u16, touching: bool, now_us: u64) {
-                if let Touch::Tap { emitted: Some(event), .. } = self.ui.touch(x, y, touching, now_us) {
-                        match event {
-                                DesignEvent::Goto(idx) => self.run_goto(idx as usize),
-                                DesignEvent::Back => self.run_back(),
+                if let Touch::Tap { emitted: Some(slot), .. } = self.ui.touch(x, y, touching, now_us) {
+                        //   resolve the tapped child's navigation from the blob (the firmware path)
+                        let nav = self.lui.page(self.current()).and_then(|p| p.children().nth(usize::from(slot)));
+                        if let Some(child) = nav {
+                                match child.nav {
+                                        code::NAV_GOTO => self.goto(usize::from(child.nav_page)),
+                                        code::NAV_BACK => self.back(),
+                                        _ => {}
+                                }
                         }
                 }
         }
 
-        fn run_goto(&mut self, idx: usize) {
-                if let Some(&page) = self.pages.get(idx) {
-                        if self.ui.navigate(page).is_ok() {
-                                self.history.push(idx);
-                                self.selected = None;
-                        }
+        fn goto(&mut self, idx: usize) {
+                if idx < self.lui.page_count() {
+                        self.history.push(idx);
+                        self.selected = None;
+                        self.build_current();
                 }
         }
 
-        fn run_back(&mut self) {
+        fn back(&mut self) {
                 if self.history.len() > 1 {
                         self.history.pop();
-                        let idx = *self.history.last().expect("history is non-empty");
-                        //   the mirror of the forward slide, so back retraces the way in
-                        let _ = self.ui.navigate_back_to(self.pages[idx]);
                         self.selected = None;
+                        self.build_current();
                 }
         }
 
-        /// Start a fresh run from the root page -- the run session owns navigation from here.
+        /// Start a fresh run from the root page.
         pub fn start_run(&mut self) {
-                let root = self.design.root.min(self.pages.len().saturating_sub(1));
-                if let Some(&page) = self.pages.get(root) {
-                        let _ = self.ui.reload(page);
-                        self.history = vec![root];
-                }
+                self.history = vec![self.lui.root().min(self.lui.page_count().saturating_sub(1))];
                 self.selected = None;
+                self.build_current();
         }
 
         // --- Edit mode: selection and structural edits --------------------------------------
 
-        /// Select the widget at a point in the device's own pixel space, or clear the selection if
-        /// none is there. Hit-tests the current page's children by their materialised tags.
+        /// Select the widget at a point in device pixels, or clear the selection.
         pub fn select_at(&mut self, x: i32, y: i32) {
-                let cur = self.current();
-                let count = self.design.pages.get(cur).map_or(0, |p| p.children.len());
+                let count = self.design.pages.get(self.current()).map_or(0, |p| p.children.len());
                 self.selected = None;
                 for i in 0..count {
-                        //   children are tagged from 1 (tag 0 is light-ui's "untagged")
                         if let Some(id) = self.ui.find((i + 1) as u8) {
                                 if let Some(w) = self.ui.get(id) {
                                         let r = w.rect;
@@ -182,26 +168,24 @@ impl Preview {
                 }
         }
 
-        /// Show a page for editing: an instant rebuild (no transition), selection cleared.
+        /// Show a page for editing.
         pub fn show_page(&mut self, idx: usize) {
-                if let Some(&page) = self.pages.get(idx) {
-                        let _ = self.ui.reload(page);
+                if idx < self.lui.page_count() {
                         self.history = vec![idx];
                         self.selected = None;
+                        self.build_current();
                 }
         }
 
-        /// Append a fresh button to the current page and select it.
         pub fn add_button(&mut self) {
                 let cur = self.current();
                 if let Some(page) = self.design.pages.get_mut(cur) {
                         page.children.push(ChildDef::new_button());
                         self.selected = Some(page.children.len() - 1);
                 }
-                self.rebuild();
+                self.recompile();
         }
 
-        /// Delete the selected widget.
         pub fn delete_selected(&mut self) {
                 let cur = self.current();
                 if let Some(sel) = self.selected {
@@ -212,10 +196,9 @@ impl Preview {
                                 }
                         }
                 }
-                self.rebuild();
+                self.recompile();
         }
 
-        /// Move the selected widget by `delta` places within its page (clamped).
         pub fn move_selected(&mut self, delta: i32) {
                 let cur = self.current();
                 if let Some(sel) = self.selected {
@@ -227,10 +210,10 @@ impl Preview {
                                 }
                         }
                 }
-                self.rebuild();
+                self.recompile();
         }
 
-        /// Set the selected widget's text (its button or label string).
+        /// Set the selected widget's text.
         pub fn set_selected_text(&mut self, s: &str) {
                 if let Some(c) = self.selected_child_mut() {
                         if c.button.is_some() {
@@ -239,11 +222,10 @@ impl Preview {
                                 c.label = Some(s.to_owned());
                         }
                 }
-                self.rebuild();
+                self.recompile();
         }
 
-        /// Cycle the selected button's action: none -> back -> goto(0) -> ... -> goto(last) -> none.
-        /// A no-op on a label.
+        /// Cycle the selected button's action: none -> back -> goto(0..) -> none.
         pub fn cycle_selected_action(&mut self) {
                 let pages = self.design.pages.len();
                 {
@@ -262,7 +244,39 @@ impl Preview {
                                 c.back = true;
                         }
                 }
-                self.rebuild();
+                self.recompile();
+        }
+
+        /// Recompile the design to a fresh blob, rebuild the current page, and save.
+        fn recompile(&mut self) {
+                self.lui = compile_blob(&self.design);
+                self.build_current();
+                self.save();
+        }
+
+        /// Build the current page from the blob into the widget tree.
+        fn build_current(&mut self) {
+                let cur = self.current().min(self.lui.page_count().saturating_sub(1));
+                let page = self.lui.page(cur);
+                if let Some(page) = page {
+                        let _ = self.ui.build_lui(&page);
+                }
+        }
+
+        fn save(&self) {
+                if let Err(e) = std::fs::write(&self.path, design::to_json(&self.design)) {
+                        eprintln!("light-ui-editor: could not save '{}': {e}", self.path.display());
+                }
+                //   also the compiled blob beside it, so a design yields a usable artifact
+                if let Ok(blob) = crush_core::lui::compile(&self.design) {
+                        let _ = std::fs::write(self.path.with_extension("lui"), blob);
+                }
+        }
+
+        // --- accessors for the editor chrome ------------------------------------------------
+
+        fn current(&self) -> usize {
+                *self.history.last().unwrap_or(&0)
         }
 
         fn selected_child(&self) -> Option<&ChildDef> {
@@ -275,19 +289,35 @@ impl Preview {
                 self.design.pages.get_mut(cur)?.children.get_mut(sel)
         }
 
-        /// The selected widget's text, for the inspector's editable field.
+        pub fn page_count(&self) -> usize {
+                self.design.pages.len()
+        }
+
+        pub fn page_title(&self, idx: usize) -> &str {
+                self.design.pages.get(idx).map_or("", |p| p.title.as_str())
+        }
+
+        pub fn current_page(&self) -> usize {
+                self.current()
+        }
+
+        pub fn selected(&self) -> Option<usize> {
+                self.selected
+        }
+
+        pub fn selected_describe(&self) -> Option<String> {
+                self.selected_child().map(ChildDef::describe)
+        }
+
         pub fn selected_text(&self) -> Option<String> {
                 let c = self.selected_child()?;
                 c.button.clone().or_else(|| c.label.clone())
         }
 
-        /// Whether the selected widget is a button (so an action applies).
         pub fn selected_is_button(&self) -> bool {
                 self.selected_child().is_some_and(|c| c.button.is_some())
         }
 
-        /// A label for the selected button's action ("none" / "back" / "goto <page>"), or `None`
-        /// for a label widget or no selection.
         pub fn selected_action_label(&self) -> Option<String> {
                 let c = self.selected_child()?;
                 if c.button.is_none() {
@@ -302,76 +332,32 @@ impl Preview {
                 })
         }
 
-        /// Re-materialise after a model change, reload the current page in place, and save.
-        fn rebuild(&mut self) {
-                self.pages = design::materialize(&self.design);
-                let cur = self.current().min(self.pages.len().saturating_sub(1));
-                if let Some(&page) = self.pages.get(cur) {
-                        let _ = self.ui.reload(page);
-                }
-                self.save();
-        }
-
-        fn save(&self) {
-                if let Err(e) = std::fs::write(&self.path, design::to_json(&self.design)) {
-                        eprintln!("light-ui-editor: could not save '{}': {e}", self.path.display());
-                }
-        }
-
-        // --- accessors for the editor chrome ------------------------------------------------
-
-        fn current(&self) -> usize {
-                *self.history.last().unwrap_or(&0)
-        }
-
-        pub fn page_count(&self) -> usize {
-                self.design.pages.len()
-        }
-
-        pub fn page_title(&self, idx: usize) -> &str {
-                self.design.pages.get(idx).map_or("", |p| p.title.as_str())
-        }
-
-        /// The page currently shown (its index).
-        pub fn current_page(&self) -> usize {
-                self.current()
-        }
-
-        pub fn selected(&self) -> Option<usize> {
-                self.selected
-        }
-
-        /// A short description of the selected widget, for the inspector.
-        pub fn selected_describe(&self) -> Option<String> {
-                let sel = self.selected?;
-                self.design.pages.get(self.current())?.children.get(sel).map(ChildDef::describe)
-        }
-
-        /// The selected widget's rectangle in device pixels, for the selection outline.
         pub fn selected_rect(&self) -> Option<Rect> {
                 let id = self.ui.find((self.selected? + 1) as u8)?;
                 self.ui.get(id).map(|w| w.rect)
         }
 
-        /// The device screen size the design targets.
         pub fn size(&self) -> (u16, u16) {
                 (self.dev_w, self.dev_h)
         }
 
-        /// The device screen's corner arc radius in device pixels (clamped to half the shorter
-        /// side); 0 is square.
         pub fn corner_radius(&self) -> u16 {
                 self.design.device.corner_radius.min(self.dev_w.min(self.dev_h) / 2)
         }
 
-        /// The rendered RGB565 image, `DEV_W * DEV_H` pixels big-endian, or empty if unavailable.
         pub fn pixels(&self) -> &[u8] {
                 self.display.front().unwrap_or(&[])
         }
 }
 
-/// The design's load/save path: `design.json` beside the executable, so a save is discoverable and
-/// does not depend on the working directory.
+/// Compile a design to an LUI blob, leak it `'static`, and parse it -- the blob the preview reads.
+fn compile_blob(design: &Design) -> Lui<'static> {
+        let bytes = crush_core::lui::compile(design).expect("the design compiles to LUI");
+        let leaked: &'static [u8] = Vec::leak(bytes);
+        Lui::parse(leaked).expect("the compiled LUI blob parses")
+}
+
+/// The design's load/save path: `design.json` beside the executable.
 fn save_path() -> PathBuf {
         std::env::current_exe()
                 .ok()
