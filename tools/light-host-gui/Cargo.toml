@@ -1,0 +1,13 @@
+[package]
+name = "light-host-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "host-side GUI shell for the light framework: a native window (winit) with the light-display stack blitting into it, so a light-ui UI renders on the desktop exactly as it does on a panel"
+
+[dependencies]
+winit = "0.30"
+softbuffer = "0.4"
+light-core = { path = "../../crates/light-core" }
+light-draw = { path = "../../crates/light-draw" }
+light-display = { path = "../../crates/light-display" }

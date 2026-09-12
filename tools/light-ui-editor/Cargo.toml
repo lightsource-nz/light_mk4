@@ -1,0 +1,14 @@
+[package]
+name = "light-ui-editor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "a prototype desktop editor for light-ui embedded UIs, built on the light-host-gui shell"
+
+[[bin]]
+name = "light-ui-editor"
+path = "src/main.rs"
+
+[dependencies]
+light-host-gui = { path = "../light-host-gui" }
+light-draw = { path = "../../crates/light-draw" }
