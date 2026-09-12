@@ -103,13 +103,15 @@ pub const PIN_SD_MOSI: usize = 27;
 pub const PIN_SD_MISO: usize = 28;
 pub const PIN_SD_CS: usize = 31;
 
-// MEASURED ABSENT: GPIO 47 is the RP2350B's XIP CS1 and the vendor demo pack carries PSRAM
-// boilerplate, but the SDK's auto-detection reads no chip ID on this board and the wiki's
-// spec list carries no PSRAM either -- the library in the demo pack is shared across
-// Waveshare's RP2350 family, not evidence of fitment. The firmware keeps the SDK's
-// auto-detect wired (module CMakeLists), so a fitted variant would light up unchanged; the
-// `psram` console command reports what detection found.
-pub const PIN_PSRAM_CS: usize = 47;
+//   The charger-status feedback. GPIO 47 doubles as the RP2350B's XIP CS1 -- the vendor pack
+// carries PSRAM boilerplate for it -- but PSRAM is MEASURED ABSENT (no chip ID, not in the wiki
+// spec), so on this board the pin is free and the schematic wires it to the charger: GPIO 47 is
+// driven off the ETA6098's STAT line (through a MOSFET; STAT also drives the charge LED), read
+// with a pull-up. STAT is open-drain per the datasheet -- pulled LOW while charging, high-impedance
+// once charge completes, and also floating on battery (the charger has no input power). So GPIO 47
+// LOW means charging = definitely external power, while GPIO 47 HIGH is the released state and is
+// ambiguous: charge-complete OR on battery. See `Touch349Power::on_external_power`.
+pub const PIN_CHARGE_STAT: usize = 47;
 
 pub struct Peripherals {
         pub display_bus: PioQspiDisplayBus,
@@ -124,6 +126,8 @@ pub struct Peripherals {
         pub power_button: Input,
         /// The battery divider on ADC channel 0.
         pub battery: Adc,
+        /// The charger-status feedback (see [`PIN_CHARGE_STAT`]); LOW = charging (external power), HIGH = ambiguous.
+        pub charge_stat: Input,
         /// The I2S transport: MCLK running, data machine waiting on the codec's clocks.
         pub i2s: PioI2sOut,
         /// The speaker amplifier enable, LOW (amp off) until audio loads.
@@ -151,6 +155,7 @@ pub fn take(clocks: &Clocks) -> Option<Peripherals> {
                         sys_en,
                         power_button: Input::new_pull_up(PIN_SYS_OUT),
                         battery: Adc::new(PIN_BAT_ADC),
+                        charge_stat: Input::new_pull_up(PIN_CHARGE_STAT),
                         i2s: {
                                 let mut i2s = PioI2sOut::new(PIN_AUDIO_DOUT, PIN_AUDIO_BCLK, PIN_AUDIO_LRCLK, PIN_AUDIO_MCLK, clocks.sys_hz, AUDIO_MCLK_HZ, AUDIO_DMA_CH[0], AUDIO_DMA_CH[1]);
                                 i2s.attach_capture(PIN_AUDIO_DIN, AUDIO_CAP_DMA_CH[0], AUDIO_CAP_DMA_CH[1]);

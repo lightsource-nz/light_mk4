@@ -154,6 +154,12 @@ impl<M: PowerMechanism, C: Clock> PowerManager<M, C> {
                 self.mech.battery_mv()
         }
 
+        /// Whether the mechanism reports the board is on external power -- for a `stats` readout;
+        /// the policy consults it internally in [`tick`](Self::tick).
+        pub fn on_external_power(&self) -> bool {
+                self.mech.on_external_power()
+        }
+
         /// Run the timers: dim on schedule, power off on a long idle when not on external power, and
         /// answer the manual button hold. Returns [`Poll::Shutdown`] when the board should power
         /// down (the runtime then unloads every module, and this module's [`on_unload`](Self::on_unload)

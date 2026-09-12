@@ -1122,7 +1122,7 @@ impl Module for BoardMod {
                                         info!("backlight {level}");
                                 }
                                 AppEvent::Command(Command::Stats) => {
-                                        info!("battery: {} mV", self.power.battery_mv());
+                                        info!("battery: {} mV, {}", self.power.battery_mv(), if self.power.on_external_power() { "external power" } else { "on battery" });
                                 }
                                 AppEvent::Ext(Ext::Psram) => {
                                         busy = true;
@@ -1343,7 +1343,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         static SD_CELL: StaticCell<RefCell<SpiSd<Spi1Bus, Output>>> = StaticCell::new();
         let sd: &'static RefCell<SpiSd<Spi1Bus, Output>> = SD_CELL.init(RefCell::new(SpiSd::new(p.sd_spi, p.sd_cs)));
         let mut board_mod = BoardMod {
-                power: PowerManager::new(p.backlight, p.sys_en, p.power_button, p.battery),
+                power: PowerManager::new(p.backlight, p.sys_en, p.power_button, p.battery, p.charge_stat),
                 sd,
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };

@@ -4,16 +4,25 @@
 //! power off on battery after a longer one) lives in [`light_power_manager`]; this file is only the
 //! board-specific half.
 //!
-//! Detecting "on external power" is the interesting part here. This board gives firmware no clean
-//! signal for it: no VBUS or charge-status pin, the chip's USB VBUS-detect reads pinned-on (the
-//! device stack forces the override), and the only power reading -- raw VBAT through a divider --
-//! cannot separate USB from battery, because the charger has no power-path, so on USB the system
-//! drains VBAT between recharge cycles and its slow decline is indistinguishable from a real
-//! discharge over any practical window (a VBAT-trend approach was tried and failed on hardware for
-//! exactly this reason). So external power is taken from **USB device enumeration**
-//! (`light_shell_usb_mounted`, updated on core 1 by the shell): enumerated by a host means plugged
-//! into a computer, so stay on. The one gap is a data-less wall charger, which never enumerates and
-//! so reads as battery -- the board powers off (parks, since VBUS holds the rails) after the idle.
+//! Detecting "on external power" is the subtle part. This board has no VBUS sense, the chip's USB
+//! VBUS-detect reads pinned-on (the device stack forces the override), and raw VBAT cannot be
+//! trended (no power-path charger). Two signals combine, each covering the other's blind spot:
+//!
+//! - **GPIO 47** (see [`PIN_CHARGE_STAT`]): the ETA6098 charger's STAT line, through a MOSFET, at
+//!   this pin. Per the datasheet STAT is an OPEN-DRAIN output with only two states: pulled LOW
+//!   while charging, and high-impedance once charging completes -- it is never actively driven
+//!   high. And on battery the charger has no input power at all, so it too leaves STAT floating.
+//!   So the charger asserts exactly one thing we can trust: charging = external power. At this pin
+//!   that is GPIO 47 LOW (unambiguous external); GPIO 47 HIGH is the released/Hi-Z state, which
+//!   means charge-complete OR on-battery -- the two are indistinguishable here.
+//! - **USB device enumeration** (`light_shell_usb_mounted`): true while a host has us enumerated,
+//!   which recovers the one case GPIO 47 cannot -- plugged into a computer with the battery full
+//!   (charger done, STAT released, GPIO 47 high).
+//!
+//! `on_external_power` is `GPIO47 low OR enumerated`. Together they cover charging (on a host or a
+//! data-less charger) and full-on-a-host. The one gap is *full* on a data-less wall charger
+//! (charging done so GPIO 47 high, no host) -- it reads as battery and parks after the idle, rare
+//! and harmless (external power holds the rails; it wakes on the button).
 
 use light_core::{InputPin, Poll};
 use light_rp2::adc::Adc;
@@ -26,15 +35,16 @@ use crate::board::{BACKLIGHT_INVERTED, BACKLIGHT_LEVEL_MAX, BATTERY_DIVIDER};
 
 unsafe extern "C" {
         /// True while a USB host has this device enumerated. Set on core 1 (which owns TinyUSB) by
-        /// the C shell; a plain volatile bool, safe to read from core 0.
+        /// the C shell; a plain volatile bool, safe to read from core 0. Covers GPIO 47's done-gap.
         fn light_shell_usb_mounted() -> bool;
 }
 
 /// ADC samples averaged per VBAT reading, for a steady `stats` figure.
 const BATTERY_SAMPLES: u32 = 16;
 
-/// This board's [`PowerMechanism`]: owns the backlight PWM, the power latch, the side button and
-/// the battery ADC. Handed to a [`light_power_manager::PowerManager`] (see [`PowerManager`]).
+/// This board's [`PowerMechanism`]: owns the backlight PWM, the power latch, the side button, the
+/// battery ADC and the charger-status pin. Handed to a [`light_power_manager::PowerManager`] (see
+/// [`PowerManager`]).
 pub struct Touch349Power {
         backlight: PwmOutput,
         /// The power latch: high since [`board::take`](crate::board::take); driven low on `power_off` = off.
@@ -42,11 +52,13 @@ pub struct Touch349Power {
         /// The side button, low when pressed.
         button: Input,
         battery: Adc,
+        /// The charger-status feedback (see [`board::PIN_CHARGE_STAT`](crate::board)); LOW = charging (external power).
+        charge_stat: Input,
 }
 
 impl Touch349Power {
-        pub fn new(backlight: PwmOutput, sys_en: Output, button: Input, battery: Adc) -> Self {
-                Self { backlight, sys_en, button, battery }
+        pub fn new(backlight: PwmOutput, sys_en: Output, button: Input, battery: Adc, charge_stat: Input) -> Self {
+                Self { backlight, sys_en, button, battery, charge_stat }
         }
 }
 
@@ -66,7 +78,12 @@ impl PowerMechanism for Touch349Power {
         }
 
         fn on_external_power(&self) -> bool {
-                unsafe { light_shell_usb_mounted() }
+                //   GPIO 47 LOW means the charger is actively pulling its STAT line down, which it
+                // only does while charging -- so LOW is an unambiguous "on external power". Its HIGH
+                // is ambiguous: the charger releases STAT (Hi-Z) both at charge-complete AND when it
+                // is unpowered on battery, so HIGH covers full-and-plugged and on-battery alike. The
+                // full-and-plugged case is recovered by USB enumeration instead. See the module docs.
+                self.charge_stat.is_low() || unsafe { light_shell_usb_mounted() }
         }
 
         fn power_off(&mut self) {
@@ -94,8 +111,8 @@ impl PowerMechanism for Touch349Power {
 pub struct PowerManager(light_power_manager::PowerManager<Touch349Power, SysClock>);
 
 impl PowerManager {
-        pub fn new(backlight: PwmOutput, sys_en: Output, button: Input, battery: Adc) -> Self {
-                Self(light_power_manager::PowerManager::new(Touch349Power::new(backlight, sys_en, button, battery), SysClock))
+        pub fn new(backlight: PwmOutput, sys_en: Output, button: Input, battery: Adc, charge_stat: Input) -> Self {
+                Self(light_power_manager::PowerManager::new(Touch349Power::new(backlight, sys_en, button, battery, charge_stat), SysClock))
         }
 
         pub fn on_load(&mut self) {
@@ -121,6 +138,11 @@ impl PowerManager {
         /// VBAT in millivolts; this board always has a gauge, so the [`Option`] is always `Some`.
         pub fn battery_mv(&mut self) -> u32 {
                 self.0.battery_mv().unwrap_or(0)
+        }
+
+        /// Whether the board reads as on external power (the charger-status pin), for `stats`.
+        pub fn on_external_power(&self) -> bool {
+                self.0.on_external_power()
         }
 
         pub fn tick(&mut self) -> Poll {
