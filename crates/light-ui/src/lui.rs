@@ -7,6 +7,8 @@
 //! through the offset table without scanning. [`Ui::build_lui`](crate::Ui::build_lui) turns a page
 //! into a live widget tree.
 
+use crate::{Touch, Ui};
+
 /// Format codes, shared with crush's `lui` compiler.
 pub mod code {
         /// Window child arrangement.
@@ -151,6 +153,83 @@ impl<'a> Iterator for LuiChildren<'a> {
         }
 }
 
+/// How deep a navigation history the runtime keeps.
+const HISTORY_DEPTH: usize = 16;
+
+/// A ready runtime for displaying an LUI blob: it owns the widget tree and a navigation history,
+/// resolving a tapped button's goto/back against the blob. Firmware wires its display, touch, style
+/// and render loop around [`ui`](Self::ui); the editor's preview runs the same logic.
+///
+/// The blob must be `'static` -- `include_bytes!`'d on device, leaked on the host.
+pub struct LuiRuntime<const N: usize> {
+        /// The widget tree, for the caller to style, render and hit-test.
+        pub ui: Ui<u16, N>,
+        lui: Lui<'static>,
+        history: heapless::Vec<u16, HISTORY_DEPTH>,
+}
+
+impl<const N: usize> LuiRuntime<N> {
+        /// Wrap a parsed blob. Call [`start`](Self::start) after styling and fitting [`ui`](Self::ui).
+        pub const fn new(lui: Lui<'static>) -> Self {
+                Self { ui: Ui::new(), lui, history: heapless::Vec::new() }
+        }
+
+        /// Open the blob's root page.
+        pub fn start(&mut self) {
+                let root = self.lui.root().min(self.lui.page_count().saturating_sub(1)) as u16;
+                self.history.clear();
+                let _ = self.history.push(root);
+                self.build_current();
+        }
+
+        /// Feed a touch, as [`Ui::touch`] takes it; a tapped button navigates per the blob.
+        pub fn touch(&mut self, x: u16, y: u16, touching: bool, now_us: u64) {
+                if let Touch::Tap { emitted: Some(slot), .. } = self.ui.touch(x, y, touching, now_us) {
+                        self.activate(slot);
+                }
+        }
+
+        /// Resolve a child's navigation by its slot (index), as a tap would -- for a caller that
+        /// wires input another way.
+        pub fn activate(&mut self, slot: u16) {
+                let cur = self.current_page();
+                let nav = self.lui.page(cur).and_then(|p| p.children().nth(usize::from(slot)));
+                if let Some(child) = nav {
+                        match child.nav {
+                                code::NAV_GOTO => self.goto(child.nav_page),
+                                code::NAV_BACK => self.back(),
+                                _ => {}
+                        }
+                }
+        }
+
+        /// The index of the page currently shown.
+        pub fn current_page(&self) -> usize {
+                usize::from(*self.history.last().unwrap_or(&0))
+        }
+
+        fn goto(&mut self, idx: u16) {
+                if usize::from(idx) < self.lui.page_count() {
+                        let _ = self.history.push(idx);
+                        self.build_current();
+                }
+        }
+
+        fn back(&mut self) {
+                if self.history.len() > 1 {
+                        self.history.pop();
+                        self.build_current();
+                }
+        }
+
+        fn build_current(&mut self) {
+                let cur = self.current_page();
+                if let Some(page) = self.lui.page(cur) {
+                        let _ = self.ui.build_lui(&page);
+                }
+        }
+}
+
 /// Read a `u8`-length-prefixed string; returns it and the offset just past it.
 fn read_str(blob: &[u8], at: usize) -> Option<(&str, usize)> {
         let len = usize::from(*blob.get(at)?);
@@ -246,6 +325,54 @@ mod tests {
         fn rejects_a_non_lui_blob() {
                 assert!(matches!(Lui::parse(b"nope............"), Err(LuiError::BadMagic)));
                 assert!(matches!(Lui::parse(&[]), Err(LuiError::BadMagic)));
+        }
+
+        //   two pages: page 0 has a button that goes to page 1, page 1 a button that goes back
+        fn nav_blob() -> Vec<u8> {
+                let page = |title: &str, btn: &str, nav: u8, nav_page: u16| {
+                        let mut b = Vec::new();
+                        put_str(&mut b, title);
+                        b.push(code::LAYOUT_STACK);
+                        b.push(6);
+                        b.push(1);
+                        b.push(code::KIND_BUTTON);
+                        b.push(nav);
+                        b.extend_from_slice(&nav_page.to_le_bytes());
+                        put_str(&mut b, btn);
+                        b
+                };
+                let body0 = page("Main", "Go", code::NAV_GOTO, 1);
+                let body1 = page("Second", "Back", code::NAV_BACK, 0);
+                let mut b = Vec::new();
+                b.extend_from_slice(&MAGIC);
+                b.extend_from_slice(&2u16.to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&172u16.to_le_bytes());
+                b.extend_from_slice(&640u16.to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&0u16.to_le_bytes());
+                let mut off = (HEADER_LEN + 8) as u32;
+                b.extend_from_slice(&off.to_le_bytes());
+                off += body0.len() as u32;
+                b.extend_from_slice(&off.to_le_bytes());
+                b.extend_from_slice(&body0);
+                b.extend_from_slice(&body1);
+                b
+        }
+
+        #[test]
+        fn runtime_navigates_goto_and_back() {
+                let data: &'static [u8] = Vec::leak(nav_blob());
+                let lui = Lui::parse(data).unwrap();
+                let mut rt: LuiRuntime<16> = LuiRuntime::new(lui);
+                rt.start();
+                assert_eq!(rt.current_page(), 0);
+                rt.activate(0); // "Go" -> page 1
+                assert_eq!(rt.current_page(), 1);
+                rt.activate(0); // "Back" -> page 0
+                assert_eq!(rt.current_page(), 0);
+                rt.activate(0); // "Go" again -> page 1, history deepens without underflow
+                assert_eq!(rt.current_page(), 1);
         }
 
         #[test]

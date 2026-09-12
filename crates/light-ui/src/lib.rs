@@ -37,7 +37,7 @@ pub mod theme;
 pub use theme::Theme;
 
 pub mod lui;
-pub use lui::{Lui, LuiChild, LuiError, LuiPage};
+pub use lui::{Lui, LuiChild, LuiError, LuiPage, LuiRuntime};
 
 /// Which typographic role a piece of text plays. A [`Style`] binds a font per role, so a title
 /// can be set in a different face or size from body text; today's UIs use one face for every
