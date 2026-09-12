@@ -1069,8 +1069,6 @@ dependencies = [
  "light-font",
  "light-host-gui",
  "light-ui",
- "serde",
- "serde_json",
 ]
 
 [[package]]

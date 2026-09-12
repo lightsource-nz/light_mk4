@@ -6,5 +6,7 @@
 //! editor rasterises its preview font and compiles a theme the same way). They live here so there
 //! is one implementation, not a mirrored copy per consumer.
 
+pub mod design;
+pub mod lui;
 pub mod render;
 pub mod theme;
