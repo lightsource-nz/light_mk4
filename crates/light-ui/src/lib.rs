@@ -3332,6 +3332,39 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                 self.relayout();
                 Ok(())
         }
+
+        /// Navigate to an LUI-blob `page` WITH the page-transition animation -- the blob analogue of
+        /// [`navigate`](Self::navigate) (`back` false) and [`navigate_back`](Self::navigate_back)
+        /// (`back` true). The blob carries no parent links, so the caller keeps its own history and
+        /// names both the target page and the direction. Buttons emit `emit(index, child)`, exactly
+        /// as [`build_lui_with`](Self::build_lui_with) builds them; the difference is the slide.
+        ///
+        /// The transition's axis is seeded from the entering page's layout and the tree's
+        /// [`layout_axis`](Self::set_layout_axis) -- a `Row`, or a `Linear` tree set horizontal,
+        /// rises from the bottom; anything else slides in from the right -- unless
+        /// [`set_default_descent`](Self::set_default_descent) pins the flow. It mirrors forward and
+        /// back correctly when a tree's pages share an axis, which is what the layout-axis model
+        /// encourages (the same seed the const-`Page` path uses for a `Linear` tree).
+        pub fn navigate_lui(&mut self, page: &LuiPage<'static>, back: bool, emit: impl Fn(usize, &LuiChild<'static>) -> Option<A>) -> Result<(), Error> {
+                //   start the transition before the tree changes, as show_page does for a const
+                // Page: the outgoing image is captured at the first render step, off the live panel,
+                // so destroying the old widget tree now (inside build_lui_with) is fine
+                if self.root.is_some() && !self.rotating {
+                        self.page_moving = true;
+                        self.page_move_started = false;
+                        self.page_move_back = back;
+                        let horizontal = match page.layout() {
+                                lui::code::LAYOUT_ROW => true,
+                                lui::code::LAYOUT_LINEAR => self.layout_axis == Axis::Horizontal,
+                                _ => false,
+                        };
+                        let seed = if horizontal { Descent::FromBottom } else { Descent::FromRight };
+                        self.page_move_descent = self.default_descent.unwrap_or(seed);
+                }
+                self.build_lui_with(page, emit)?;
+                self.invalidate_all();
+                Ok(())
+        }
 }
 
 /// The `Ui<u16>` convenience over [`build_lui_with`](Ui::build_lui_with): a blob UI whose event type
@@ -3771,6 +3804,100 @@ mod tests {
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (1, 0));
+        }
+
+        //   a minimal LUI blob assembled by hand -- crush's compiler is std/heavy and lives in
+        // another crate, so the reader/transition are tested off a literal blob in the v2 layout:
+        // two Linear pages, one button each carrying an app-event id
+        fn lui_blob() -> StdVec<u8> {
+                fn put_str(b: &mut StdVec<u8>, s: &str) {
+                        b.push(s.len() as u8);
+                        b.extend_from_slice(s.as_bytes());
+                }
+                let page = |title: &str, btn: &str, event: u16| {
+                        let mut b = StdVec::new();
+                        put_str(&mut b, title);
+                        b.push(crate::lui::code::LAYOUT_LINEAR);
+                        b.push(2); // gap
+                        b.push(0); // scroll
+                        b.push(0); // subtitle
+                        b.push(1); // one child
+                        b.push(crate::lui::code::KIND_BUTTON);
+                        b.push(crate::lui::code::NAV_NONE);
+                        b.extend_from_slice(&0u16.to_le_bytes()); // nav_page
+                        b.extend_from_slice(&event.to_le_bytes());
+                        b.push(0); // tag (0 -> default index+1)
+                        b.extend_from_slice(&0u16.to_le_bytes()); // min_w
+                        b.extend_from_slice(&0u16.to_le_bytes()); // min_h
+                        put_str(&mut b, btn);
+                        b
+                };
+                let bodies = [page("One", "Go", 7), page("Two", "Back", 8)];
+                let mut blob = StdVec::new();
+                blob.extend_from_slice(b"LUI2");
+                blob.extend_from_slice(&2u16.to_le_bytes()); // page_count
+                blob.extend_from_slice(&0u16.to_le_bytes()); // root
+                blob.extend_from_slice(&64u16.to_le_bytes()); // width
+                blob.extend_from_slice(&48u16.to_le_bytes()); // height
+                blob.extend_from_slice(&0u16.to_le_bytes()); // corner
+                blob.extend_from_slice(&0u16.to_le_bytes()); // reserved
+                let mut off = (16 + 4 * bodies.len()) as u32;
+                for body in &bodies {
+                        blob.extend_from_slice(&off.to_le_bytes());
+                        off += body.len() as u32;
+                }
+                for body in &bodies {
+                        blob.extend_from_slice(body);
+                }
+                blob
+        }
+
+        /// [`navigate_lui`](Ui::navigate_lui) slides between blob pages with the page transition
+        /// (the first page snaps -- nothing to slide from), maps each button's blob event through the
+        /// closure, and mirrors forward/back on the same axis -- the parity the dictaphone needs.
+        #[test]
+        fn navigate_lui_slides_between_blob_pages_and_mirrors_on_back() {
+                let fb = font_blob();
+                let font = Font::parse(&fb).unwrap();
+                let mut buf = [0u8; 64 * 48 / 8];
+                let (mut layer, mut display) = rig(&mut buf);
+                let data: &'static [u8] = StdVec::leak(lui_blob());
+                let lui = crate::Lui::parse(data).unwrap();
+                let mut ui: Ui<Ev, 8> = Ui::new();
+                ui.set_style(&styled(&font));
+                ui.fit(&layer);
+                let map = |_i: usize, c: &crate::LuiChild<'static>| Some(Ev::Item(c.event as u8));
+                let mut now = 0u64;
+                let mut settle = |ui: &mut Ui<Ev, 8>, layer: &mut FrameLayer, display: &mut Display<'_, Mock>, now: &mut u64| {
+                        let mut frames = 0;
+                        while ui.is_animating() {
+                                *now += 50_000;
+                                ui.render(layer, display, &styled(&font), *now);
+                                while layer.poll(display).unwrap() {}
+                                frames += 1;
+                                assert!(frames < 100, "a transition that never ends");
+                        }
+                };
+                //   first page: nothing to slide from, so it snaps; the button maps its blob event
+                ui.navigate_lui(&lui.page(0).unwrap(), false, map).unwrap();
+                assert!(!ui.is_animating(), "the first page does not slide");
+                assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Go"));
+                //   forward: a Linear tree on the default vertical axis slides on the horizontal
+                ui.navigate_lui(&lui.page(1).unwrap(), false, map).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &styled(&font), now);
+                assert!(ui.is_animating(), "forward navigation slides");
+                let fwd = (ui.page_move_dx, ui.page_move_dy);
+                assert_eq!(fwd.1, 0, "a vertical-axis Linear tree slides horizontally");
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Back"));
+                //   back: the mirror -- same axis, reversed direction
+                ui.navigate_lui(&lui.page(0).unwrap(), true, map).unwrap();
+                now += 50_000;
+                ui.render(&mut layer, &mut display, &styled(&font), now);
+                assert_eq!((ui.page_move_dx, ui.page_move_dy), (-fwd.0, 0), "back mirrors forward");
+                settle(&mut ui, &mut layer, &mut display, &mut now);
+                assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Go"));
         }
 
         /// A per-page [`Descent`] override and the tree-wide default both steer the transition,
