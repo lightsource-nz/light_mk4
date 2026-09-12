@@ -14,6 +14,7 @@ light-host-gui = { path = "../light-host-gui" }
 light-draw = { path = "../../crates/light-draw" }
 light-ui = { path = "../../crates/light-ui" }
 light-display = { path = "../../crates/light-display" }
+light-core = { path = "../../crates/light-core" }
 light-font = { path = "../../crates/light-font", features = ["alloc"] }
 #   light-core (under light-ui) uses critical-section; the final binary picks the impl -- the std
 # one on the host

@@ -12,7 +12,7 @@
 //! the layout the later editing surfaces will fill in.
 
 use light_draw::Point;
-use light_host_gui::{HostApp, HostFrame};
+use light_host_gui::{HostApp, HostFrame, PointerEvent, PointerPhase};
 
 mod font;
 mod preview;
@@ -48,8 +48,23 @@ const RIGHT_W: i32 = 230;
 const DEV_W: i32 = preview::DEV_W as i32;
 const DEV_H: i32 = preview::DEV_H as i32;
 
+/// The device preview's top-left in canvas coordinates -- centred in the stage column. Shared by
+/// the render (where the preview is composited) and the pointer mapping (where a click is turned
+/// into a device coordinate), so the two cannot disagree.
+const fn dev_x0() -> i32 {
+        let stage_x0 = LEFT_W + 1;
+        let stage_x1 = CANVAS_W as i32 - RIGHT_W - 2;
+        stage_x0 + ((stage_x1 - stage_x0) - DEV_W) / 2
+}
+const fn dev_y0() -> i32 {
+        BAR_H + ((CANVAS_H as i32 - BAR_H) - DEV_H) / 2
+}
+
 struct Editor {
         preview: Preview,
+        /// Whether the primary button is down inside the preview -- so a drag tracks and a release
+        /// completes the touch that a press began.
+        pressed: bool,
 }
 
 impl HostApp for Editor {
@@ -65,14 +80,15 @@ impl HostApp for Editor {
                 DESK
         }
 
-        fn render(&mut self, frame: &mut HostFrame<'_>) {
+        fn render(&mut self, frame: &mut HostFrame<'_>) -> bool {
                 //   render the device UI into its own off-screen buffer first; it is composited
-                // into the stage below
-                self.preview.paint();
+                // into the stage below. `animating` keeps the shell redrawing through a flash or
+                // page transition
+                let animating = self.preview.render(frame.now_us);
                 //   full repaint every frame: invalidate the whole canvas so the flush pushes it
                 frame.layer.invalidate_all();
                 let Some(mut c) = frame.layer.frame_begin(frame.display, frame.now_us) else {
-                        return;
+                        return animating;
                 };
                 let w = i32::from(CANVAS_W);
                 let h = i32::from(CANVAS_H);
@@ -120,34 +136,60 @@ impl HostApp for Editor {
                         fill(&mut c, w - RIGHT_W + 14, y0, w - 14, y0 + 34, CHIP);
                 }
 
-                // the device preview, centred in the stage column
-                let stage_x0 = LEFT_W + 1;
-                let stage_x1 = w - RIGHT_W - 2;
-                let dev_x0 = stage_x0 + ((stage_x1 - stage_x0) - DEV_W) / 2;
-                let dev_y0 = BAR_H + ((h - BAR_H) - DEV_H) / 2;
-                let dev_x1 = dev_x0 + DEV_W - 1;
-                let dev_y1 = dev_y0 + DEV_H - 1;
+                // the device preview, centred in the stage column (the origin is a shared const so
+                // the composite and the pointer mapping agree)
+                let (dev_x0, dev_y0) = (dev_x0(), dev_y0());
+                let (dev_x1, dev_y1) = (dev_x0 + DEV_W - 1, dev_y0 + DEV_H - 1);
                 // body bezel around the screen
                 c.fg = BEZEL;
                 c.rect_rounded(Point::new(dev_x0 - 8, dev_y0 - 8), Point::new(dev_x1 + 8, dev_y1 + 8), 14, light_draw::corner::ALL, true);
                 //   the live device UI, composited pixel-for-pixel into the screen area: RGB565 to
                 // RGB565, so each pixel is copied straight through
                 let px = self.preview.pixels();
-                for cy in 0..DEV_H {
-                        for cx in 0..DEV_W {
-                                let i = ((cy * DEV_W + cx) as usize) * 2;
-                                let color = u16::from_be_bytes([px[i], px[i + 1]]);
-                                c.set(dev_x0 + cx, dev_y0 + cy, color);
+                if px.len() >= (DEV_W * DEV_H * 2) as usize {
+                        for cy in 0..DEV_H {
+                                for cx in 0..DEV_W {
+                                        let i = ((cy * DEV_W + cx) as usize) * 2;
+                                        let color = u16::from_be_bytes([px[i], px[i + 1]]);
+                                        c.set(dev_x0 + cx, dev_y0 + cy, color);
+                                }
                         }
                 }
 
                 drop(c);
                 frame.layer.frame_end(frame.display);
+                animating
+        }
+
+        fn on_pointer(&mut self, ev: PointerEvent) {
+                let (dw, dh) = self.preview.size();
+                //   canvas space to the device's own pixel space
+                let px = ev.x - dev_x0();
+                let py = ev.y - dev_y0();
+                let inside = px >= 0 && py >= 0 && px < i32::from(dw) && py < i32::from(dh);
+                let now = light_host_gui::now_us();
+                //   a drag may wander off the screen; clamp so the touch keeps tracking a real cell
+                let cx = px.clamp(0, i32::from(dw) - 1) as u16;
+                let cy = py.clamp(0, i32::from(dh) - 1) as u16;
+                match ev.phase {
+                        PointerPhase::Pressed if inside => {
+                                self.pressed = true;
+                                self.preview.touch(cx, cy, true, now);
+                        }
+                        PointerPhase::Moved if self.pressed => {
+                                self.preview.touch(cx, cy, true, now);
+                        }
+                        PointerPhase::Released if self.pressed => {
+                                self.pressed = false;
+                                self.preview.touch(cx, cy, false, now);
+                        }
+                        _ => {}
+                }
         }
 }
 
 fn main() {
-        let editor = Editor { preview: Preview::new() };
+        let editor = Editor { preview: Preview::new(), pressed: false };
         if let Err(e) = light_host_gui::run(editor) {
                 eprintln!("light-ui-editor: {e}");
                 std::process::exit(1);

@@ -28,7 +28,7 @@ use light_display::{Display, DisplayDriver, FrameLayer, Frame, Region};
 
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
-use winit::event::WindowEvent;
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowId};
 
@@ -143,6 +143,28 @@ pub struct HostFrame<'a> {
         pub now_us: u64,
 }
 
+/// A pointer (mouse) gesture phase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PointerPhase {
+        /// The pointer moved (a button may or may not be held).
+        Moved,
+        /// The primary button went down.
+        Pressed,
+        /// The primary button came up.
+        Released,
+}
+
+/// A pointer event delivered in CANVAS space (the app's logical canvas, origin top-left). The
+/// shell has already undone the window centring, so `(0,0)` is the canvas's top-left however the
+/// window is sized; coordinates may fall outside `0..canvas_size` when the pointer is on the
+/// margin.
+#[derive(Clone, Copy, Debug)]
+pub struct PointerEvent {
+        pub x: i32,
+        pub y: i32,
+        pub phase: PointerPhase,
+}
+
 /// A host GUI application. Implement it and pass it to [`run`].
 pub trait HostApp {
         /// The window title.
@@ -158,8 +180,12 @@ pub trait HostApp {
                 0x0000
         }
 
-        /// Draw one frame. Called on every redraw request.
-        fn render(&mut self, frame: &mut HostFrame<'_>);
+        /// A pointer event in canvas space. Default: ignored.
+        fn on_pointer(&mut self, _event: PointerEvent) {}
+
+        /// Draw one frame. Returns `true` to ask for another redraw -- an animation is in flight
+        /// and the frame after this one will differ.
+        fn render(&mut self, frame: &mut HostFrame<'_>) -> bool;
 }
 
 // --- the shell -----------------------------------------------------------------------------
@@ -174,9 +200,23 @@ struct Gfx {
         layer: FrameLayer,
         canvas_w: u16,
         canvas_h: u16,
+        /// The last pointer position in physical window pixels, for the button events winit
+        /// reports without one.
+        last_cursor: (f64, f64),
+        /// Whether the primary button is down, so a move is a drag worth a redraw (a hover is not).
+        pointer_down: bool,
 }
 
 impl Gfx {
+        /// The canvas's top-left in physical window pixels -- the centring the pointer mapping and
+        /// [`present`](Self::present) share.
+        fn canvas_origin(&self) -> (i32, i32) {
+                let size = self.window.inner_size();
+                let ox = (size.width as i32 - i32::from(self.canvas_w)) / 2;
+                let oy = (size.height as i32 - i32::from(self.canvas_h)) / 2;
+                (ox, oy)
+        }
+
         /// Copy the driver's image into the window surface, the canvas centred and the rest the
         /// margin colour, then present.
         fn present(&mut self) {
@@ -187,6 +227,8 @@ impl Gfx {
                 if self.surface.resize(w, h).is_err() {
                         return;
                 }
+                //   computed before the surface buffer is borrowed: both read `self`
+                let (ox, oy) = self.canvas_origin();
                 let Ok(mut buffer) = self.surface.buffer_mut() else {
                         return;
                 };
@@ -194,8 +236,6 @@ impl Gfx {
 
                 let (sw, sh) = (size.width as i32, size.height as i32);
                 let (cw, ch) = (i32::from(self.canvas_w), i32::from(self.canvas_h));
-                let ox = (sw - cw) / 2;
-                let oy = (sh - ch) / 2;
                 let pixels = self.display.driver().pixels();
                 let dx0 = ox.max(0);
                 let dx1 = (ox + cw).min(sw);
@@ -247,7 +287,7 @@ impl<A: HostApp> ApplicationHandler for Shell<A> {
                 layer.bg = self.app.background();
 
                 window.request_redraw();
-                self.gfx = Some(Gfx { window, _context: context, surface, display, layer, canvas_w: cw, canvas_h: ch });
+                self.gfx = Some(Gfx { window, _context: context, surface, display, layer, canvas_w: cw, canvas_h: ch, last_cursor: (0.0, 0.0), pointer_down: false });
         }
 
         fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -258,13 +298,35 @@ impl<A: HostApp> ApplicationHandler for Shell<A> {
                 match event {
                         WindowEvent::CloseRequested => event_loop.exit(),
                         WindowEvent::Resized(_) => gfx.window.request_redraw(),
+                        WindowEvent::CursorMoved { position, .. } => {
+                                gfx.last_cursor = (position.x, position.y);
+                                let (ox, oy) = gfx.canvas_origin();
+                                app.on_pointer(PointerEvent { x: position.x as i32 - ox, y: position.y as i32 - oy, phase: PointerPhase::Moved });
+                                //   a hover changes nothing; only redraw when the move is a drag
+                                if gfx.pointer_down {
+                                        gfx.window.request_redraw();
+                                }
+                        }
+                        WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
+                                gfx.pointer_down = state == ElementState::Pressed;
+                                let (ox, oy) = gfx.canvas_origin();
+                                let (cx, cy) = gfx.last_cursor;
+                                let phase = if gfx.pointer_down { PointerPhase::Pressed } else { PointerPhase::Released };
+                                app.on_pointer(PointerEvent { x: cx as i32 - ox, y: cy as i32 - oy, phase });
+                                gfx.window.request_redraw();
+                        }
                         WindowEvent::RedrawRequested => {
                                 let mut frame = HostFrame { layer: &mut gfx.layer, display: &mut gfx.display, now_us: now_us() };
-                                app.render(&mut frame);
+                                let again = app.render(&mut frame);
                                 //   flush the frame's queued regions through the driver into the
                                 // window image; the driver completes every chunk at once
                                 while gfx.layer.poll(&mut gfx.display).unwrap_or(false) {}
                                 gfx.present();
+                                //   an animation (a press flash, a page transition) wants the next
+                                // frame; a static UI goes back to waiting for input
+                                if again {
+                                        gfx.window.request_redraw();
+                                }
                         }
                         _ => {}
                 }
