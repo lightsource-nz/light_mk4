@@ -4,8 +4,9 @@
 //! reader; the two must agree (the codes below are the contract).
 //!
 //! Layout, little-endian:
-//! - Header (16 bytes): magic "LUI3", `page_count` u16, `root` u16, device `width`/`height`/
-//!   `corner_radius` u16 each, then u16 reserved.
+//! - Header (16 bytes): magic "LUI3", `version` u8 (the schema version -- the shared blob-header
+//!   convention, see LGF fonts and LTH themes), `reserved` u8, `page_count` u16, `root` u16, device
+//!   `width`/`height`/`corner_radius` u16 each.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
 //! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
 //!   `child_count` u8, then each child.
@@ -21,9 +22,13 @@
 use crate::design::ChildDef;
 use crate::design::Design;
 
-/// The blob magic: "LUI3", Light UI, format 3 (adds one-level frame nesting and per-child
-/// max-size/grow over format 2).
+/// The blob magic: "LUI3", Light UI. The magic is now the frozen format-family tag; the schema
+/// revision is carried in the [`VERSION`] header byte, not by bumping the magic.
 pub const MAGIC: &[u8; 4] = b"LUI3";
+/// The schema version in the header, matching light-ui's `lui::VERSION`. Version 1 is the layout
+/// historically called LUIv3 (one-level frame nesting, per-child max-size/grow); the shared
+/// blob-header convention with LGF fonts and LTH themes.
+pub const VERSION: u8 = 1;
 /// The fixed header length.
 pub const HEADER_LEN: usize = 16;
 
@@ -139,12 +144,13 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
         let table_len = 4 * design.pages.len();
         let mut blob = Vec::with_capacity(HEADER_LEN + table_len + bodies.iter().map(Vec::len).sum::<usize>());
         blob.extend_from_slice(MAGIC);
+        blob.push(VERSION);
+        blob.push(0); // reserved
         blob.extend_from_slice(&(design.pages.len() as u16).to_le_bytes());
         blob.extend_from_slice(&(design.root.min(u16::MAX as usize) as u16).to_le_bytes());
         blob.extend_from_slice(&design.device.width.to_le_bytes());
         blob.extend_from_slice(&design.device.height.to_le_bytes());
         blob.extend_from_slice(&design.device.corner_radius.to_le_bytes());
-        blob.extend_from_slice(&0u16.to_le_bytes()); // reserved
 
         let mut offset = (HEADER_LEN + table_len) as u32;
         for body in &bodies {
@@ -183,11 +189,12 @@ mod tests {
                 let blob = compile(&d).unwrap();
 
                 assert_eq!(&blob[..4], MAGIC);
-                assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), 2, "two pages");
-                assert_eq!(u16::from_le_bytes([blob[6], blob[7]]), 0, "root 0");
-                assert_eq!(u16::from_le_bytes([blob[8], blob[9]]), 172, "device width");
-                assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 640, "device height");
-                assert_eq!(u16::from_le_bytes([blob[12], blob[13]]), 8, "device corner");
+                assert_eq!(blob[4], VERSION, "schema version after the magic");
+                assert_eq!(u16::from_le_bytes([blob[6], blob[7]]), 2, "two pages");
+                assert_eq!(u16::from_le_bytes([blob[8], blob[9]]), 0, "root 0");
+                assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 172, "device width");
+                assert_eq!(u16::from_le_bytes([blob[12], blob[13]]), 640, "device height");
+                assert_eq!(u16::from_le_bytes([blob[14], blob[15]]), 8, "device corner");
 
                 // page 0 body: title "Main", stack, gap 6, scroll 0, subtitle 1, 2 children
                 let off0 = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;

@@ -27,6 +27,10 @@ pub mod code {
 }
 
 const MAGIC: [u8; 4] = *b"LUI3";
+/// The schema version carried in the header (byte 4), matching crush's `lui::VERSION` -- the shared
+/// blob-header convention across LGF fonts, LTH themes and LUI UIs. Version 1 is the layout once
+/// called LUIv3; a future incompatible change bumps this, not the magic.
+pub const VERSION: u8 = 1;
 const HEADER_LEN: usize = 16;
 /// A child's common prefix: kind, nav, nav_page, event, tag, min_w, min_h, max_w, max_h, grow.
 const CHILD_PREFIX_LEN: usize = 16;
@@ -38,6 +42,8 @@ const MAX_DEPTH: u8 = 1;
 pub enum LuiError {
         /// Not an LUI blob.
         BadMagic,
+        /// The header's schema version is one this build does not read.
+        UnsupportedVersion(u8),
         /// An offset or field runs past the end of the blob.
         Truncated,
 }
@@ -54,6 +60,9 @@ impl<'a> Lui<'a> {
                 if blob.len() < HEADER_LEN || blob[..4] != MAGIC {
                         return Err(LuiError::BadMagic);
                 }
+                if blob[4] != VERSION {
+                        return Err(LuiError::UnsupportedVersion(blob[4]));
+                }
                 let s = Self { blob };
                 //   the offset table must fit
                 if blob.len() < HEADER_LEN + 4 * s.page_count() {
@@ -67,17 +76,17 @@ impl<'a> Lui<'a> {
         }
 
         pub fn page_count(&self) -> usize {
-                usize::from(self.u16(4))
+                usize::from(self.u16(6))
         }
 
         /// The page shown first.
         pub fn root(&self) -> usize {
-                usize::from(self.u16(6))
+                usize::from(self.u16(8))
         }
 
         /// The target device: `(width, height, corner_radius)`.
         pub fn device(&self) -> (u16, u16, u16) {
-                (self.u16(8), self.u16(10), self.u16(12))
+                (self.u16(10), self.u16(12), self.u16(14))
         }
 
         /// The page at index `i`, located through the offset table.
@@ -392,12 +401,13 @@ mod tests {
 
         fn header(b: &mut Vec<u8>, pages: u16) {
                 b.extend_from_slice(&MAGIC);
+                b.push(VERSION);
+                b.push(0); // reserved
                 b.extend_from_slice(&pages.to_le_bytes());
                 b.extend_from_slice(&0u16.to_le_bytes()); // root
                 b.extend_from_slice(&172u16.to_le_bytes());
                 b.extend_from_slice(&640u16.to_le_bytes());
                 b.extend_from_slice(&0u16.to_le_bytes()); // corner
-                b.extend_from_slice(&0u16.to_le_bytes()); // reserved
         }
 
         fn assemble(pages: &[Vec<u8>]) -> Vec<u8> {
@@ -515,6 +525,13 @@ mod tests {
         fn rejects_a_non_lui_blob() {
                 assert!(matches!(Lui::parse(b"nope............"), Err(LuiError::BadMagic)));
                 assert!(matches!(Lui::parse(&[]), Err(LuiError::BadMagic)));
+        }
+
+        #[test]
+        fn rejects_an_unreadable_version() {
+                let mut data = blob();
+                data[4] = 0xFF; // the schema version byte
+                assert!(matches!(Lui::parse(&data), Err(LuiError::UnsupportedVersion(0xFF))));
         }
 
         //   two pages: page 0 has a button that goes to page 1, page 1 a button that goes back

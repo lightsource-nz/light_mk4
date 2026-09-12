@@ -6,14 +6,18 @@
 //! and "#RRGGBB" is 24-bit truncated to 565. Unknown JSON keys are ERRORS: at compile time a typo
 //! should stop the build, while at parse time on the firmware an unknown BINARY key is skipped for
 //! forward compatibility. Strictness belongs at authoring, tolerance at runtime. The blob format
-//! (magic "LTH1", an entry count, then `key, length, payload` triples, little-endian) is owned by
-//! light-ui's `theme` module; this is its writer and must agree with that parser.
+//! (magic "LTH1", a u8 schema version, an entry count, then `key, length, payload` triples,
+//! little-endian) is owned by light-ui's `theme` module; this is its writer and must agree with
+//! that parser.
 
 use std::collections::BTreeMap;
 
 use serde::Deserialize;
 
 const MAGIC: &[u8; 4] = b"LTH1";
+/// The schema version in the header, matching light-ui's `theme::VERSION` -- the shared blob-header
+/// convention (see also LGF fonts and LUI UIs).
+const VERSION: u8 = 1;
 
 // the key numbers light-ui's theme::key module assigns; one table, two homes, and the firmware's
 // parse tests are the contract between them
@@ -129,8 +133,9 @@ pub fn emit(resolved: &Resolved) -> Result<Vec<u8>, String> {
                 entries.push((KEY_DESCENT, descent_value(descent)?.to_le_bytes().to_vec()));
         }
 
-        let mut blob = Vec::with_capacity(6 + entries.len() * 8);
+        let mut blob = Vec::with_capacity(7 + entries.len() * 8);
         blob.extend_from_slice(MAGIC);
+        blob.push(VERSION);
         blob.extend_from_slice(&(entries.len() as u16).to_le_bytes());
         for (key, payload) in &entries {
                 blob.extend_from_slice(&key.to_le_bytes());
@@ -225,9 +230,10 @@ mod tests {
         fn compile_flat_writes_the_blob_the_firmware_parses() {
                 let blob = compile_flat(r##"{ "name": "test", "colors": { "bg": "1082" }, "surfaces": { "focus": { "from": "4C5D", "to": "090E" }, "button": null } }"##).unwrap();
                 assert_eq!(&blob[..4], b"LTH1");
-                assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), 2, "bg and the focus surface; the null surface emits nothing");
-                assert_eq!(u16::from_le_bytes([blob[6], blob[7]]), KEY_BG);
-                assert_eq!(u16::from_le_bytes([blob[10], blob[11]]), 0x1082);
+                assert_eq!(blob[4], VERSION, "schema version after the magic");
+                assert_eq!(u16::from_le_bytes([blob[5], blob[6]]), 2, "bg and the focus surface; the null surface emits nothing");
+                assert_eq!(u16::from_le_bytes([blob[7], blob[8]]), KEY_BG);
+                assert_eq!(u16::from_le_bytes([blob[11], blob[12]]), 0x1082);
         }
 
         #[test]
@@ -243,6 +249,6 @@ mod tests {
                 r.apply(serde_json::from_str(r##"{ "colors": { "bg": "2104" }, "surfaces": { "focus": null } }"##).unwrap()).unwrap();
                 let blob = emit(&r).unwrap();
                 //   bg overridden, text inherited, the focus surface cleared by the null: two colors
-                assert_eq!(u16::from_le_bytes([blob[4], blob[5]]), 2);
+                assert_eq!(u16::from_le_bytes([blob[5], blob[6]]), 2);
         }
 }

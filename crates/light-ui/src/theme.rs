@@ -5,8 +5,8 @@
 //! a new theme, or a themed variant of an application, is a DATA change -- no edit to
 //! this crate, ever, is needed to restyle an interface.
 //!
-//! The blob is a tagged list -- magic, an entry count, then `key, length, payload`
-//! triples -- and the parser SKIPS entries it does not know, which is the whole
+//! The blob is a tagged list -- magic, a schema version, an entry count, then `key, length,
+//! payload` triples -- and the parser SKIPS entries it does not know, which is the whole
 //! forward-compatibility story: a theme compiled by a newer crush still styles an older
 //! firmware with the subset both sides understand, and an old blob leaves the newer
 //! defaults standing. Every field starts from [`Theme::DEFAULT`], which reproduces the
@@ -14,8 +14,13 @@
 
 use crate::{Descent, Shade};
 
-/// The blob's magic: "LTH1", Light THeme, format 1.
+/// The blob's magic: "LTH1", Light THeme.
 pub const MAGIC: [u8; 4] = *b"LTH1";
+
+/// The schema version, carried in the header after the magic -- the shared convention across the
+/// framework's binary blobs (LGF fonts, LUI UIs). Bumped when the layout changes incompatibly;
+/// unknown theme KEYS still skip forward within a version, so a field addition does not need a bump.
+pub const VERSION: u8 = 1;
 
 /// Entry keys. u16, with the payload length carried beside them so unknown keys skip.
 pub mod key {
@@ -122,11 +127,14 @@ impl Theme {
         /// Parse an LTH blob. Unknown keys are skipped; known keys with the wrong length
         /// are an error (a corrupt blob, not a future format).
         pub fn parse(blob: &[u8]) -> Result<Theme, ThemeError> {
-                if blob.len() < 6 || blob[..4] != MAGIC {
+                if blob.len() < 7 || blob[..4] != MAGIC {
                         return Err(ThemeError::BadMagic);
                 }
-                let count = u16::from_le_bytes([blob[4], blob[5]]);
-                let mut at = 6usize;
+                if blob[4] != VERSION {
+                        return Err(ThemeError::UnsupportedVersion(blob[4]));
+                }
+                let count = u16::from_le_bytes([blob[5], blob[6]]);
+                let mut at = 7usize;
                 let mut theme = Theme::DEFAULT;
                 let u16le = |b: &[u8], at: usize| u16::from_le_bytes([b[at], b[at + 1]]);
                 for _ in 0..count {
@@ -209,6 +217,8 @@ impl Default for Theme {
 pub enum ThemeError {
         /// Not an LTH blob at all.
         BadMagic,
+        /// The header's schema version is one this build does not read.
+        UnsupportedVersion(u8),
         /// An entry runs past the end of the blob.
         Truncated,
         /// A KNOWN key with the wrong payload length: corruption, not a future format.
@@ -224,6 +234,7 @@ mod tests {
         fn blob(entries: &[(u16, &[u8])]) -> Vec<u8> {
                 let mut b = Vec::new();
                 b.extend_from_slice(&MAGIC);
+                b.push(VERSION);
                 b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
                 for (k, payload) in entries {
                         b.extend_from_slice(&k.to_le_bytes());
@@ -305,9 +316,13 @@ mod tests {
                 assert_eq!(Theme::parse(&MAGIC[..3]), Err(ThemeError::BadMagic));
                 //   a known key with a wrong length is corruption
                 assert_eq!(Theme::parse(&blob(&[(key::BG, &[1, 2, 3])])), Err(ThemeError::BadEntry(key::BG)));
-                //   an entry running past the end
+                //   the count (now after the version byte) says one entry, but none follow
                 let mut b = blob(&[]);
-                b[4] = 1;
+                b[5] = 1;
                 assert_eq!(Theme::parse(&b), Err(ThemeError::Truncated));
+                //   a version this build does not read
+                let mut b = blob(&[]);
+                b[4] = 0xFF;
+                assert_eq!(Theme::parse(&b), Err(ThemeError::UnsupportedVersion(0xFF)));
         }
 }

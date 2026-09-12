@@ -75,11 +75,12 @@ mod tests {
         const KEY_SCREEN_RADIUS: u16 = 0x0021;
         const KEY_DESCENT: u16 = 0x0040;
 
+        //   the header is magic(4) + version(1) + count(2); entries follow at 7
         fn count(b: &[u8]) -> u16 {
-                u16::from_le_bytes([b[4], b[5]])
+                u16::from_le_bytes([b[5], b[6]])
         }
         fn entry(b: &[u8], i: usize) -> (u16, u16) {
-                let at = 6 + i * 6;
+                let at = 7 + i * 6;
                 (u16::from_le_bytes([b[at], b[at + 1]]), u16::from_le_bytes([b[at + 4], b[at + 5]]))
         }
 

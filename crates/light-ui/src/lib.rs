@@ -3896,12 +3896,13 @@ mod tests {
                 let bodies = [page("One", "Go", 7), page("Two", "Back", 8)];
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
+                blob.push(1); // schema version
+                blob.push(0); // reserved
                 blob.extend_from_slice(&2u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
                 blob.extend_from_slice(&64u16.to_le_bytes()); // width
                 blob.extend_from_slice(&48u16.to_le_bytes()); // height
                 blob.extend_from_slice(&0u16.to_le_bytes()); // corner
-                blob.extend_from_slice(&0u16.to_le_bytes()); // reserved
                 let mut off = (16 + 4 * bodies.len()) as u32;
                 for body in &bodies {
                         blob.extend_from_slice(&off.to_le_bytes());
@@ -4003,12 +4004,13 @@ mod tests {
 
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
+                blob.push(1); // schema version
+                blob.push(0); // reserved
                 blob.extend_from_slice(&1u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
                 blob.extend_from_slice(&64u16.to_le_bytes()); // width
                 blob.extend_from_slice(&48u16.to_le_bytes()); // height
                 blob.extend_from_slice(&0u16.to_le_bytes()); // corner
-                blob.extend_from_slice(&0u16.to_le_bytes()); // reserved
                 blob.extend_from_slice(&((16 + 4) as u32).to_le_bytes()); // page 0 offset
                 blob.extend_from_slice(&body);
                 blob

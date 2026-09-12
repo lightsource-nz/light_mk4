@@ -32,6 +32,9 @@
 extern crate alloc;
 
 pub const MAGIC: [u8; 4] = *b"LGF1";
+/// The schema version in the header (byte 4) -- the shared blob-header convention (`magic` then a
+/// `u8` version) the framework's LTH themes and LUI UIs also carry, so every format is
+/// version-checked the same way.
 pub const VERSION: u8 = 1;
 pub const FLAG_MONO_MSB: u8 = 0x01;
 pub const HEADER_LEN: usize = 48;
