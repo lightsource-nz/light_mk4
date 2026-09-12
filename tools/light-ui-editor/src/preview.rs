@@ -38,8 +38,8 @@ const UI_WIDGETS: usize = 32;
 /// The look, loaded from the framework's real steel theme.
 const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 
-/// The design shipped as the default; a saved file beside the executable overrides it.
-const DEFAULT_DESIGN_JSON: &str = include_str!("../design.json");
+/// The starting content for a design file that does not exist yet: one page, one button.
+const STARTER_JSON: &str = r#"{ "pages": [ { "title": "Page", "children": [ { "button": "Button" } ] } ] }"#;
 
 /// A do-nothing [`DisplayDriver`]: the preview renders into the [`Display`]'s own buffer and reads
 /// it back with [`Display::front`], so nothing is ever pushed.
@@ -80,23 +80,18 @@ pub struct Preview {
         dev_w: u16,
         dev_h: u16,
         path: PathBuf,
-        /// Write the compiled `.lui` beside the design too. On for the editor's own default file (a
-        /// self-contained artifact); OFF when editing a named design (an app crate's), where the
-        /// build system owns compilation and a stray blob would clutter the source tree.
-        write_sidecar: bool,
 }
 
 impl Preview {
-        /// Open a design. `path` names the file to edit (an app crate's `design.json`); `None` uses
-        /// the editor's own file beside the executable.
-        pub fn new(path: Option<PathBuf>) -> Self {
-                let write_sidecar = path.is_none();
-                let path = path.unwrap_or_else(save_path);
+        /// Open the design at `path` -- the file the editor edits and saves back to. A path that does
+        /// not exist yet starts from [`STARTER_JSON`] and is created on the first save. The build
+        /// compiles the design to a blob, so the editor writes only the JSON.
+        pub fn new(path: PathBuf) -> Self {
                 let design = std::fs::read_to_string(&path)
                         .ok()
                         .as_deref()
                         .and_then(|j| design::parse(j).ok())
-                        .unwrap_or_else(|| design::parse(DEFAULT_DESIGN_JSON).expect("the bundled design parses"));
+                        .unwrap_or_else(|| design::parse(STARTER_JSON).expect("the starter design parses"));
 
                 let (dev_w, dev_h) = (design.device.width.max(1), design.device.height.max(1));
                 let font = font::load(PIXEL_SIZE);
@@ -112,7 +107,7 @@ impl Preview {
 
                 let lui = compile_blob(&design);
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, write_sidecar };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path };
                 this.build_current();
                 this
         }
@@ -387,16 +382,10 @@ impl Preview {
         }
 
         fn save(&self) {
+                //   only the JSON: the build compiles it to a blob, so a stray .lui beside the
+                // source would just be clutter
                 if let Err(e) = std::fs::write(&self.path, design::to_json(&self.design)) {
                         eprintln!("light-ui-editor: could not save '{}': {e}", self.path.display());
-                }
-                //   also the compiled blob beside it, so the editor's own file yields a usable
-                // artifact; NOT for a named design, where the build compiles it and a stray blob
-                // would dirty the source tree
-                if self.write_sidecar {
-                        if let Ok(blob) = crush_core::lui::compile(&self.design) {
-                                let _ = std::fs::write(self.path.with_extension("lui"), blob);
-                        }
                 }
         }
 
@@ -524,10 +513,30 @@ fn compile_blob(design: &Design) -> Lui<'static> {
         Lui::parse(leaked).expect("the compiled LUI blob parses")
 }
 
-/// The design's load/save path: `design.json` beside the executable.
-fn save_path() -> PathBuf {
-        std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("design.json")))
-                .unwrap_or_else(|| PathBuf::from("design.json"))
+/// The design file to open: the given `arg`, or one found in the current working directory. With no
+/// argument the editor prefers `./design.json`, else the first `*.json` there that parses as a
+/// design; with none, it falls back to `./design.json` (created on the first save). There is no
+/// path baked into the binary -- the editor edits designs where you run it, or where you point it.
+pub fn resolve_design_path(arg: Option<PathBuf>) -> PathBuf {
+        if let Some(p) = arg {
+                return p;
+        }
+        let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let preferred = cwd.join("design.json");
+        if preferred.exists() {
+                return preferred;
+        }
+        if let Ok(entries) = std::fs::read_dir(&cwd) {
+                let mut designs: Vec<PathBuf> = entries
+                        .flatten()
+                        .map(|e| e.path())
+                        .filter(|p| p.extension().and_then(|x| x.to_str()) == Some("json"))
+                        .filter(|p| std::fs::read_to_string(p).ok().and_then(|j| design::parse(&j).ok()).is_some())
+                        .collect();
+                designs.sort();
+                if let Some(first) = designs.into_iter().next() {
+                        return first;
+                }
+        }
+        preferred
 }

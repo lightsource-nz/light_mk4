@@ -463,9 +463,10 @@ impl HostApp for Editor {
 }
 
 fn main() {
-        //   an optional design file to edit (an app crate's design.json); without one, the editor
-        // opens its own file beside the executable
-        let path = std::env::args().nth(1).map(std::path::PathBuf::from);
+        //   an optional design file to edit; without one, the editor finds a design in the current
+        // working directory (see resolve_design_path) -- nothing is baked into the binary
+        let arg = std::env::args().nth(1).map(std::path::PathBuf::from);
+        let path = preview::resolve_design_path(arg);
         let editor = Editor { preview: Preview::new(path), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false, editing: None };
         if let Err(e) = light_host_gui::run(editor) {
                 eprintln!("light-ui-editor: {e}");
