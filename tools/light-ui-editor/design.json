@@ -1,0 +1,25 @@
+{
+        "root": 0,
+        "pages": [
+                {
+                        "title": "Dictaphone",
+                        "layout": "stack",
+                        "gap": 6,
+                        "children": [
+                                { "button": "Record" },
+                                { "button": "Play" },
+                                { "button": "Files >", "goto": 1 }
+                        ]
+                },
+                {
+                        "title": "Files",
+                        "layout": "stack",
+                        "gap": 6,
+                        "children": [
+                                { "button": "REC_0001" },
+                                { "button": "REC_0002" },
+                                { "button": "< Back", "back": true }
+                        ]
+                }
+        ]
+}

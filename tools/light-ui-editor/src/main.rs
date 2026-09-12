@@ -14,6 +14,7 @@
 use light_draw::Point;
 use light_host_gui::{HostApp, HostFrame, PointerEvent, PointerPhase};
 
+mod design;
 mod font;
 mod preview;
 mod theme;
