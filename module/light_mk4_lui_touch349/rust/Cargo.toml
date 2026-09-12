@@ -1,0 +1,19 @@
+[package]
+name = "light_app_lui_touch349"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the 3.49 firmware displaying an LUI blob -- the on-device consumer of the UI-as-data pipeline"
+
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+light-core = { path = "../../../crates/light-core" }
+light-ui = { path = "../../../crates/light-ui" }
+light-display = { path = "../../../crates/light-display" }
+light-input = { path = "../../../crates/light-input" }
+light-draw = { path = "../../../crates/light-draw" }
+light-font = { path = "../../../crates/light-font" }
+light-board-touch349 = { path = "../../../crates/light-board-touch349" }
+light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350"] }

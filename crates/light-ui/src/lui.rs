@@ -160,18 +160,21 @@ const HISTORY_DEPTH: usize = 16;
 /// resolving a tapped button's goto/back against the blob. Firmware wires its display, touch, style
 /// and render loop around [`ui`](Self::ui); the editor's preview runs the same logic.
 ///
-/// The blob must be `'static` -- `include_bytes!`'d on device, leaked on the host.
+/// The blob must be `'static` -- `include_bytes!`'d on device, leaked on the host. The `Ui` is held
+/// by `&'static mut` so it can live in a `ConstStaticCell` (a `Ui` of any size is too big to build
+/// on the small firmware stack).
 pub struct LuiRuntime<const N: usize> {
         /// The widget tree, for the caller to style, render and hit-test.
-        pub ui: Ui<u16, N>,
+        pub ui: &'static mut Ui<u16, N>,
         lui: Lui<'static>,
         history: heapless::Vec<u16, HISTORY_DEPTH>,
 }
 
 impl<const N: usize> LuiRuntime<N> {
-        /// Wrap a parsed blob. Call [`start`](Self::start) after styling and fitting [`ui`](Self::ui).
-        pub const fn new(lui: Lui<'static>) -> Self {
-                Self { ui: Ui::new(), lui, history: heapless::Vec::new() }
+        /// Wrap a `'static` `Ui` and a parsed blob. Call [`start`](Self::start) after styling and
+        /// fitting [`ui`](Self::ui).
+        pub fn new(ui: &'static mut Ui<u16, N>, lui: Lui<'static>) -> Self {
+                Self { ui, lui, history: heapless::Vec::new() }
         }
 
         /// Open the blob's root page.
@@ -364,7 +367,8 @@ mod tests {
         fn runtime_navigates_goto_and_back() {
                 let data: &'static [u8] = Vec::leak(nav_blob());
                 let lui = Lui::parse(data).unwrap();
-                let mut rt: LuiRuntime<16> = LuiRuntime::new(lui);
+                let ui: &'static mut Ui<u16, 16> = std::boxed::Box::leak(std::boxed::Box::new(Ui::new()));
+                let mut rt: LuiRuntime<16> = LuiRuntime::new(ui, lui);
                 rt.start();
                 assert_eq!(rt.current_page(), 0);
                 rt.activate(0); // "Go" -> page 1

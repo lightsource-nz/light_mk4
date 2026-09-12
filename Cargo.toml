@@ -37,6 +37,7 @@ members = [
         "module/light_mk4_touch349/rust",
         "module/dictaphone_touch349/rust",
         "module/dictaphone_wide_touch349/rust",
+        "module/light_mk4_lui_touch349/rust",
         "module/light_mk4_touch4/rust",
         "module/light_mk4_pico2/rust",
         "module/crossfire_pico/rust",

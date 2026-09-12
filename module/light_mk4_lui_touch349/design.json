@@ -1,0 +1,28 @@
+{
+        "device": { "width": 172, "height": 640, "corner_radius": 0 },
+        "root": 0,
+        "pages": [
+                {
+                        "title": "LUI Demo",
+                        "layout": "stack",
+                        "gap": 8,
+                        "children": [
+                                { "label": "compiled from data" },
+                                { "button": "Play" },
+                                { "button": "Record" },
+                                { "button": "Files >", "goto": 1 }
+                        ]
+                },
+                {
+                        "title": "Files",
+                        "layout": "stack",
+                        "gap": 8,
+                        "children": [
+                                { "button": "REC_0001" },
+                                { "button": "REC_0002" },
+                                { "button": "REC_0003" },
+                                { "button": "< Back", "back": true }
+                        ]
+                }
+        ]
+}
