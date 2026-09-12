@@ -16,6 +16,7 @@ use light_host_gui::{HostApp, HostFrame, PointerEvent, PointerPhase};
 
 mod font;
 mod preview;
+mod theme;
 
 use preview::Preview;
 

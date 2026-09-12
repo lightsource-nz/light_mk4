@@ -10,7 +10,7 @@ use light_core::hal::Clock;
 use light_display::{Display, DisplayDriver, Frame, FrameLayer, Region};
 use light_draw::PixelFormat;
 use light_host_gui::now_us;
-use light_ui::{Desc, Fonts, Page, Shade, Style, Theme, Touch, Ui};
+use light_ui::{Desc, Fonts, Page, Style, Theme, Touch, Ui};
 
 use crate::font;
 
@@ -41,29 +41,8 @@ static BACK: Desc<Ev> = Desc::button("< Back").back();
 static FILES_WIN: Desc<Ev> = Desc::window("Files").stack(6).children(&[&TAKE_1, &TAKE_2, &BACK]);
 static FILES_PAGE: Page<Ev> = Page::new(&FILES_WIN, Some(&ROOT_PAGE));
 
-/// Pack 8-bit RGB into RGB565.
-const fn rgb(r: u8, g: u8, b: u8) -> u16 {
-        (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
-}
-
-/// A steel-like look for the preview, so it reads as a real themed device rather than the bare
-/// mono default: grey glass, black lines, a blue title bar and flat-blue controls.
-fn preview_theme() -> Theme {
-        let blue = rgb(0x22, 0x40, 0x5F);
-        Theme {
-                bg: rgb(0xB0, 0xB8, 0xC0),
-                frame: 0x0000,
-                bar: Some(blue),
-                title: 0xFFFF,
-                text: rgb(0x10, 0x14, 0x18),
-                button_outline: rgb(0x78, 0x90, 0xA8),
-                button_text: 0xFFFF,
-                focus_text: 0xFFFF,
-                button_surface: Some(Shade { from: blue, to: blue }),
-                focus_surface: Some(Shade { from: rgb(0x4C, 0x5D, 0x8A), to: blue }),
-                ..Theme::DEFAULT
-        }
-}
+/// The look, loaded from the framework's real steel theme -- the same JSON the firmware compiles.
+const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 
 /// A do-nothing [`DisplayDriver`]: the preview renders into the [`Display`]'s own buffer and reads
 /// it back with [`Display::front`], so nothing is ever pushed. `chunk_count` 0 means every update
@@ -99,7 +78,7 @@ pub struct Preview {
 impl Preview {
         pub fn new() -> Self {
                 let font = font::load(PIXEL_SIZE);
-                let theme = preview_theme();
+                let theme = crate::theme::parse(THEME_JSON).expect("the bundled steel theme parses");
                 //   the framebuffer lives for the program, like the window's; leak it once so the
                 // Display is 'static without a self-referential struct
                 let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(DEV_W, DEV_H)]);
