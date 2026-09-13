@@ -190,6 +190,7 @@ impl EditorApp {
                         let layout = self.preview.selected_layout_label();
                         let scroll = self.preview.selected_scroll_label();
                         let action = self.preview.selected_action();
+                        let event = self.preview.selected_event().unwrap_or(0);
                         let pages = self.preview.page_count();
                         let page_titles: Vec<String> = (0..pages).map(|p| self.preview.page_title(p).to_owned()).collect();
 
@@ -226,6 +227,15 @@ impl EditorApp {
                                                 }
                                         });
                                 }
+                                //   the app event id this button emits (0 = none). The number is the
+                                // app's contract; the editor edits it raw, staying app-agnostic
+                                ui.horizontal(|ui| {
+                                        let mut ev = event;
+                                        if ui.add(egui::DragValue::new(&mut ev).range(0..=u16::MAX).prefix("event ")).changed() {
+                                                self.preview.set_selected_event(ev);
+                                        }
+                                        ui.label("(0 = none)");
+                                });
                         }
 
                         if is_frame {

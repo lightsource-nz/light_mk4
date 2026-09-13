@@ -424,6 +424,15 @@ impl Preview {
                 self.recompile();
         }
 
+        /// Set the selected button's app event id (0 = none). The number is the app's own contract
+        /// (e.g. light_dictaphone_core's `ui_event`); the editor stays agnostic and edits the id.
+        pub fn set_selected_event(&mut self, event: u16) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.event = event;
+                }
+                self.recompile();
+        }
+
         /// Rename the current page.
         pub fn set_page_title(&mut self, title: &str) {
                 let cur = self.current();
@@ -705,6 +714,11 @@ impl Preview {
         pub fn selected_action(&self) -> Option<(Option<usize>, bool)> {
                 let c = self.selected_child()?;
                 c.button.is_some().then_some((c.goto, c.back))
+        }
+
+        /// The selected node's app event id (0 = none).
+        pub fn selected_event(&self) -> Option<u16> {
+                self.selected_child().map(|c| c.event)
         }
 
         /// The current page's widgets as a selectable tree: `(path, indent, label)`, a frame's
