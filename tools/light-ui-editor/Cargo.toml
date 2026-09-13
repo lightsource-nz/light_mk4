@@ -10,6 +10,10 @@ name = "light-ui-editor"
 path = "src/main.rs"
 
 [dependencies]
+#   light-host-gui hosts the window and re-exports egui/eframe: the editor chrome (inspector text
+# fields, combo boxes, checkboxes, number spinners) is egui, while the device PREVIEW is rendered by
+# light-ui/light-draw into a pixel buffer (the DisplayDriver seam, via light-host-gui's NullDriver)
+# and shown as an egui image -- pixel-faithful to firmware, with proper controls around it.
 light-host-gui = { path = "../light-host-gui" }
 light-draw = { path = "../../crates/light-draw" }
 light-ui = { path = "../../crates/light-ui" }

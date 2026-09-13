@@ -9,10 +9,9 @@
 
 use std::path::PathBuf;
 
-use light_core::hal::Clock;
-use light_display::{Display, DisplayDriver, Frame, FrameLayer, Region};
+use light_display::{Display, FrameLayer};
 use light_draw::PixelFormat;
-use light_host_gui::now_us;
+use light_host_gui::{now_us, NullDriver};
 use light_ui::lui::code;
 use light_ui::{Fonts, Lui, Rect, Style, Theme, Touch, Ui, WidgetId};
 
@@ -40,27 +39,6 @@ const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 
 /// The starting content for a design file that does not exist yet: one page, one button.
 const STARTER_JSON: &str = r#"{ "pages": [ { "title": "Page", "children": [ { "button": "Button" } ] } ] }"#;
-
-/// A do-nothing [`DisplayDriver`]: the preview renders into the [`Display`]'s own buffer and reads
-/// it back with [`Display::front`], so nothing is ever pushed.
-struct NullDriver;
-
-impl DisplayDriver for NullDriver {
-        fn init(&mut self, _clock: &mut dyn Clock, _width: u16, _height: u16) {}
-        fn chunk_count(&self, _region: &Region) -> u16 {
-                0
-        }
-        fn chunks_per_poll(&self, _region: &Region) -> u16 {
-                0
-        }
-        fn kick(&mut self, _frame: &Frame<'_>, _region: &Region, _index: u16) {}
-        fn chunk_complete(&mut self) -> bool {
-                true
-        }
-        fn chunk_timeout_ms(&self) -> u32 {
-                1000
-        }
-}
 
 pub struct Preview {
         ui: Ui<u16, UI_WIDGETS>,
@@ -356,6 +334,94 @@ impl Preview {
                 self.recompile();
         }
 
+        // --- direct setters, bound to real controls (egui) rather than cycled -----------------
+
+        /// Select a node, or clear the selection -- from a preview click or the outline list.
+        pub fn select(&mut self, sel: Option<Sel>) {
+                self.selected = sel;
+        }
+
+        /// Set the selected node's grow flag.
+        pub fn set_selected_grow(&mut self, grow: bool) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.grow = grow;
+                }
+                self.recompile();
+        }
+
+        /// Set the selected node's minimum size (0 = unset).
+        pub fn set_selected_min(&mut self, w: u16, h: u16) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.min_w = w;
+                        c.min_h = h;
+                }
+                self.recompile();
+        }
+
+        /// Set the selected node's maximum size (0 = unset; equal to min pins the size).
+        pub fn set_selected_max(&mut self, w: u16, h: u16) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.max_w = w;
+                        c.max_h = h;
+                }
+                self.recompile();
+        }
+
+        /// Set a selected frame's layout (`stack`/`row`/`linear`).
+        pub fn set_selected_layout(&mut self, layout: &str) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.is_frame() {
+                                c.layout = Some(layout.to_owned());
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Set a selected frame's scroll axis (`vertical`/`horizontal`, or `None` for no scroll).
+        pub fn set_selected_scroll(&mut self, scroll: Option<&str>) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.is_frame() {
+                                c.scroll = scroll.map(str::to_owned);
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Set a selected button's navigation: `goto` a page, or `back`, or neither.
+        pub fn set_selected_action(&mut self, goto: Option<usize>, back: bool) {
+                if let Some(c) = self.selected_child_mut() {
+                        if c.button.is_some() {
+                                c.goto = goto;
+                                c.back = back && goto.is_none();
+                        }
+                }
+                self.recompile();
+        }
+
+        /// Rename the current page.
+        pub fn set_page_title(&mut self, title: &str) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.title = title.to_owned();
+                }
+                self.recompile();
+        }
+
+        /// Append a page (one empty stack) and show it.
+        pub fn add_page(&mut self) {
+                self.design.pages.push(design::PageDef {
+                        title: "Page".to_owned(),
+                        layout: "stack".to_owned(),
+                        gap: 6,
+                        scroll: false,
+                        subtitle: false,
+                        children: Vec::new(),
+                });
+                let idx = self.design.pages.len() - 1;
+                self.recompile();
+                self.show_page(idx);
+        }
+
         /// The top index of the frame the selection sits in or on, for adding into it.
         fn selected_frame_top(&self) -> Option<usize> {
                 let sel = self.selected?;
@@ -495,6 +561,44 @@ impl Preview {
                 } else {
                         "none".to_owned()
                 })
+        }
+
+        /// The selected node's min size `(w, h)`.
+        pub fn selected_min(&self) -> Option<(u16, u16)> {
+                self.selected_child().map(|c| (c.min_w, c.min_h))
+        }
+
+        /// The selected node's max size `(w, h)`.
+        pub fn selected_max(&self) -> Option<(u16, u16)> {
+                self.selected_child().map(|c| (c.max_w, c.max_h))
+        }
+
+        /// The selected button's navigation `(goto page, back)`; `None` off a button.
+        pub fn selected_action(&self) -> Option<(Option<usize>, bool)> {
+                let c = self.selected_child()?;
+                c.button.is_some().then_some((c.goto, c.back))
+        }
+
+        /// The current page's widgets as a selectable tree: `(path, indent, label)`, a frame's
+        /// children indented under it. For an inspector list that selects without hunting the preview.
+        pub fn outline(&self) -> Vec<(Sel, u8, String)> {
+                let mut out = Vec::new();
+                if let Some(page) = self.design.pages.get(self.current()) {
+                        for (i, c) in page.children.iter().enumerate() {
+                                out.push((Sel { top: i, sub: None }, 0, c.describe()));
+                                if c.is_frame() {
+                                        for (j, sc) in c.children.iter().enumerate() {
+                                                out.push((Sel { top: i, sub: Some(j) }, 1, sc.describe()));
+                                        }
+                                }
+                        }
+                }
+                out
+        }
+
+        /// Whether the design is laid out landscape (read-only info for the inspector).
+        pub fn is_landscape(&self) -> bool {
+                self.design.landscape()
         }
 
         pub fn selected_rect(&self) -> Option<Rect> {

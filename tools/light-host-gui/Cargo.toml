@@ -3,11 +3,12 @@ name = "light-host-gui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "host-side GUI runtime for the light framework: a native window (winit) with the light-display stack blitting into it, so a light-ui UI renders on the desktop exactly as it does on a panel. A host library -- it never links the embedded C shell"
+description = "host-side GUI runtime for the light framework: an egui/eframe window with the glue to show a light-ui device UI rendered offscreen (the DisplayDriver seam) as an egui image, so a UI previews on the desktop exactly as it renders on a panel. A host library -- it never links the embedded C shell"
 
 [dependencies]
-winit = "0.30"
-softbuffer = "0.4"
+#   eframe owns the native window and event loop on Windows/macOS/Linux (the cross-platform
+# abstraction the host GUI needs); egui draws the chrome. Consumers reach both through this crate's
+# re-exports, so a host tool depends only on light-host-gui.
+eframe = "0.29"
 light-core = { path = "../../crates/light-core" }
-light-draw = { path = "../../crates/light-draw" }
 light-display = { path = "../../crates/light-display" }

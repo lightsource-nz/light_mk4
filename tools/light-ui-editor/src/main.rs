@@ -4,132 +4,19 @@
 
 //! A prototype desktop editor for light-ui embedded UIs.
 //!
-//! The window lays out the editor chrome -- a top bar with an Edit/Run toggle, a page list on the
-//! left, an inspector on the right, and a central stage holding the device preview -- drawn through
-//! the framework's own `light-draw` canvas. The stage previews a design loaded from data
-//! (`design.json`); in Run mode taps drive it as the device would, and in Edit mode a tap selects a
-//! widget and the inspector's buttons edit the design, saving the JSON back to disk.
-
-use light_draw::{Canvas, Point};
-use light_font::Font;
-use light_host_gui::{HostApp, HostFrame, Key, PointerEvent, PointerPhase};
+//! The chrome -- an Edit/Run toggle, a page list, and an inspector of real controls (text fields,
+//! combo boxes, checkboxes, number spinners) -- is egui. The device PREVIEW in the centre is still
+//! rendered by light-ui/light-draw into a pixel buffer (the `DisplayDriver` seam, in [`preview`])
+//! and shown as an egui image, so it stays pixel-faithful to the firmware while the surrounding UI
+//! gets proper OS-grade controls. Edits mutate the `Design`, which recompiles to an LUI blob and
+//! saves the JSON, exactly as before.
 
 mod design;
 mod font;
 mod preview;
 
-use preview::Preview;
-
-/// Pack 8-bit RGB into RGB565.
-const fn rgb(r: u8, g: u8, b: u8) -> u16 {
-        (((r as u16) >> 3) << 11) | (((g as u16) >> 2) << 5) | ((b as u16) >> 3)
-}
-
-// The editor's palette.
-const DESK: u16 = rgb(0x1E, 0x22, 0x28); // window background behind the panels
-const PANEL: u16 = rgb(0x26, 0x2C, 0x36); // side panels
-const BAR: u16 = rgb(0x2E, 0x36, 0x42); // top bar
-const STAGE: u16 = rgb(0x0E, 0x10, 0x13); // the preview stage, near-black
-const LINE: u16 = rgb(0x3A, 0x42, 0x50); // dividers
-const ACCENT: u16 = rgb(0x4C, 0x9A, 0xE0); // blue: active toggle, current page, selection
-const CHIP: u16 = rgb(0x33, 0x3B, 0x47); // inactive chips / buttons
-const TEXT: u16 = rgb(0xC8, 0xD0, 0xD8); // chrome text
-const DIM: u16 = rgb(0x7A, 0x86, 0x94); // secondary chrome text
-const BEZEL: u16 = rgb(0x05, 0x06, 0x08); // the preview device's body
-
-/// The fixed editor canvas.
-const CANVAS_W: u16 = 900;
-const CANVAS_H: u16 = 560;
-const W: i32 = CANVAS_W as i32;
-const H: i32 = CANVAS_H as i32;
-
-const BAR_H: i32 = 34;
-const LEFT_W: i32 = 190;
-const RIGHT_W: i32 = 230;
-
-/// The stage column the device preview sits in: between the panels, below the bar.
-const fn stage_rect() -> R {
-        (LEFT_W + 1, BAR_H + 1, W - RIGHT_W - 2, H - 1)
-}
-
-/// Fit a `dw`x`dh` device into the stage, centred and never upscaled: returns the top-left in canvas
-/// coordinates and the scale. Shared by the composite, the pointer mapping and the selection
-/// outline so they cannot disagree about where a device pixel lands.
-fn device_placement(dw: u16, dh: u16) -> (i32, i32, f32) {
-        let s = stage_rect();
-        let (area_w, area_h) = (s.2 - s.0 + 1, s.3 - s.1 + 1);
-        //   leave room for the bezel drawn around the screen
-        const M: i32 = 12;
-        let (aw, ah) = ((area_w - 2 * M).max(1), (area_h - 2 * M).max(1));
-        let scale = (aw as f32 / dw as f32).min(ah as f32 / dh as f32).min(1.0);
-        let (vw, vh) = ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32);
-        (s.0 + (area_w - vw) / 2, s.1 + (area_h - vh) / 2, scale)
-}
-
-/// Whether pixel `(x, y)` is inside a `w`x`h` rectangle with corner arcs of radius `r` -- so the
-/// composite can leave the rounded corners as bezel.
-fn inside_rounded(x: i32, y: i32, w: i32, h: i32, r: i32) -> bool {
-        if r <= 0 {
-                return true;
-        }
-        //   the arc centre for whichever corner this pixel is in; only the corner boxes are curved
-        let cx = if x < r {
-                r
-        } else if x > w - 1 - r {
-                w - 1 - r
-        } else {
-                return true;
-        };
-        let cy = if y < r {
-                r
-        } else if y > h - 1 - r {
-                h - 1 - r
-        } else {
-                return true;
-        };
-        let (dx, dy) = (x - cx, y - cy);
-        dx * dx + dy * dy <= r * r
-}
-
-/// The chrome font's pixel size.
-const CHROME_PX: u16 = 14;
-
-/// An inclusive chrome rectangle: `(x0, y0, x1, y1)`.
-type R = (i32, i32, i32, i32);
-
-fn hit(ev: &PointerEvent, r: R) -> bool {
-        ev.x >= r.0 && ev.x <= r.2 && ev.y >= r.1 && ev.y <= r.3
-}
-
-// --- fixed chrome geometry (canvas coordinates) --------------------------------------------
-
-const fn run_toggle() -> R {
-        (12, 7, 70, BAR_H - 8)
-}
-const fn edit_toggle() -> R {
-        (78, 7, 136, BAR_H - 8)
-}
-/// The left-panel row for page `i`.
-fn page_row(i: usize) -> R {
-        let y0 = BAR_H + 28 + i as i32 * 32;
-        (14, y0, LEFT_W - 14, y0 + 26)
-}
-/// The inspector's editable text field for the selected widget.
-fn text_field() -> R {
-        (W - RIGHT_W + 14, BAR_H + 54, W - 14, BAR_H + 80)
-}
-/// The inspector's `n`th property button: action/layout (0), scroll (1), grow (2). What each shows
-/// depends on whether a leaf or a frame is selected.
-fn prop_button(n: i32) -> R {
-        let y0 = BAR_H + 88 + n * 28;
-        (W - RIGHT_W + 14, y0, W - 14, y0 + 24)
-}
-/// The inspector's `n`th operation button (Move Up, Move Down, Delete, Add Button, Add Frame).
-fn insp_button(n: i32) -> R {
-        let y0 = BAR_H + 178 + n * 34;
-        (W - RIGHT_W + 14, y0, W - 14, y0 + 28)
-}
-const INSP_LABELS: [&str; 5] = ["Move Up", "Move Down", "Delete", "Add Button", "Add Frame"];
+use light_host_gui::{eframe, egui, now_us};
+use preview::{Preview, Sel};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
@@ -137,339 +24,300 @@ enum Mode {
         Run,
 }
 
-struct Editor {
+struct EditorApp {
         preview: Preview,
-        font: Font<'static>,
         mode: Mode,
-        /// Whether a press began inside the stage, so a drag/release routes there.
-        stage_press: bool,
-        /// The working buffer while the selected widget's text field is being edited; `None` when
-        /// not editing. Committed on Enter or a click elsewhere, discarded on Escape.
-        editing: Option<String>,
+        tex: Option<egui::TextureHandle>,
+        //   text-field buffers, resynced when the selection or page changes so a control edits the
+        // right value without recompiling on every keystroke (committed on focus loss)
+        label_buf: String,
+        title_buf: String,
+        last_sel: Option<Sel>,
+        last_page: usize,
 }
 
-impl Editor {
-        /// Write the edit buffer back to the selected widget, if editing.
-        fn commit_edit(&mut self) {
-                if let Some(buf) = self.editing.take() {
-                        self.preview.set_selected_text(&buf);
+impl EditorApp {
+        fn new(preview: Preview) -> Self {
+                let title_buf = preview.page_title(preview.current_page()).to_owned();
+                Self { preview, mode: Mode::Edit, tex: None, label_buf: String::new(), title_buf, last_sel: None, last_page: 0 }
+        }
+
+        /// Keep the text buffers in step with the current selection and page.
+        fn sync_buffers(&mut self) {
+                if self.preview.selected() != self.last_sel {
+                        self.last_sel = self.preview.selected();
+                        self.label_buf = self.preview.selected_text().unwrap_or_default();
+                }
+                if self.preview.current_page() != self.last_page {
+                        self.last_page = self.preview.current_page();
+                        self.title_buf = self.preview.page_title(self.last_page).to_owned();
                 }
         }
 
-        /// Map a canvas point to device pixels through the current fit: the clamped coordinate and
-        /// whether the point was actually inside the device.
-        fn to_device(&self, x: i32, y: i32) -> (u16, u16, bool) {
-                let (dw, dh) = self.preview.size();
-                let (ox, oy, scale) = device_placement(dw, dh);
-                let dx = ((x - ox) as f32 / scale) as i32;
-                let dy = ((y - oy) as f32 / scale) as i32;
-                let inside = dx >= 0 && dy >= 0 && dx < i32::from(dw) && dy < i32::from(dh);
-                (dx.clamp(0, i32::from(dw) - 1) as u16, dy.clamp(0, i32::from(dh) - 1) as u16, inside)
+        /// Upload the freshly rendered preview buffer as a texture (RGB565 -> RGBA via light-host-gui).
+        fn upload_preview(&mut self, ctx: &egui::Context) {
+                let (w, h) = self.preview.size();
+                let img = light_host_gui::rgb565_color_image(w as usize, h as usize, self.preview.pixels());
+                match &mut self.tex {
+                        Some(t) => t.set(img, egui::TextureOptions::NEAREST),
+                        None => self.tex = Some(ctx.load_texture("preview", img, egui::TextureOptions::NEAREST)),
+                }
         }
 }
 
-/// Draw `s` at `(x, y)` in `color`.
-fn text(c: &mut Canvas<'_>, font: &Font<'_>, x: i32, y: i32, color: u16, s: &str) {
-        c.fg = color;
-        c.text(font, Point::new(x, y), s);
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x4C, 0x9A, 0xE0);
+
+impl eframe::App for EditorApp {
+        fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+                self.sync_buffers();
+                let animating = self.preview.render(now_us());
+                self.upload_preview(ctx);
+
+                egui::TopBottomPanel::top("bar").show(ctx, |ui| {
+                        ui.horizontal(|ui| {
+                                ui.selectable_value(&mut self.mode, Mode::Edit, "Edit");
+                                if ui.selectable_value(&mut self.mode, Mode::Run, "Run").clicked() {
+                                        self.preview.start_run();
+                                }
+                                ui.separator();
+                                let (dw, dh) = self.preview.size();
+                                ui.label(format!("{dw}x{dh}  {}", if self.preview.is_landscape() { "landscape" } else { "portrait" }));
+                        });
+                });
+
+                egui::SidePanel::left("pages").default_width(180.0).show(ctx, |ui| {
+                        self.pages_panel(ui);
+                });
+                egui::SidePanel::right("inspector").default_width(240.0).show(ctx, |ui| {
+                        self.inspector_panel(ui);
+                });
+                egui::CentralPanel::default().show(ctx, |ui| {
+                        self.stage(ui);
+                });
+
+                if animating {
+                        ctx.request_repaint();
+                }
+        }
 }
 
-/// Fill a chrome rectangle.
-fn fill(c: &mut Canvas<'_>, r: R, color: u16) {
-        c.fg = color;
-        c.rect(Point::new(r.0, r.1), Point::new(r.2, r.3), true);
-}
-
-impl HostApp for Editor {
-        fn title(&self) -> &str {
-                "Light UI Editor"
-        }
-
-        fn canvas_size(&self) -> (u16, u16) {
-                (CANVAS_W, CANVAS_H)
-        }
-
-        fn background(&self) -> u16 {
-                DESK
-        }
-
-        fn on_pointer(&mut self, ev: PointerEvent) {
-                let now = light_host_gui::now_us();
-                match ev.phase {
-                        PointerPhase::Pressed => {
-                                //   a click anywhere but the text field commits the edit in progress
-                                let on_field = self.mode == Mode::Edit && hit(&ev, text_field());
-                                if self.editing.is_some() && !on_field {
-                                        self.commit_edit();
-                                }
-                                // chrome first: toggles, page list, inspector controls
-                                if hit(&ev, run_toggle()) {
-                                        //   entering Run starts a fresh run from the root; the run
-                                        // session, not the page list, owns navigation from here
-                                        if self.mode != Mode::Run {
-                                                self.mode = Mode::Run;
-                                                self.preview.start_run();
-                                        }
-                                        return;
-                                }
-                                if hit(&ev, edit_toggle()) {
-                                        self.mode = Mode::Edit;
-                                        return;
-                                }
-                                if self.mode == Mode::Edit {
-                                        //   the page list is an Edit control; in Run the run owns the page
-                                        for i in 0..self.preview.page_count() {
-                                                if hit(&ev, page_row(i)) {
-                                                        self.preview.show_page(i);
-                                                        return;
-                                                }
-                                        }
-                                        // the editable text field
-                                        if on_field {
-                                                if self.editing.is_none() && self.preview.selected().is_some() {
-                                                        self.editing = Some(self.preview.selected_text().unwrap_or_default());
-                                                }
-                                                return;
-                                        }
-                                        // property buttons: action/layout, scroll, grow -- by kind
-                                        if hit(&ev, prop_button(0)) {
-                                                if self.preview.selected_is_frame() {
-                                                        self.preview.cycle_frame_layout();
-                                                } else if self.preview.selected_is_button() {
-                                                        self.preview.cycle_selected_action();
-                                                }
-                                                return;
-                                        }
-                                        if hit(&ev, prop_button(1)) && self.preview.selected_is_frame() {
-                                                self.preview.cycle_frame_scroll();
-                                                return;
-                                        }
-                                        if hit(&ev, prop_button(2)) && self.preview.selected().is_some() {
-                                                self.preview.toggle_selected_grow();
-                                                return;
-                                        }
-                                        // structural ops
-                                        if hit(&ev, insp_button(0)) {
-                                                self.preview.move_selected(-1);
-                                                return;
-                                        }
-                                        if hit(&ev, insp_button(1)) {
-                                                self.preview.move_selected(1);
-                                                return;
-                                        }
-                                        if hit(&ev, insp_button(2)) {
-                                                self.preview.delete_selected();
-                                                return;
-                                        }
-                                        if hit(&ev, insp_button(3)) {
-                                                self.preview.add_button();
-                                                return;
-                                        }
-                                        if hit(&ev, insp_button(4)) {
-                                                self.preview.add_frame();
-                                                return;
-                                        }
-                                }
-                                // the stage
-                                let (dx, dy, inside) = self.to_device(ev.x, ev.y);
-                                if inside {
-                                        self.stage_press = true;
-                                        match self.mode {
-                                                Mode::Run => self.preview.interact(dx, dy, true, now),
-                                                Mode::Edit => self.preview.select_at(i32::from(dx), i32::from(dy)),
-                                        }
+impl EditorApp {
+        fn pages_panel(&mut self, ui: &mut egui::Ui) {
+                let edit = self.mode == Mode::Edit;
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new(if edit { "PAGES" } else { "PAGES (run)" }).weak());
+                let cur = self.preview.current_page();
+                for i in 0..self.preview.page_count() {
+                        let title = self.preview.page_title(i).to_owned();
+                        //   the page list navigates in Edit; in Run the run session owns the page
+                        if ui.selectable_label(i == cur, format!("{i}  {title}")).clicked() && edit {
+                                self.preview.show_page(i);
+                        }
+                }
+                if edit {
+                        ui.add_space(4.0);
+                        if ui.button("+ Add page").clicked() {
+                                self.preview.add_page();
+                        }
+                        ui.separator();
+                        ui.label(egui::RichText::new("PAGE TITLE").weak());
+                        if ui.text_edit_singleline(&mut self.title_buf).lost_focus() {
+                                self.preview.set_page_title(&self.title_buf);
+                        }
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("WIDGETS").weak());
+                        //   the current page's tree; selecting here beats hunting the tiny preview
+                        let selected = self.preview.selected();
+                        for (sel, indent, label) in self.preview.outline() {
+                                let text = format!("{}{}", "    ".repeat(indent as usize), label);
+                                if ui.selectable_label(Some(sel) == selected, text).clicked() {
+                                        self.preview.select(Some(sel));
                                 }
                         }
-                        PointerPhase::Moved if self.stage_press && self.mode == Mode::Run => {
-                                let (dx, dy, _) = self.to_device(ev.x, ev.y);
-                                self.preview.interact(dx, dy, true, now);
-                        }
-                        PointerPhase::Released if self.stage_press => {
-                                self.stage_press = false;
-                                if self.mode == Mode::Run {
-                                        let (dx, dy, _) = self.to_device(ev.x, ev.y);
-                                        self.preview.interact(dx, dy, false, now);
-                                }
-                        }
-                        _ => {}
                 }
         }
 
-        fn on_key(&mut self, key: Key) {
-                if self.editing.is_none() {
+        fn inspector_panel(&mut self, ui: &mut egui::Ui) {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("INSPECTOR").weak());
+                if self.mode != Mode::Edit {
+                        ui.label("run mode");
                         return;
                 }
-                match key {
-                        Key::Text(c) => {
-                                if let Some(b) = self.editing.as_mut() {
-                                        b.push(c);
+                if self.preview.selected().is_none() {
+                        ui.label("no selection");
+                } else {
+                        //   snapshot the state, then render controls that mutate through setters --
+                        // avoids borrowing the preview while a control also reads it
+                        let describe = self.preview.selected_describe().unwrap_or_default();
+                        let is_frame = self.preview.selected_is_frame();
+                        let is_button = self.preview.selected_is_button();
+                        let grow = self.preview.selected_grow();
+                        let (min_w, min_h) = self.preview.selected_min().unwrap_or((0, 0));
+                        let (max_w, max_h) = self.preview.selected_max().unwrap_or((0, 0));
+                        let layout = self.preview.selected_layout_label();
+                        let scroll = self.preview.selected_scroll_label();
+                        let action = self.preview.selected_action();
+                        let pages = self.preview.page_count();
+                        let page_titles: Vec<String> = (0..pages).map(|p| self.preview.page_title(p).to_owned()).collect();
+
+                        ui.label(describe);
+                        ui.separator();
+
+                        if !is_frame {
+                                ui.label("Text");
+                                if ui.text_edit_singleline(&mut self.label_buf).lost_focus() {
+                                        self.preview.set_selected_text(&self.label_buf);
                                 }
                         }
-                        Key::Backspace => {
-                                if let Some(b) = self.editing.as_mut() {
-                                        b.pop();
+
+                        if is_button {
+                                if let Some((goto, back)) = action {
+                                        let cur = if let Some(g) = goto {
+                                                format!("goto {}", page_titles.get(g).map_or("?", |s| s.as_str()))
+                                        } else if back {
+                                                "back".to_owned()
+                                        } else {
+                                                "none".to_owned()
+                                        };
+                                        egui::ComboBox::from_label("Action").selected_text(cur).show_ui(ui, |ui| {
+                                                if ui.selectable_label(goto.is_none() && !back, "none").clicked() {
+                                                        self.preview.set_selected_action(None, false);
+                                                }
+                                                if ui.selectable_label(back, "back").clicked() {
+                                                        self.preview.set_selected_action(None, true);
+                                                }
+                                                for (p, title) in page_titles.iter().enumerate() {
+                                                        if ui.selectable_label(goto == Some(p), format!("goto {title}")).clicked() {
+                                                                self.preview.set_selected_action(Some(p), false);
+                                                        }
+                                                }
+                                        });
                                 }
                         }
-                        Key::Enter => self.commit_edit(),
-                        Key::Escape => self.editing = None,
+
+                        if is_frame {
+                                let cur = layout.unwrap_or_else(|| "stack".to_owned());
+                                egui::ComboBox::from_label("Layout").selected_text(&cur).show_ui(ui, |ui| {
+                                        for opt in ["stack", "row", "linear"] {
+                                                if ui.selectable_label(cur == opt, opt).clicked() {
+                                                        self.preview.set_selected_layout(opt);
+                                                }
+                                        }
+                                });
+                                let cur = scroll.unwrap_or_else(|| "none".to_owned());
+                                egui::ComboBox::from_label("Scroll").selected_text(&cur).show_ui(ui, |ui| {
+                                        for opt in ["none", "vertical", "horizontal"] {
+                                                if ui.selectable_label(cur == opt, opt).clicked() {
+                                                        self.preview.set_selected_scroll(if opt == "none" { None } else { Some(opt) });
+                                                }
+                                        }
+                                });
+                        }
+
+                        let mut g = grow;
+                        if ui.checkbox(&mut g, "Grow to fill").changed() {
+                                self.preview.set_selected_grow(g);
+                        }
+
+                        ui.separator();
+                        ui.label("Min size (0 = auto)");
+                        let (mut mw, mut mh) = (min_w, min_h);
+                        ui.horizontal(|ui| {
+                                let c = ui.add(egui::DragValue::new(&mut mw).range(0..=2000).prefix("w ")).changed();
+                                let c2 = ui.add(egui::DragValue::new(&mut mh).range(0..=2000).prefix("h ")).changed();
+                                if c || c2 {
+                                        self.preview.set_selected_min(mw, mh);
+                                }
+                        });
+                        ui.label("Max size (0 = none)");
+                        let (mut xw, mut xh) = (max_w, max_h);
+                        ui.horizontal(|ui| {
+                                let c = ui.add(egui::DragValue::new(&mut xw).range(0..=2000).prefix("w ")).changed();
+                                let c2 = ui.add(egui::DragValue::new(&mut xh).range(0..=2000).prefix("h ")).changed();
+                                if c || c2 {
+                                        self.preview.set_selected_max(xw, xh);
+                                }
+                        });
                 }
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                        if ui.button("+ Button").clicked() {
+                                self.preview.add_button();
+                        }
+                        if ui.button("+ Frame").clicked() {
+                                self.preview.add_frame();
+                        }
+                });
+                let has_sel = self.preview.selected().is_some();
+                ui.horizontal(|ui| {
+                        if ui.add_enabled(has_sel, egui::Button::new("Up")).clicked() {
+                                self.preview.move_selected(-1);
+                        }
+                        if ui.add_enabled(has_sel, egui::Button::new("Down")).clicked() {
+                                self.preview.move_selected(1);
+                        }
+                        if ui.add_enabled(has_sel, egui::Button::new("Delete")).clicked() {
+                                self.preview.delete_selected();
+                        }
+                });
         }
 
-        fn render(&mut self, frame: &mut HostFrame<'_>) -> bool {
-                let animating = self.preview.render(frame.now_us);
-                frame.layer.invalidate_all();
-                let Some(mut c) = frame.layer.frame_begin(frame.display, frame.now_us) else {
-                        return animating;
-                };
-
-                // panels over the stage ground, then the bar over both
-                fill(&mut c, (0, 0, W - 1, H - 1), STAGE);
-                fill(&mut c, (0, BAR_H, LEFT_W - 1, H - 1), PANEL);
-                fill(&mut c, (W - RIGHT_W, BAR_H, W - 1, H - 1), PANEL);
-                fill(&mut c, (0, 0, W - 1, BAR_H - 1), BAR);
-                c.fg = LINE;
-                c.line(Point::new(0, BAR_H), Point::new(W - 1, BAR_H));
-                c.line(Point::new(LEFT_W, BAR_H), Point::new(LEFT_W, H - 1));
-                c.line(Point::new(W - RIGHT_W - 1, BAR_H), Point::new(W - RIGHT_W - 1, H - 1));
-
-                // top bar: the Edit / Run toggle
-                let (run_on, edit_on) = (self.mode == Mode::Run, self.mode == Mode::Edit);
-                fill(&mut c, run_toggle(), if run_on { ACCENT } else { CHIP });
-                fill(&mut c, edit_toggle(), if edit_on { ACCENT } else { CHIP });
-                text(&mut c, &self.font, run_toggle().0 + 14, 11, TEXT, "Run");
-                text(&mut c, &self.font, edit_toggle().0 + 12, 11, TEXT, "Edit");
-
-                // left panel: the page list -- interactive in Edit, a dimmed run-position indicator
-                // in Run
-                let editing = self.mode == Mode::Edit;
-                text(&mut c, &self.font, 14, BAR_H + 8, DIM, if editing { "PAGES" } else { "PAGES (run)" });
-                for i in 0..self.preview.page_count() {
-                        let r = page_row(i);
-                        let current = i == self.preview.current_page();
-                        let bg = match (editing, current) {
-                                (true, true) => ACCENT,
-                                (true, false) => CHIP,
-                                (false, true) => rgb(0x2A, 0x3A, 0x4C),
-                                (false, false) => rgb(0x20, 0x25, 0x2D),
-                        };
-                        fill(&mut c, r, bg);
-                        text(&mut c, &self.font, r.0 + 8, r.1 + 7, if editing { TEXT } else { DIM }, self.preview.page_title(i));
-                }
-
-                // right panel: the inspector
-                let rx = W - RIGHT_W + 14;
-                text(&mut c, &self.font, rx, BAR_H + 8, DIM, "INSPECTOR");
-                match self.preview.selected_describe() {
-                        Some(d) => text(&mut c, &self.font, rx, BAR_H + 34, TEXT, &d),
-                        None => text(&mut c, &self.font, rx, BAR_H + 34, DIM, "no selection"),
-                }
-                //   the inspector controls: only in Edit with a selection
-                if self.mode == Mode::Edit && self.preview.selected().is_some() {
-                        let is_frame = self.preview.selected_is_frame();
-                        //   the editable text field: leaves only (a frame has no text)
-                        if !is_frame {
-                                let tf = text_field();
-                                fill(&mut c, tf, rgb(0x18, 0x1C, 0x22));
-                                let editing = self.editing.is_some();
-                                c.fg = if editing { ACCENT } else { LINE };
-                                c.rect(Point::new(tf.0, tf.1), Point::new(tf.2, tf.3), false);
-                                let shown = match &self.editing {
-                                        Some(b) => format!("{b}_"),
-                                        None => self.preview.selected_text().unwrap_or_default(),
-                                };
-                                //   clip so a long or mid-type string cannot bleed past the field
-                                c.set_clip(light_draw::Region::new(tf.0 as u16, tf.1 as u16, tf.2 as u16, tf.3 as u16));
-                                text(&mut c, &self.font, tf.0 + 6, tf.1 + 7, TEXT, &shown);
-                                c.clear_clip();
-                        }
-
-                        //   prop(0): a frame's layout, or a button's nav action
-                        if is_frame {
-                                let p = prop_button(0);
-                                fill(&mut c, p, CHIP);
-                                let l = self.preview.selected_layout_label().unwrap_or_default();
-                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Layout: {l}"));
-                                //   prop(1): a frame's scroll axis
-                                let p = prop_button(1);
-                                fill(&mut c, p, CHIP);
-                                let s = self.preview.selected_scroll_label().unwrap_or_default();
-                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Scroll: {s}"));
-                        } else if self.preview.selected_is_button() {
-                                let p = prop_button(0);
-                                fill(&mut c, p, CHIP);
-                                let label = self.preview.selected_action_label().unwrap_or_default();
-                                text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Action: {label}"));
-                        }
-
-                        //   prop(2): grow, for any selection
-                        let p = prop_button(2);
-                        fill(&mut c, p, CHIP);
-                        let g = if self.preview.selected_grow() { "on" } else { "off" };
-                        text(&mut c, &self.font, p.0 + 8, p.1 + 5, TEXT, &format!("Grow: {g}"));
-                }
-                let ops_live = self.mode == Mode::Edit;
-                for (n, label) in INSP_LABELS.iter().enumerate() {
-                        let r = insp_button(n as i32);
-                        //   Add Button/Add Frame are always available in Edit; the others need a selection
-                        let enabled = ops_live && (n >= 3 || self.preview.selected().is_some());
-                        fill(&mut c, r, if enabled { CHIP } else { rgb(0x20, 0x25, 0x2D) });
-                        text(&mut c, &self.font, r.0 + 10, r.1 + 9, if enabled { TEXT } else { DIM }, label);
-                }
-
-                // the stage: device bezel, the composited preview scaled to fit, and the selection
-                // outline
+        fn stage(&mut self, ui: &mut egui::Ui) {
+                let Some(tex) = self.tex.clone() else { return };
                 let (dw, dh) = self.preview.size();
-                let (ox, oy, scale) = device_placement(dw, dh);
-                let (vw, vh) = ((dw as f32 * scale) as i32, (dh as f32 * scale) as i32);
-                //   the screen's rounded corners, scaled into the stage; the bezel follows it
-                let rr = (self.preview.corner_radius() as f32 * scale) as i32;
-                c.fg = BEZEL;
-                c.rect_rounded(Point::new(ox - 8, oy - 8), Point::new(ox + vw + 7, oy + vh + 7), (rr + 8) as u16, light_draw::corner::ALL, true);
-                let px = self.preview.pixels();
-                if px.len() >= dw as usize * dh as usize * 2 {
-                        //   nearest-neighbour sample per screen pixel, so any device size fits;
-                        // pixels outside the rounded corners are left as bezel
-                        for vy in 0..vh {
-                                let dev_y = (((vy as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dh) - 1);
-                                for vx in 0..vw {
-                                        if !inside_rounded(vx, vy, vw, vh, rr) {
-                                                continue;
+                let (dw, dh) = (dw as f32, dh as f32);
+                let avail = ui.available_size();
+                let scale = (avail.x / dw).min(avail.y / dh).max(0.01);
+                let size = egui::vec2(dw * scale, dh * scale);
+                //   centre the device in the stage
+                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
+                //   allocate_exact_size lays out top-left; offset into the centre of what is available
+                let offset = egui::vec2((avail.x - size.x).max(0.0) / 2.0, (avail.y - size.y).max(0.0) / 2.0);
+                let rect = rect.translate(offset);
+                let painter = ui.painter_at(rect);
+                painter.image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
+
+                let to_device = |p: egui::Pos2| -> (i32, i32) { (((p.x - rect.left()) / scale) as i32, ((p.y - rect.top()) / scale) as i32) };
+                let now = now_us();
+                match self.mode {
+                        Mode::Run => {
+                                if resp.is_pointer_button_down_on() {
+                                        if let Some(p) = resp.interact_pointer_pos() {
+                                                let (x, y) = to_device(p);
+                                                self.preview.interact(x.max(0) as u16, y.max(0) as u16, true, now);
                                         }
-                                        let dev_x = (((vx as f32 + 0.5) / scale) as i32).clamp(0, i32::from(dw) - 1);
-                                        let i = ((dev_y * i32::from(dw) + dev_x) as usize) * 2;
-                                        let color = u16::from_be_bytes([px[i], px[i + 1]]);
-                                        c.set(ox + vx, oy + vy, color);
+                                } else if resp.clicked() || resp.drag_stopped() {
+                                        let (x, y) = resp.interact_pointer_pos().map(to_device).unwrap_or((0, 0));
+                                        self.preview.interact(x.max(0) as u16, y.max(0) as u16, false, now);
+                                }
+                        }
+                        Mode::Edit => {
+                                if resp.clicked() {
+                                        if let Some(p) = resp.interact_pointer_pos() {
+                                                let (x, y) = to_device(p);
+                                                self.preview.select_at(x, y);
+                                        }
+                                }
+                                //   the selection outline, device rect scaled into the stage
+                                if let Some(r) = self.preview.selected_rect() {
+                                        let sel = egui::Rect::from_min_max(
+                                                egui::pos2(rect.left() + r.x0 as f32 * scale, rect.top() + r.y0 as f32 * scale),
+                                                egui::pos2(rect.left() + (r.x1 + 1) as f32 * scale, rect.top() + (r.y1 + 1) as f32 * scale),
+                                        );
+                                        painter.rect_stroke(sel, 0.0, egui::Stroke::new(2.0, ACCENT));
                                 }
                         }
                 }
-                if self.mode == Mode::Edit {
-                        if let Some(r) = self.preview.selected_rect() {
-                                c.fg = ACCENT;
-                                //   device rect scaled into the stage; a two-pixel outline so it reads
-                                // over any widget colour
-                                let x0 = ox + (r.x0 as f32 * scale) as i32;
-                                let y0 = oy + (r.y0 as f32 * scale) as i32;
-                                let x1 = ox + ((r.x1 + 1) as f32 * scale) as i32 - 1;
-                                let y1 = oy + ((r.y1 + 1) as f32 * scale) as i32 - 1;
-                                c.rect(Point::new(x0, y0), Point::new(x1, y1), false);
-                                c.rect(Point::new(x0 - 1, y0 - 1), Point::new(x1 + 1, y1 + 1), false);
-                        }
-                }
-
-                drop(c);
-                frame.layer.frame_end(frame.display);
-                animating
         }
 }
 
-fn main() {
+fn main() -> eframe::Result {
         //   an optional design file to edit; without one, the editor finds a design in the current
-        // working directory (see resolve_design_path) -- nothing is baked into the binary
+        // working directory (see resolve_design_path)
         let arg = std::env::args().nth(1).map(std::path::PathBuf::from);
         let path = preview::resolve_design_path(arg);
-        let editor = Editor { preview: Preview::new(path), font: font::load(CHROME_PX), mode: Mode::Edit, stage_press: false, editing: None };
-        if let Err(e) = light_host_gui::run(editor) {
-                eprintln!("light-ui-editor: {e}");
-                std::process::exit(1);
-        }
+        let app = EditorApp::new(Preview::new(path));
+        light_host_gui::run("Light UI Editor", [980.0, 640.0], app)
 }
