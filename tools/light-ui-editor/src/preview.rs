@@ -58,6 +58,10 @@ pub struct Preview {
         dev_w: u16,
         dev_h: u16,
         path: PathBuf,
+        /// The editable theme, and where it saves: `theme.json` beside the design. The preview
+        /// styles the design with it, so editing the look is live.
+        theme_src: crush_core::theme::ThemeSource,
+        theme_path: PathBuf,
 }
 
 impl Preview {
@@ -79,7 +83,15 @@ impl Preview {
                 let (pw, ph) = (design.device.width.max(1), design.device.height.max(1));
                 let (dev_w, dev_h) = if landscape { (ph, pw) } else { (pw, ph) };
                 let font = font::load(PIXEL_SIZE);
-                let lth = crush_core::theme::compile_flat(THEME_JSON).expect("the bundled steel theme compiles");
+                //   the theme is edited too: load theme.json beside the design if present, else start
+                // from the framework's steel defaults. The preview styles the design with it.
+                let theme_path = path.parent().map(|d| d.join("theme.json")).unwrap_or_else(|| PathBuf::from("theme.json"));
+                let theme_src = std::fs::read_to_string(&theme_path)
+                        .ok()
+                        .as_deref()
+                        .and_then(|j| crush_core::theme::parse_source(j).ok())
+                        .unwrap_or_else(|| crush_core::theme::parse_source(THEME_JSON).expect("the bundled steel theme parses"));
+                let lth = crush_core::theme::compile_source(&theme_src).expect("the theme compiles");
                 let theme = Theme::parse(&lth).expect("the compiled theme parses");
                 let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(dev_w, dev_h)]);
                 let display = Display::new(NullDriver, buf, dev_w, dev_h, PixelFormat::Rgb565, now_us);
@@ -94,7 +106,7 @@ impl Preview {
 
                 let lui = compile_blob(&design);
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path };
                 this.build_current();
                 this
         }
@@ -420,6 +432,62 @@ impl Preview {
                 let idx = self.design.pages.len() - 1;
                 self.recompile();
                 self.show_page(idx);
+        }
+
+        // --- theme editing -------------------------------------------------------------------
+
+        /// Recompile the edited theme, restyle the preview live, and save `theme.json`.
+        fn apply_theme(&mut self) {
+                if let Ok(lth) = crush_core::theme::compile_source(&self.theme_src) {
+                        if let Ok(theme) = Theme::parse(&lth) {
+                                self.theme = theme;
+                                self.layer.bg = theme.bg;
+                                self.ui.set_style(&Style::new(theme, Fonts::uniform(&self.font)));
+                                //   rebuild so windows re-resolve their corner radius from the new
+                                // theme metrics (resolved at creation, not per frame)
+                                self.build_current();
+                        }
+                }
+                if let Err(e) = std::fs::write(&self.theme_path, crush_core::theme::source_to_json(&self.theme_src)) {
+                        eprintln!("light-ui-editor: could not save '{}': {e}", self.theme_path.display());
+                }
+        }
+
+        /// A theme colour by key, as the effective RGB565 (defaults resolved) -- for a colour picker.
+        pub fn theme_color(&self, key: &str) -> u16 {
+                match key {
+                        "bg" => self.theme.bg,
+                        "bar" => self.theme.bar.unwrap_or(self.theme.bg),
+                        "frame" => self.theme.frame,
+                        "title" => self.theme.title,
+                        "text" => self.theme.text,
+                        "button_outline" => self.theme.button_outline,
+                        "button_text" => self.theme.button_text,
+                        "focus_text" => self.theme.focus_text,
+                        "indicator" => self.theme.indicator,
+                        _ => 0,
+                }
+        }
+
+        /// Set a theme colour (RGB565), restyle live and save.
+        pub fn set_theme_color(&mut self, key: &str, rgb565: u16) {
+                self.theme_src.colors.insert(key.to_owned(), format!("{rgb565:04X}"));
+                self.apply_theme();
+        }
+
+        /// A theme metric by key (`radius`/`screen_radius`), effective value.
+        pub fn theme_metric(&self, key: &str) -> u16 {
+                match key {
+                        "radius" => u16::from(self.theme.radius),
+                        "screen_radius" => u16::from(self.theme.screen_radius),
+                        _ => 0,
+                }
+        }
+
+        /// Set a theme metric, restyle live and save.
+        pub fn set_theme_metric(&mut self, key: &str, value: u16) {
+                self.theme_src.metrics.insert(key.to_owned(), value);
+                self.apply_theme();
         }
 
         /// The top index of the frame the selection sits in or on, for adding into it.

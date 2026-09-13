@@ -22,6 +22,31 @@ use preview::{Preview, Sel};
 enum Mode {
         Edit,
         Run,
+        Theme,
+}
+
+/// The editable theme colours: `(key, label)`, matching the preview's theme keys.
+const COLOR_KEYS: &[(&str, &str)] = &[
+        ("bg", "Background"),
+        ("bar", "Title bar"),
+        ("frame", "Frame / border"),
+        ("title", "Title text"),
+        ("text", "Label text"),
+        ("button_outline", "Button outline"),
+        ("button_text", "Button text"),
+        ("focus_text", "Focus text"),
+        ("indicator", "Indicator"),
+];
+
+fn rgb565_to_color32(c: u16) -> egui::Color32 {
+        let r = ((c >> 11) & 0x1F) as u8;
+        let g = ((c >> 5) & 0x3F) as u8;
+        let b = (c & 0x1F) as u8;
+        egui::Color32::from_rgb((r << 3) | (r >> 2), (g << 2) | (g >> 4), (b << 3) | (b >> 2))
+}
+
+fn color32_to_rgb565(c: egui::Color32) -> u16 {
+        ((u16::from(c.r()) >> 3) << 11) | ((u16::from(c.g()) >> 2) << 5) | (u16::from(c.b()) >> 3)
 }
 
 struct EditorApp {
@@ -79,6 +104,7 @@ impl eframe::App for EditorApp {
                                 if ui.selectable_value(&mut self.mode, Mode::Run, "Run").clicked() {
                                         self.preview.start_run();
                                 }
+                                ui.selectable_value(&mut self.mode, Mode::Theme, "Theme");
                                 ui.separator();
                                 let (dw, dh) = self.preview.size();
                                 ui.label(format!("{dw}x{dh}  {}", if self.preview.is_landscape() { "landscape" } else { "portrait" }));
@@ -104,13 +130,15 @@ impl eframe::App for EditorApp {
 impl EditorApp {
         fn pages_panel(&mut self, ui: &mut egui::Ui) {
                 let edit = self.mode == Mode::Edit;
+                //   the page list navigates in Edit and Theme (to preview the look on any page); in
+                // Run the run session owns the page
+                let can_nav = self.mode != Mode::Run;
                 ui.add_space(4.0);
-                ui.label(egui::RichText::new(if edit { "PAGES" } else { "PAGES (run)" }).weak());
+                ui.label(egui::RichText::new(if can_nav { "PAGES" } else { "PAGES (run)" }).weak());
                 let cur = self.preview.current_page();
                 for i in 0..self.preview.page_count() {
                         let title = self.preview.page_title(i).to_owned();
-                        //   the page list navigates in Edit; in Run the run session owns the page
-                        if ui.selectable_label(i == cur, format!("{i}  {title}")).clicked() && edit {
+                        if ui.selectable_label(i == cur, format!("{i}  {title}")).clicked() && can_nav {
                                 self.preview.show_page(i);
                         }
                 }
@@ -138,6 +166,10 @@ impl EditorApp {
         }
 
         fn inspector_panel(&mut self, ui: &mut egui::Ui) {
+                if self.mode == Mode::Theme {
+                        self.theme_panel(ui);
+                        return;
+                }
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("INSPECTOR").weak());
                 if self.mode != Mode::Edit {
@@ -264,6 +296,35 @@ impl EditorApp {
                 });
         }
 
+        fn theme_panel(&mut self, ui: &mut egui::Ui) {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("THEME").weak());
+                ui.separator();
+                ui.label("Colours");
+                for (key, label) in COLOR_KEYS {
+                        ui.horizontal(|ui| {
+                                let mut col = rgb565_to_color32(self.preview.theme_color(key));
+                                if ui.color_edit_button_srgba(&mut col).changed() {
+                                        self.preview.set_theme_color(key, color32_to_rgb565(col));
+                                }
+                                ui.label(*label);
+                        });
+                }
+                ui.separator();
+                ui.label("Metrics");
+                for (key, label, max) in [("radius", "Corner radius", 64u16), ("screen_radius", "Screen radius", 128u16)] {
+                        ui.horizontal(|ui| {
+                                let mut v = self.preview.theme_metric(key);
+                                if ui.add(egui::DragValue::new(&mut v).range(0..=max)).changed() {
+                                        self.preview.set_theme_metric(key, v);
+                                }
+                                ui.label(label);
+                        });
+                }
+                ui.separator();
+                ui.small("Saved to theme.json beside the design. Surfaces and descent editing to come.");
+        }
+
         fn stage(&mut self, ui: &mut egui::Ui) {
                 let Some(tex) = self.tex.clone() else { return };
                 let (dw, dh) = self.preview.size();
@@ -309,6 +370,8 @@ impl EditorApp {
                                         painter.rect_stroke(sel, 0.0, egui::Stroke::new(2.0, ACCENT));
                                 }
                         }
+                        //   Theme mode just shows the design under the edited look; no interaction
+                        Mode::Theme => {}
                 }
         }
 }

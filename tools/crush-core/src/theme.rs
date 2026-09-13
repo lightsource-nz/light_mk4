@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const MAGIC: &[u8; 4] = b"LTH1";
 /// The schema version in the header, matching light-ui's `theme::VERSION` -- the shared blob-header
@@ -38,28 +38,27 @@ const KEY_DESCENT: u16 = 0x0040;
 
 /// A theme as authored: one level, before an `extends` chain is flattened. crush's resolver reads
 /// the `extends` field; everything else is merged into a [`Resolved`].
-#[derive(Deserialize, Debug, Default)]
+#[derive(Deserialize, Serialize, Clone, Debug, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ThemeSource {
         /// Documentation only; the blob carries no name.
-        #[serde(default)]
-        #[allow(dead_code)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub name: Option<String>,
         /// A base theme this one overrides. Resolution is the caller's job (it walks files); this
         /// crate only records the field.
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub extends: Option<String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         pub colors: BTreeMap<String, String>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         pub surfaces: BTreeMap<String, Option<ShadeSource>>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         pub metrics: BTreeMap<String, u16>,
-        #[serde(default)]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         pub descent: Option<String>,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Serialize, Clone, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ShadeSource {
         pub from: String,
@@ -152,6 +151,24 @@ pub fn compile_flat(json: &str) -> Result<Vec<u8>, String> {
         let mut resolved = Resolved::default();
         resolved.apply(src)?;
         emit(&resolved)
+}
+
+/// Parse a theme JSON into its editable [`ThemeSource`] (a single flat theme; no `extends`
+/// resolution) -- for a tool that edits the source and re-emits it, like the design model.
+pub fn parse_source(json: &str) -> Result<ThemeSource, String> {
+        serde_json::from_str(json).map_err(|e| e.to_string())
+}
+
+/// Compile an editable [`ThemeSource`] to an LTH blob (no `extends` resolution).
+pub fn compile_source(src: &ThemeSource) -> Result<Vec<u8>, String> {
+        let mut resolved = Resolved::default();
+        resolved.apply(src.clone())?;
+        emit(&resolved)
+}
+
+/// Serialise a [`ThemeSource`] back to pretty JSON, defaults omitted.
+pub fn source_to_json(src: &ThemeSource) -> String {
+        serde_json::to_string_pretty(src).unwrap_or_default()
 }
 
 /// "4C5D" as raw RGB565, or "#RRGGBB" truncated to 565.
