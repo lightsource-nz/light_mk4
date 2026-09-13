@@ -27,9 +27,20 @@ light_mk4_add_font(dictaphone_touch349_font
 
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
-light_mk4_add_theme(dictaphone_touch349_theme
-        CRATE dictaphone_touch349_app ENV LIGHT_THEME_LTH
-)
+#   the interface's own look: light_app_dictaphone/theme.json when the design has one (authored in
+# the editor's Theme tab), else the framework default (steel). Editing an existing theme.json
+# retriggers the build; CREATING one where there was none needs a single reconfigure first.
+set(dictaphone_touch349_theme ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_dictaphone/theme.json)
+if(EXISTS ${dictaphone_touch349_theme})
+        light_mk4_add_theme(dictaphone_touch349_theme
+                THEME ${dictaphone_touch349_theme}
+                CRATE dictaphone_touch349_app ENV LIGHT_THEME_LTH
+        )
+else()
+        light_mk4_add_theme(dictaphone_touch349_theme
+                CRATE dictaphone_touch349_app ENV LIGHT_THEME_LTH
+        )
+endif()
 
 #   the portrait interface itself, as data: light_app_dictaphone's design compiled to an LUI
 # blob. light_dictaphone_core reads it and drives navigation from the design's event ids.
