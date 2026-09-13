@@ -38,6 +38,7 @@
       "children": [
         {
           "button": "< Back",
+          "back": true,
           "event": 6,
           "min_w": 84,
           "max_w": 84

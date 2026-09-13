@@ -10,7 +10,7 @@
                         "children": [
                                 { "button": "* Record", "event": 1, "tag": 2, "min_h": 88 },
                                 { "button": "Play last", "event": 2, "tag": 3, "min_h": 56 },
-                                { "button": "Recordings >", "event": 3, "min_h": 56 }
+                                { "button": "Recordings >", "goto": 1, "event": 3, "min_h": 56 }
                         ]
                 },
                 {
@@ -30,7 +30,7 @@
                                 { "button": "-", "event": 22, "tag": 22, "min_h": 56 },
                                 { "button": "-", "event": 23, "tag": 23, "min_h": 56 },
                                 { "button": "Older >", "event": 4, "tag": 5, "min_h": 56 },
-                                { "button": "< Back", "event": 6, "min_h": 56 }
+                                { "button": "< Back", "back": true, "event": 6, "min_h": 56 }
                         ]
                 }
         ]
