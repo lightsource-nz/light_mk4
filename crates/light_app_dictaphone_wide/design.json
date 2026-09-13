@@ -16,8 +16,8 @@
           "button": "* Record",
           "event": 1,
           "tag": 2,
-          "min_w": 108,
-          "max_w": 108
+          "min_w": 134,
+          "max_w": 134
         },
         {
           "button": "Play last",
