@@ -1,6 +1,7 @@
-//! Compiling a theme to an LTH blob -- the pure core of crush's theme compiler, with no file I/O
-//! and no logging. crush wraps this with the `extends` resolver (which walks files) and the file
-//! writer; a host tool compiles a single flat theme with [`compile_flat`].
+//! Compiling a theme to an LTH blob. The colour/key logic and the blob writer are pure; the
+//! `extends` resolver ([`resolve_file`]/[`resolve_source`]) walks theme files, so both crush's
+//! compile and the editor's live preview resolve a hierarchy the same way. A host tool that wants a
+//! single flat theme (no `extends`) uses [`compile_flat`].
 //!
 //! Colors are written as strings, two spellings: four hex digits are a raw RGB565 value ("4C5D"),
 //! and "#RRGGBB" is 24-bit truncated to 565. Unknown JSON keys are ERRORS: at compile time a typo
@@ -11,6 +12,7 @@
 //! that parser.
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -171,6 +173,66 @@ pub fn source_to_json(src: &ThemeSource) -> String {
         serde_json::to_string_pretty(src).unwrap_or_default()
 }
 
+//   the extends resolver, shared by crush's compile and the editor. Deepest base first, each level
+// overriding; a child's explicit `null` surface suppresses the base's shade. `themes_dir` is where
+// `extends: "name"` finds `name.json`; `default` is what the `"default"` alias resolves to.
+
+/// The deepest an `extends` chain may go before it is called a cycle.
+const MAX_EXTENDS_DEPTH: u8 = 8;
+
+/// Resolve a theme FILE and its `extends` chain into a flat [`Resolved`].
+pub fn resolve_file(path: &Path, themes_dir: Option<&Path>, default: Option<&str>) -> Result<Resolved, String> {
+        resolve_file_depth(path, themes_dir, default, MAX_EXTENDS_DEPTH)
+}
+
+/// Resolve an in-memory [`ThemeSource`] and its `extends` chain. `base_dir` is where a relative
+/// `extends` path is resolved from (the source file's own directory) -- for a tool editing a theme
+/// in memory and previewing it, matching what [`resolve_file`] does on disk.
+pub fn resolve_source(src: &ThemeSource, base_dir: &Path, themes_dir: Option<&Path>, default: Option<&str>) -> Result<Resolved, String> {
+        resolve_source_depth(src, base_dir, themes_dir, default, MAX_EXTENDS_DEPTH)
+}
+
+/// Resolve a theme file's `extends` chain and compile the result to an LTH blob.
+pub fn compile_file(path: &Path, themes_dir: Option<&Path>, default: Option<&str>) -> Result<Vec<u8>, String> {
+        emit(&resolve_file(path, themes_dir, default)?)
+}
+
+fn resolve_file_depth(path: &Path, themes_dir: Option<&Path>, default: Option<&str>, depth: u8) -> Result<Resolved, String> {
+        if depth == 0 {
+                return Err(format!("'{}': the extends chain is too deep (a cycle?)", path.display()));
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| format!("could not read '{}': {e}", path.display()))?;
+        let src: ThemeSource = serde_json::from_str(&text).map_err(|e| format!("'{}': {e}", path.display()))?;
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        resolve_source_depth(&src, base_dir, themes_dir, default, depth).map_err(|e| format!("'{}': {e}", path.display()))
+}
+
+fn resolve_source_depth(src: &ThemeSource, base_dir: &Path, themes_dir: Option<&Path>, default: Option<&str>, depth: u8) -> Result<Resolved, String> {
+        if depth == 0 {
+                return Err("the extends chain is too deep (a cycle?)".to_owned());
+        }
+        let mut out = match &src.extends {
+                None => Resolved::default(),
+                Some(base) => {
+                        //   the alias first: "default" is whatever the build declared for this board
+                        let base: &str = if base == "default" {
+                                default.ok_or_else(|| "extends 'default', but no default theme was given".to_owned())?
+                        } else {
+                                base
+                        };
+                        let base_path = if base.contains('/') || base.contains('\\') || base.ends_with(".json") {
+                                base_dir.join(base)
+                        } else {
+                                let dir = themes_dir.ok_or_else(|| format!("extends '{base}' by name, but no themes directory was given"))?;
+                                dir.join(format!("{base}.json"))
+                        };
+                        resolve_file_depth(&base_path, themes_dir, default, depth - 1)?
+                }
+        };
+        out.apply(src.clone())?;
+        Ok(out)
+}
+
 /// "4C5D" as raw RGB565, or "#RRGGBB" truncated to 565.
 pub fn parse_color(s: &str) -> Result<u16, String> {
         if let Some(rgb) = s.strip_prefix('#') {
@@ -251,6 +313,25 @@ mod tests {
                 assert_eq!(u16::from_le_bytes([blob[5], blob[6]]), 2, "bg and the focus surface; the null surface emits nothing");
                 assert_eq!(u16::from_le_bytes([blob[7], blob[8]]), KEY_BG);
                 assert_eq!(u16::from_le_bytes([blob[11], blob[12]]), 0x1082);
+        }
+
+        #[test]
+        fn resolve_source_merges_an_extends_chain() {
+                let dir = std::env::temp_dir().join("crush_core_theme_resolve");
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("base.json"), r##"{ "colors": { "bg": "1082", "text": "FFFF" } }"##).unwrap();
+                //   an in-memory source extending the base by name, overriding bg
+                let src = parse_source(r##"{ "extends": "base", "colors": { "bg": "2104" } }"##).unwrap();
+                let resolved = resolve_source(&src, &dir, Some(&dir), None).unwrap();
+                let blob = emit(&resolved).unwrap();
+                //   bg overridden (2104), text inherited (FFFF): two entries
+                assert_eq!(u16::from_le_bytes([blob[5], blob[6]]), 2, "override + inherited");
+                assert_eq!(u16::from_le_bytes([blob[7], blob[8]]), KEY_BG);
+                assert_eq!(u16::from_le_bytes([blob[11], blob[12]]), 0x2104, "child bg wins");
+                //   the 'default' alias resolves to the given default theme name
+                let aliased = parse_source(r##"{ "extends": "default" }"##).unwrap();
+                assert!(resolve_source(&aliased, &dir, Some(&dir), Some("base")).is_ok());
+                assert!(resolve_source(&aliased, &dir, Some(&dir), None).is_err(), "no default given");
         }
 
         #[test]

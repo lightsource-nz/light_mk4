@@ -1,60 +1,20 @@
-//! The theme compiler's file-and-`extends` shell around [`crush_core::theme`]. The blob writer and
-//! the pure color/key logic live in crush-core, shared with the host tools; this resolves an
-//! `extends` chain by walking files (with the `--themes`/`--default` policy) and writes the result.
+//! The theme command's file writer around [`crush_core::theme`]. The `extends` resolver, the blob
+//! writer and the pure colour/key logic all live in crush-core now, shared with the editor so both
+//! resolve a hierarchy identically; this passes the `--themes`/`--default` policy through and writes
+//! the result.
 //!
 //! Unknown JSON keys are ERRORS (see crush-core): a typo stops the build, while the firmware skips
 //! an unknown BINARY key for forward compatibility. Strictness at authoring, tolerance at runtime.
 
 use std::path::Path;
 
-use crush_core::theme::{emit, Resolved, ThemeSource};
-
 use crate::log;
 use crate::CmdResult;
-
-/// Load `path` and everything it extends, deepest base first, child entries overriding. A child's
-/// explicit `null` surface suppresses the base's shade -- resolution happens here, at compile time,
-/// and the blob is flat, which is what lets a child REMOVE a base's surface.
-fn resolve(path: &Path, themes_dir: Option<&Path>, default: Option<&str>, depth: u8) -> Result<Resolved, String> {
-        if depth == 0 {
-                return Err(format!("'{}': the extends chain is too deep (a cycle?)", path.display()));
-        }
-        let text = std::fs::read_to_string(path).map_err(|e| format!("could not read '{}': {e}", path.display()))?;
-        let src: ThemeSource = serde_json::from_str(&text).map_err(|e| format!("'{}': {e}", path.display()))?;
-        let mut out = match &src.extends {
-                None => Resolved::default(),
-                Some(base) => {
-                        //   the alias first: "default" is whatever the build declared for this
-                        // board, so board themes need never pin a base by name
-                        let base: &str = if base == "default" {
-                                match default {
-                                        Some(d) => d,
-                                        None => return Err(format!("'{}' extends 'default', but no default theme was given (--default)", path.display())),
-                                }
-                        } else {
-                                base
-                        };
-                        let base_path = if base.contains('/') || base.contains('\\') || base.ends_with(".json") {
-                                path.parent().unwrap_or(Path::new(".")).join(base)
-                        } else {
-                                let Some(dir) = themes_dir else {
-                                        return Err(format!("'{}' extends '{base}' by name, but no themes directory was given (--themes)", path.display()));
-                                };
-                                dir.join(format!("{base}.json"))
-                        };
-                        resolve(&base_path, themes_dir, default, depth - 1)?
-                }
-        };
-        //   validate + merge this level over the resolved base; a bad entry names the file it is in
-        out.apply(src).map_err(|e| format!("'{}' {e}", path.display()))?;
-        Ok(out)
-}
 
 /// Compile `input` (JSON, possibly extending a base) to `output` (a flat LTH blob). `default` names
 /// the theme `extends: "default"` resolves to -- the board's default.
 pub fn compile(input: &Path, output: &Path, themes_dir: Option<&Path>, default: Option<&str>) -> CmdResult {
-        let resolved = resolve(input, themes_dir, default, 8)?;
-        let blob = emit(&resolved)?;
+        let blob = crush_core::theme::compile_file(input, themes_dir, default)?;
         if let Some(dir) = output.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("could not create '{}': {e}", dir.display()))?;
         }

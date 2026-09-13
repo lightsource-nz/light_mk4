@@ -7,7 +7,7 @@
 //! inspector; every edit recompiles the blob and rebuilds. Buttons emit their child index, which the
 //! preview resolves against the design's navigation (goto/back).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use light_display::{Display, FrameLayer};
 use light_draw::PixelFormat;
@@ -40,6 +40,11 @@ const THEME_JSON: &str = include_str!("../../../themes/steel.json");
 /// The starting content for a design file that does not exist yet: one page, one button.
 const STARTER_JSON: &str = r#"{ "pages": [ { "title": "Page", "children": [ { "button": "Button" } ] } ] }"#;
 
+/// The framework's default theme, and the base a fresh `theme.json` extends -- the same default a
+/// colour board's build uses (`light_mk4_add_theme` without MONO). The editor previews colour
+/// designs, so it assumes this default rather than reading each board's MONO flag.
+const DEFAULT_THEME: &str = "steel";
+
 pub struct Preview {
         ui: Ui<u16, UI_WIDGETS>,
         display: Display<'static, NullDriver>,
@@ -59,9 +64,15 @@ pub struct Preview {
         dev_h: u16,
         path: PathBuf,
         /// The editable theme, and where it saves: `theme.json` beside the design. The preview
-        /// styles the design with it, so editing the look is live.
+        /// styles the design with it, so editing the look is live. It may `extends` a base, resolved
+        /// the way the build resolves it.
         theme_src: crush_core::theme::ThemeSource,
         theme_path: PathBuf,
+        /// The design's directory -- where a relative `extends` path and `theme.json` resolve from.
+        base_dir: PathBuf,
+        /// The framework theme directory (`themes/`), found by walking up from the design, where an
+        /// `extends: "name"` base lives; `None` when editing outside the repo.
+        themes_dir: Option<PathBuf>,
 }
 
 impl Preview {
@@ -83,15 +94,18 @@ impl Preview {
                 let (pw, ph) = (design.device.width.max(1), design.device.height.max(1));
                 let (dev_w, dev_h) = if landscape { (ph, pw) } else { (pw, ph) };
                 let font = font::load(PIXEL_SIZE);
-                //   the theme is edited too: load theme.json beside the design if present, else start
-                // from the framework's steel defaults. The preview styles the design with it.
-                let theme_path = path.parent().map(|d| d.join("theme.json")).unwrap_or_else(|| PathBuf::from("theme.json"));
+                //   the theme the crate would BUILD: theme.json beside the design if it has one
+                // (its extends chain resolved against themes/, as the build does), else a fresh
+                // theme extending the framework default. Editing it is live on the preview.
+                let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+                let theme_path = base_dir.join("theme.json");
+                let themes_dir = find_themes_dir(&base_dir);
                 let theme_src = std::fs::read_to_string(&theme_path)
                         .ok()
                         .as_deref()
                         .and_then(|j| crush_core::theme::parse_source(j).ok())
-                        .unwrap_or_else(|| crush_core::theme::parse_source(THEME_JSON).expect("the bundled steel theme parses"));
-                let lth = crush_core::theme::compile_source(&theme_src).expect("the theme compiles");
+                        .unwrap_or_else(|| crush_core::theme::ThemeSource { extends: Some(DEFAULT_THEME.to_owned()), ..Default::default() });
+                let lth = compile_theme(&theme_src, &base_dir, themes_dir.as_deref());
                 let theme = Theme::parse(&lth).expect("the compiled theme parses");
                 let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(dev_w, dev_h)]);
                 let display = Display::new(NullDriver, buf, dev_w, dev_h, PixelFormat::Rgb565, now_us);
@@ -106,7 +120,7 @@ impl Preview {
 
                 let lui = compile_blob(&design);
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path, base_dir, themes_dir };
                 this.build_current();
                 this
         }
@@ -436,21 +450,27 @@ impl Preview {
 
         // --- theme editing -------------------------------------------------------------------
 
-        /// Recompile the edited theme, restyle the preview live, and save `theme.json`.
+        /// Recompile the edited theme (resolving its extends chain), restyle the preview live, and
+        /// save `theme.json`.
         fn apply_theme(&mut self) {
-                if let Ok(lth) = crush_core::theme::compile_source(&self.theme_src) {
-                        if let Ok(theme) = Theme::parse(&lth) {
-                                self.theme = theme;
-                                self.layer.bg = theme.bg;
-                                self.ui.set_style(&Style::new(theme, Fonts::uniform(&self.font)));
-                                //   rebuild so windows re-resolve their corner radius from the new
-                                // theme metrics (resolved at creation, not per frame)
-                                self.build_current();
-                        }
+                let lth = compile_theme(&self.theme_src, &self.base_dir, self.themes_dir.as_deref());
+                if let Ok(theme) = Theme::parse(&lth) {
+                        self.theme = theme;
+                        self.layer.bg = theme.bg;
+                        self.ui.set_style(&Style::new(theme, Fonts::uniform(&self.font)));
+                        //   rebuild so windows re-resolve their corner radius from the new theme
+                        // metrics (resolved at creation, not per frame)
+                        self.build_current();
                 }
                 if let Err(e) = std::fs::write(&self.theme_path, crush_core::theme::source_to_json(&self.theme_src)) {
                         eprintln!("light-ui-editor: could not save '{}': {e}", self.theme_path.display());
                 }
+        }
+
+        /// The base this theme extends, for the inspector to show the hierarchy (`None` = a flat,
+        /// self-contained theme).
+        pub fn theme_base(&self) -> Option<&str> {
+                self.theme_src.extends.as_deref()
         }
 
         /// A theme colour by key, as the effective RGB565 (defaults resolved) -- for a colour picker.
@@ -725,6 +745,33 @@ impl Preview {
         pub fn pixels(&self) -> &[u8] {
                 self.display.front().unwrap_or(&[])
         }
+}
+
+/// Compile the edited theme to an LTH blob, resolving its `extends` chain the way the build does.
+/// Falls back to the bundled steel (flat) if resolution fails -- e.g. editing outside the repo,
+/// where `themes/` is not found so an `extends: "steel"` base cannot be located.
+fn compile_theme(src: &crush_core::theme::ThemeSource, base_dir: &Path, themes_dir: Option<&Path>) -> Vec<u8> {
+        match crush_core::theme::resolve_source(src, base_dir, themes_dir, Some(DEFAULT_THEME)) {
+                Ok(resolved) => crush_core::theme::emit(&resolved).unwrap_or_default(),
+                Err(e) => {
+                        eprintln!("light-ui-editor: theme did not resolve ({e}); using bundled steel");
+                        crush_core::theme::compile_flat(THEME_JSON).unwrap_or_default()
+                }
+        }
+}
+
+/// Find the framework theme directory (`themes/`) by walking up from `start` -- where an
+/// `extends: "name"` base lives. `None` outside a checkout that has one.
+fn find_themes_dir(start: &Path) -> Option<PathBuf> {
+        let mut cur = Some(start);
+        while let Some(dir) = cur {
+                let candidate = dir.join("themes");
+                if candidate.is_dir() {
+                        return Some(candidate);
+                }
+                cur = dir.parent();
+        }
+        None
 }
 
 /// Compile a design to an LUI blob, leak it `'static`, and parse it -- the blob the preview reads.

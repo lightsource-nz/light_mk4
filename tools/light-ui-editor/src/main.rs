@@ -299,6 +299,10 @@ impl EditorApp {
         fn theme_panel(&mut self, ui: &mut egui::Ui) {
                 ui.add_space(4.0);
                 ui.label(egui::RichText::new("THEME").weak());
+                match self.preview.theme_base() {
+                        Some(base) => ui.label(format!("extends {base} — the pickers show the resolved look; edits are overrides")),
+                        None => ui.label("flat theme (self-contained)"),
+                };
                 ui.separator();
                 ui.label("Colours");
                 for (key, label) in COLOR_KEYS {
