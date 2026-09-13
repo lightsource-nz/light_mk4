@@ -311,6 +311,31 @@ impl EditorApp {
                         });
                 }
                 ui.separator();
+                ui.label("Surfaces (button gradients)");
+                for (key, label) in [("button", "Button"), ("focus", "Focused")] {
+                        let surface = self.preview.theme_surface(key);
+                        ui.horizontal(|ui| {
+                                let mut on = surface.is_some();
+                                if ui.checkbox(&mut on, label).changed() {
+                                        if on {
+                                                //   enable with a flat gradient at the button outline, ready to spread
+                                                let seed = self.preview.theme_color("button_outline");
+                                                self.preview.set_theme_surface(key, seed, seed);
+                                        } else {
+                                                self.preview.clear_theme_surface(key);
+                                        }
+                                }
+                                if let Some((from, to)) = surface {
+                                        let (mut cf, mut ct) = (rgb565_to_color32(from), rgb565_to_color32(to));
+                                        let c1 = ui.color_edit_button_srgba(&mut cf).changed();
+                                        let c2 = ui.color_edit_button_srgba(&mut ct).changed();
+                                        if c1 || c2 {
+                                                self.preview.set_theme_surface(key, color32_to_rgb565(cf), color32_to_rgb565(ct));
+                                        }
+                                }
+                        });
+                }
+                ui.separator();
                 ui.label("Metrics");
                 for (key, label, max) in [("radius", "Corner radius", 64u16), ("screen_radius", "Screen radius", 128u16)] {
                         ui.horizontal(|ui| {
@@ -321,8 +346,21 @@ impl EditorApp {
                                 ui.label(label);
                         });
                 }
+                ui.horizontal(|ui| {
+                        let cur = self.preview.theme_descent_label();
+                        egui::ComboBox::from_label("Page descent").selected_text(cur).show_ui(ui, |ui| {
+                                if ui.selectable_label(cur == "none", "none").clicked() {
+                                        self.preview.set_theme_descent(None);
+                                }
+                                for opt in ["top", "bottom", "left", "right"] {
+                                        if ui.selectable_label(cur == opt, opt).clicked() {
+                                                self.preview.set_theme_descent(Some(opt));
+                                        }
+                                }
+                        });
+                });
                 ui.separator();
-                ui.small("Saved to theme.json beside the design. Surfaces and descent editing to come.");
+                ui.small("Saved to theme.json beside the design.");
         }
 
         fn stage(&mut self, ui: &mut egui::Ui) {

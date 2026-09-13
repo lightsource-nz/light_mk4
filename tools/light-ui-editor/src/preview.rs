@@ -490,6 +490,46 @@ impl Preview {
                 self.apply_theme();
         }
 
+        /// A theme surface (`focus`/`button`) as its gradient `(from, to)` RGB565, or `None` when the
+        /// surface is flat (no gradient).
+        pub fn theme_surface(&self, key: &str) -> Option<(u16, u16)> {
+                let s = match key {
+                        "focus" => self.theme.focus_surface,
+                        "button" => self.theme.button_surface,
+                        _ => None,
+                }?;
+                Some((s.from, s.to))
+        }
+
+        /// Set a surface's gradient endpoints (RGB565), restyle live and save.
+        pub fn set_theme_surface(&mut self, key: &str, from: u16, to: u16) {
+                self.theme_src.surfaces.insert(key.to_owned(), Some(crush_core::theme::ShadeSource { from: format!("{from:04X}"), to: format!("{to:04X}") }));
+                self.apply_theme();
+        }
+
+        /// Remove a surface's gradient (it paints flat), restyle live and save.
+        pub fn clear_theme_surface(&mut self, key: &str) {
+                self.theme_src.surfaces.remove(key);
+                self.apply_theme();
+        }
+
+        /// The theme's page-descent edge as a label: `none`/`top`/`bottom`/`left`/`right`.
+        pub fn theme_descent_label(&self) -> &'static str {
+                match self.theme.descent {
+                        None => "none",
+                        Some(light_ui::Descent::FromTop) => "top",
+                        Some(light_ui::Descent::FromBottom) => "bottom",
+                        Some(light_ui::Descent::FromLeft) => "left",
+                        Some(light_ui::Descent::FromRight) => "right",
+                }
+        }
+
+        /// Set the theme's page-descent edge (`None` clears it), restyle live and save.
+        pub fn set_theme_descent(&mut self, descent: Option<&str>) {
+                self.theme_src.descent = descent.map(str::to_owned);
+                self.apply_theme();
+        }
+
         /// The top index of the frame the selection sits in or on, for adding into it.
         fn selected_frame_top(&self) -> Option<usize> {
                 let sel = self.selected?;
