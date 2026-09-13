@@ -17,6 +17,13 @@ pub struct Design {
         /// axis, so a preview matches the device without the firmware's rotation being guessed.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub orientation: Option<String>,
+        /// The named actions a button can take -- the design's mirror of the firmware's behaviour
+        /// (e.g. `light_dictaphone_core::ui_event` plus the page each opens). A button names one
+        /// action; crush expands it to that button's `event` (runtime behaviour) and `goto`/`back`
+        /// (so the editor previews the navigation the same way). Binds the design to its app: a UI is
+        /// authored in terms of actions, defined once here.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pub actions: Vec<ActionDef>,
         #[serde(default)]
         pub root: usize,
         pub pages: Vec<PageDef>,
@@ -28,6 +35,29 @@ impl Design {
         pub fn landscape(&self) -> bool {
                 self.orientation.as_deref() == Some("landscape")
         }
+
+        /// The named action's definition, if the design declares it.
+        pub fn action(&self, name: &str) -> Option<&ActionDef> {
+                self.actions.iter().find(|a| a.name == name)
+        }
+}
+
+/// A named button action: the app `event` it emits (0 = none) and the navigation it performs, both
+/// defined once so the editor's preview and the firmware behave alike. Mirrors the firmware's own
+/// event/nav for the app.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActionDef {
+        pub name: String,
+        /// The app event id this action emits (0 = none).
+        #[serde(default, skip_serializing_if = "is_zero_u16")]
+        pub event: u16,
+        /// Navigate to this page index when taken.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub goto: Option<usize>,
+        /// Navigate back when taken.
+        #[serde(default, skip_serializing_if = "is_false")]
+        pub back: bool,
 }
 
 /// The target device screen -- what the preview renders at, and its physical shape.
@@ -79,6 +109,11 @@ pub struct ChildDef {
         pub button: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub label: Option<String>,
+        /// A named action from the design's [`actions`](Design::actions), supplying this button's
+        /// event and navigation. When set, it takes precedence over the raw `goto`/`back`/`event`
+        /// below (which stay for a one-off button that names no action).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub action: Option<String>,
         /// A button that navigates to the page at this index.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         pub goto: Option<usize>,
@@ -128,6 +163,7 @@ impl ChildDef {
                 Self {
                         button: Some("Button".to_owned()),
                         label: None,
+                        action: None,
                         goto: None,
                         back: false,
                         event: 0,

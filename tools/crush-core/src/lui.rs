@@ -72,9 +72,10 @@ fn scroll_code(s: Option<&str>) -> u8 {
         }
 }
 
-/// Write one child (its common prefix, then its kind-specific body). `depth` guards the one-level
-/// rule: a frame's children must be leaves.
-fn put_child(b: &mut Vec<u8>, c: &ChildDef, depth: u8) -> Result<(), String> {
+/// Write one child (its common prefix, then its kind-specific body). `actions` is the design's
+/// action registry, used to expand a button's named action into its event and navigation. `depth`
+/// guards the one-level rule: a frame's children must be leaves.
+fn put_child(b: &mut Vec<u8>, c: &ChildDef, actions: &[crate::design::ActionDef], depth: u8) -> Result<(), String> {
         let is_frame = c.is_frame();
         let (kind, text) = if is_frame {
                 (KIND_FRAME, "")
@@ -85,15 +86,24 @@ fn put_child(b: &mut Vec<u8>, c: &ChildDef, depth: u8) -> Result<(), String> {
         } else {
                 (KIND_LABEL, "")
         };
+        //   a named action supplies the event AND the navigation, defined once so the editor and the
+        // firmware agree; a child with no action falls back to its own raw event/goto/back
+        let (event, goto, back) = match &c.action {
+                Some(name) => {
+                        let a = actions.iter().find(|a| &a.name == name).ok_or_else(|| format!("'{}' references unknown action '{name}'", c.button.as_deref().or(c.label.as_deref()).unwrap_or("child")))?;
+                        (a.event, a.goto, a.back)
+                }
+                None => (c.event, c.goto, c.back),
+        };
         b.push(kind);
-        let (nav, nav_page) = match (c.goto, c.back) {
+        let (nav, nav_page) = match (goto, back) {
                 (Some(g), _) => (NAV_GOTO, g.min(u16::MAX as usize) as u16),
                 (None, true) => (NAV_BACK, 0),
                 (None, false) => (NAV_NONE, 0),
         };
         b.push(nav);
         b.extend_from_slice(&nav_page.to_le_bytes());
-        b.extend_from_slice(&c.event.to_le_bytes());
+        b.extend_from_slice(&event.to_le_bytes());
         b.push(c.tag);
         b.extend_from_slice(&c.min_w.to_le_bytes());
         b.extend_from_slice(&c.min_h.to_le_bytes());
@@ -112,7 +122,7 @@ fn put_child(b: &mut Vec<u8>, c: &ChildDef, depth: u8) -> Result<(), String> {
                 }
                 b.push(c.children.len() as u8);
                 for sub in &c.children {
-                        put_child(b, sub, depth + 1)?;
+                        put_child(b, sub, actions, depth + 1)?;
                 }
         } else {
                 put_str(b, text)?;
@@ -140,7 +150,7 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                 }
                 b.push(page.children.len() as u8);
                 for c in &page.children {
-                        put_child(&mut b, c, 0)?;
+                        put_child(&mut b, c, &design.actions, 0)?;
                 }
                 bodies.push(b);
         }
@@ -249,6 +259,30 @@ mod tests {
                 assert_eq!(u16::from_le_bytes([blob[s0 + 4], blob[s0 + 5]]), 1, "sub event");
                 assert_eq!(blob[s0 + 16], 1, "text len 'A'");
                 assert_eq!(blob[s0 + 17], b'A');
+        }
+
+        #[test]
+        fn a_named_action_expands_to_event_and_nav() {
+                let d = design::parse(
+                        r#"{ "actions": [ { "name": "FilesOpen", "event": 3, "goto": 1 } ], "pages": [
+                                { "title": "A", "children": [ { "button": "Go", "action": "FilesOpen" } ] },
+                                { "title": "B", "children": [] }
+                        ] }"#,
+                )
+                .unwrap();
+                let blob = compile(&d).unwrap();
+                let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
+                let c = off + 2 + 4 + 1; // title "A", the 4 page bytes, child_count
+                assert_eq!(blob[c], KIND_BUTTON);
+                assert_eq!(blob[c + 1], NAV_GOTO, "the action's goto");
+                assert_eq!(u16::from_le_bytes([blob[c + 2], blob[c + 3]]), 1, "goto page 1");
+                assert_eq!(u16::from_le_bytes([blob[c + 4], blob[c + 5]]), 3, "the action's event");
+        }
+
+        #[test]
+        fn an_unknown_action_is_an_error() {
+                let d = design::parse(r#"{ "pages": [ { "title": "A", "children": [ { "button": "x", "action": "Nope" } ] } ] }"#).unwrap();
+                assert!(compile(&d).is_err(), "a button naming an undeclared action stops the build");
         }
 
         #[test]

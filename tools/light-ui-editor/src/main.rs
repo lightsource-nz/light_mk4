@@ -191,6 +191,9 @@ impl EditorApp {
                         let scroll = self.preview.selected_scroll_label();
                         let action = self.preview.selected_action();
                         let event = self.preview.selected_event().unwrap_or(0);
+                        let has_actions = self.preview.has_actions();
+                        let action_ref = self.preview.selected_action_ref();
+                        let action_names = self.preview.action_names();
                         let pages = self.preview.page_count();
                         let page_titles: Vec<String> = (0..pages).map(|p| self.preview.page_title(p).to_owned()).collect();
 
@@ -205,37 +208,53 @@ impl EditorApp {
                         }
 
                         if is_button {
-                                if let Some((goto, back)) = action {
-                                        let cur = if let Some(g) = goto {
-                                                format!("goto {}", page_titles.get(g).map_or("?", |s| s.as_str()))
-                                        } else if back {
-                                                "back".to_owned()
-                                        } else {
-                                                "none".to_owned()
-                                        };
-                                        egui::ComboBox::from_label("Action").selected_text(cur).show_ui(ui, |ui| {
-                                                if ui.selectable_label(goto.is_none() && !back, "none").clicked() {
-                                                        self.preview.set_selected_action(None, false);
+                                if has_actions {
+                                        //   the design declares its app's actions (event + navigation,
+                                        // mirroring the firmware); a button just names one, so it
+                                        // behaves right in the preview and on device alike
+                                        let cur = action_ref.clone().unwrap_or_else(|| "none".to_owned());
+                                        egui::ComboBox::from_label("Action").selected_text(&cur).show_ui(ui, |ui| {
+                                                if ui.selectable_label(action_ref.is_none(), "none").clicked() {
+                                                        self.preview.set_selected_action_ref(None);
                                                 }
-                                                if ui.selectable_label(back, "back").clicked() {
-                                                        self.preview.set_selected_action(None, true);
-                                                }
-                                                for (p, title) in page_titles.iter().enumerate() {
-                                                        if ui.selectable_label(goto == Some(p), format!("goto {title}")).clicked() {
-                                                                self.preview.set_selected_action(Some(p), false);
+                                                for name in &action_names {
+                                                        if ui.selectable_label(action_ref.as_deref() == Some(name), name).clicked() {
+                                                                self.preview.set_selected_action_ref(Some(name));
                                                         }
                                                 }
                                         });
-                                }
-                                //   the app event id this button emits (0 = none). The number is the
-                                // app's contract; the editor edits it raw, staying app-agnostic
-                                ui.horizontal(|ui| {
-                                        let mut ev = event;
-                                        if ui.add(egui::DragValue::new(&mut ev).range(0..=u16::MAX).prefix("event ")).changed() {
-                                                self.preview.set_selected_event(ev);
+                                } else {
+                                        //   no action registry: edit the raw navigation and event id
+                                        if let Some((goto, back)) = action {
+                                                let cur = if let Some(g) = goto {
+                                                        format!("goto {}", page_titles.get(g).map_or("?", |s| s.as_str()))
+                                                } else if back {
+                                                        "back".to_owned()
+                                                } else {
+                                                        "none".to_owned()
+                                                };
+                                                egui::ComboBox::from_label("Nav").selected_text(cur).show_ui(ui, |ui| {
+                                                        if ui.selectable_label(goto.is_none() && !back, "none").clicked() {
+                                                                self.preview.set_selected_action(None, false);
+                                                        }
+                                                        if ui.selectable_label(back, "back").clicked() {
+                                                                self.preview.set_selected_action(None, true);
+                                                        }
+                                                        for (p, title) in page_titles.iter().enumerate() {
+                                                                if ui.selectable_label(goto == Some(p), format!("goto {title}")).clicked() {
+                                                                        self.preview.set_selected_action(Some(p), false);
+                                                                }
+                                                        }
+                                                });
                                         }
-                                        ui.label("(0 = none)");
-                                });
+                                        ui.horizontal(|ui| {
+                                                let mut ev = event;
+                                                if ui.add(egui::DragValue::new(&mut ev).range(0..=u16::MAX).prefix("event ")).changed() {
+                                                        self.preview.set_selected_event(ev);
+                                                }
+                                                ui.label("(0 = none)");
+                                        });
+                                }
                         }
 
                         if is_frame {

@@ -6,29 +6,31 @@
   },
   "orientation": "landscape",
   "root": 0,
+  "actions": [
+    { "name": "RecToggle", "event": 1 },
+    { "name": "PlayToggle", "event": 2 },
+    { "name": "FilesOpen", "event": 3, "goto": 1 },
+    { "name": "FilesNext", "event": 4 },
+    { "name": "FilesPrev", "event": 5 },
+    { "name": "Back", "event": 6, "back": true },
+    { "name": "PlayRow0", "event": 16 },
+    { "name": "PlayRow1", "event": 17 },
+    { "name": "PlayRow2", "event": 18 },
+    { "name": "PlayRow3", "event": 19 },
+    { "name": "PlayRow4", "event": 20 },
+    { "name": "PlayRow5", "event": 21 },
+    { "name": "PlayRow6", "event": 22 },
+    { "name": "PlayRow7", "event": 23 }
+  ],
   "pages": [
     {
       "title": "Dictaphone",
       "layout": "linear",
       "gap": 6,
       "children": [
-        {
-          "button": "* Record",
-          "event": 1,
-          "tag": 2,
-          "min_w": 134,
-          "max_w": 134
-        },
-        {
-          "button": "Play last",
-          "event": 2,
-          "tag": 3
-        },
-        {
-          "button": "Recordings >",
-          "goto": 1,
-          "event": 3
-        }
+        { "button": "* Record", "action": "RecToggle", "tag": 2, "min_w": 134, "max_w": 134 },
+        { "button": "Play last", "action": "PlayToggle", "tag": 3 },
+        { "button": "Recordings >", "action": "FilesOpen" }
       ]
     },
     {
@@ -36,83 +38,25 @@
       "layout": "linear",
       "gap": 6,
       "children": [
-        {
-          "button": "< Back",
-          "back": true,
-          "event": 6,
-          "min_w": 84,
-          "max_w": 84
-        },
-        {
-          "button": "< Newer",
-          "event": 5,
-          "tag": 4,
-          "min_w": 84,
-          "max_w": 84
-        },
+        { "button": "< Back", "action": "Back", "min_w": 84, "max_w": 84 },
+        { "button": "< Newer", "action": "FilesPrev", "tag": 4, "min_w": 84, "max_w": 84 },
         {
           "grow": true,
           "layout": "linear",
           "gap": 6,
           "scroll": "horizontal",
           "children": [
-            {
-              "button": "-",
-              "event": 16,
-              "tag": 16,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 17,
-              "tag": 17,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 18,
-              "tag": 18,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 19,
-              "tag": 19,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 20,
-              "tag": 20,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 21,
-              "tag": 21,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 22,
-              "tag": 22,
-              "min_w": 160
-            },
-            {
-              "button": "-",
-              "event": 23,
-              "tag": 23,
-              "min_w": 160
-            }
+            { "button": "-", "action": "PlayRow0", "tag": 16, "min_w": 160 },
+            { "button": "-", "action": "PlayRow1", "tag": 17, "min_w": 160 },
+            { "button": "-", "action": "PlayRow2", "tag": 18, "min_w": 160 },
+            { "button": "-", "action": "PlayRow3", "tag": 19, "min_w": 160 },
+            { "button": "-", "action": "PlayRow4", "tag": 20, "min_w": 160 },
+            { "button": "-", "action": "PlayRow5", "tag": 21, "min_w": 160 },
+            { "button": "-", "action": "PlayRow6", "tag": 22, "min_w": 160 },
+            { "button": "-", "action": "PlayRow7", "tag": 23, "min_w": 160 }
           ]
         },
-        {
-          "button": "Older >",
-          "event": 4,
-          "tag": 5,
-          "min_w": 84,
-          "max_w": 84
-        }
+        { "button": "Older >", "action": "FilesNext", "tag": 5, "min_w": 84, "max_w": 84 }
       ]
     }
   ]

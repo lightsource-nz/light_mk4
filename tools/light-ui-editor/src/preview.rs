@@ -721,6 +721,33 @@ impl Preview {
                 self.selected_child().map(|c| c.event)
         }
 
+        /// Whether the design declares named actions (so the editor offers them by name).
+        pub fn has_actions(&self) -> bool {
+                !self.design.actions.is_empty()
+        }
+
+        /// The names of the actions the design declares.
+        pub fn action_names(&self) -> Vec<String> {
+                self.design.actions.iter().map(|a| a.name.clone()).collect()
+        }
+
+        /// The selected button's action name, if it names one.
+        pub fn selected_action_ref(&self) -> Option<String> {
+                self.selected_child().and_then(|c| c.action.clone())
+        }
+
+        /// Bind the selected button to a named action (or clear it). The action supplies the event
+        /// and navigation, so the raw event/goto/back are cleared to keep the action authoritative.
+        pub fn set_selected_action_ref(&mut self, action: Option<&str>) {
+                if let Some(c) = self.selected_child_mut() {
+                        c.action = action.map(str::to_owned);
+                        c.event = 0;
+                        c.goto = None;
+                        c.back = false;
+                }
+                self.recompile();
+        }
+
         /// The current page's widgets as a selectable tree: `(path, indent, label)`, a frame's
         /// children indented under it. For an inspector list that selects without hunting the preview.
         pub fn outline(&self) -> Vec<(Sel, u8, String)> {
