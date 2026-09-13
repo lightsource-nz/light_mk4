@@ -371,14 +371,14 @@ impl EditorApp {
                 let Some(tex) = self.tex.clone() else { return };
                 let (dw, dh) = self.preview.size();
                 let (dw, dh) = (dw as f32, dh as f32);
-                let avail = ui.available_size();
-                let scale = (avail.x / dw).min(avail.y / dh).max(0.01);
+                let area = ui.available_rect_before_wrap();
+                let scale = (area.width() / dw).min(area.height() / dh).max(0.01);
                 let size = egui::vec2(dw * scale, dh * scale);
-                //   centre the device in the stage
-                let (rect, resp) = ui.allocate_exact_size(size, egui::Sense::click_and_drag());
-                //   allocate_exact_size lays out top-left; offset into the centre of what is available
-                let offset = egui::vec2((avail.x - size.x).max(0.0) / 2.0, (avail.y - size.y).max(0.0) / 2.0);
-                let rect = rect.translate(offset);
+                //   centre the device in the available area, and make the INTERACTION area the same
+                // rect the image is painted into -- otherwise a click on the visible device lands on
+                // an interaction area placed elsewhere and nothing responds
+                let rect = egui::Rect::from_center_size(area.center(), size);
+                let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
                 let painter = ui.painter_at(rect);
                 painter.image(tex.id(), rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), egui::Color32::WHITE);
 
