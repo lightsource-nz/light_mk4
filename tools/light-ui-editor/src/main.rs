@@ -139,39 +139,112 @@ impl eframe::App for EditorApp {
 impl EditorApp {
         fn pages_panel(&mut self, ui: &mut egui::Ui) {
                 let edit = self.mode == Mode::Edit;
-                //   the page list navigates in Edit and Theme (to preview the look on any page); in
-                // Run the run session owns the page
+                //   the page list navigates in Edit, Actions and Theme (to preview any page); in Run
+                // the run session owns the page
                 let can_nav = self.mode != Mode::Run;
-                ui.add_space(4.0);
-                ui.label(egui::RichText::new(if can_nav { "PAGES" } else { "PAGES (run)" }).weak());
-                let cur = self.preview.current_page();
-                for i in 0..self.preview.page_count() {
-                        let title = self.preview.page_title(i).to_owned();
-                        if ui.selectable_label(i == cur, format!("{i}  {title}")).clicked() && can_nav {
-                                self.preview.show_page(i);
+                let pages = self.preview.page_count();
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                        if edit {
+                                ui.add_space(4.0);
+                                ui.label(egui::RichText::new("DESIGN").weak());
+                                ui.horizontal(|ui| {
+                                        ui.label("Orientation");
+                                        let landscape = self.preview.is_landscape();
+                                        egui::ComboBox::from_id_salt("orientation")
+                                                .selected_text(if landscape { "landscape" } else { "portrait" })
+                                                .show_ui(ui, |ui| {
+                                                        if ui.selectable_label(!landscape, "portrait").clicked() {
+                                                                self.preview.set_orientation(false);
+                                                        }
+                                                        if ui.selectable_label(landscape, "landscape").clicked() {
+                                                                self.preview.set_orientation(true);
+                                                        }
+                                                });
+                                });
+                                ui.horizontal(|ui| {
+                                        ui.label("Opens on");
+                                        let root = self.preview.root();
+                                        let root_title = self.preview.page_title(root).to_owned();
+                                        egui::ComboBox::from_id_salt("root")
+                                                .selected_text(format!("{root}  {root_title}"))
+                                                .show_ui(ui, |ui| {
+                                                        for i in 0..pages {
+                                                                let t = self.preview.page_title(i).to_owned();
+                                                                if ui.selectable_label(root == i, format!("{i}  {t}")).clicked() {
+                                                                        self.preview.set_root(i);
+                                                                }
+                                                        }
+                                                });
+                                });
+                                ui.horizontal(|ui| {
+                                        let mut cr = self.preview.device_corner_radius();
+                                        if ui.add(egui::DragValue::new(&mut cr).range(0..=256).prefix("corner ")).changed() {
+                                                self.preview.set_device_corner_radius(cr);
+                                        }
+                                        ui.label("screen radius");
+                                });
+                                ui.separator();
                         }
-                }
-                if edit {
-                        ui.add_space(4.0);
-                        if ui.button("+ Add page").clicked() {
-                                self.preview.add_page();
-                        }
-                        ui.separator();
-                        ui.label(egui::RichText::new("PAGE TITLE").weak());
-                        if ui.text_edit_singleline(&mut self.title_buf).lost_focus() {
-                                self.preview.set_page_title(&self.title_buf);
-                        }
-                        ui.add_space(8.0);
-                        ui.label(egui::RichText::new("WIDGETS").weak());
-                        //   the current page's tree; selecting here beats hunting the tiny preview
-                        let selected = self.preview.selected();
-                        for (sel, indent, label) in self.preview.outline() {
-                                let text = format!("{}{}", "    ".repeat(indent as usize), label);
-                                if ui.selectable_label(Some(sel) == selected, text).clicked() {
-                                        self.preview.select(Some(sel));
+
+                        ui.label(egui::RichText::new(if can_nav { "PAGES" } else { "PAGES (run)" }).weak());
+                        let cur = self.preview.current_page();
+                        for i in 0..pages {
+                                let title = self.preview.page_title(i).to_owned();
+                                let mark = if i == self.preview.root() { "*" } else { " " };
+                                if ui.selectable_label(i == cur, format!("{mark}{i}  {title}")).clicked() && can_nav {
+                                        self.preview.show_page(i);
                                 }
                         }
-                }
+                        if edit {
+                                ui.add_space(4.0);
+                                if ui.button("+ Add page").clicked() {
+                                        self.preview.add_page();
+                                }
+                                ui.separator();
+                                ui.label(egui::RichText::new("PAGE").weak());
+                                ui.horizontal(|ui| {
+                                        ui.label("Title");
+                                        if ui.text_edit_singleline(&mut self.title_buf).lost_focus() {
+                                                self.preview.set_page_title(&self.title_buf);
+                                        }
+                                });
+                                ui.horizontal(|ui| {
+                                        ui.label("Layout");
+                                        let cur = self.preview.page_layout();
+                                        egui::ComboBox::from_id_salt("page_layout").selected_text(&cur).show_ui(ui, |ui| {
+                                                for opt in ["stack", "row", "linear"] {
+                                                        if ui.selectable_label(cur == opt, opt).clicked() {
+                                                                self.preview.set_page_layout(opt);
+                                                        }
+                                                }
+                                        });
+                                });
+                                ui.horizontal(|ui| {
+                                        let mut gap = self.preview.page_gap();
+                                        if ui.add(egui::DragValue::new(&mut gap).range(0..=64).prefix("gap ")).changed() {
+                                                self.preview.set_page_gap(gap);
+                                        }
+                                });
+                                let mut scroll = self.preview.page_scroll();
+                                if ui.checkbox(&mut scroll, "Scroll (vertical)").changed() {
+                                        self.preview.set_page_scroll(scroll);
+                                }
+                                let mut subtitle = self.preview.page_subtitle();
+                                if ui.checkbox(&mut subtitle, "Subtitle row").changed() {
+                                        self.preview.set_page_subtitle(subtitle);
+                                }
+                                ui.add_space(8.0);
+                                ui.label(egui::RichText::new("WIDGETS").weak());
+                                //   the current page's tree; selecting here beats hunting the tiny preview
+                                let selected = self.preview.selected();
+                                for (sel, indent, label) in self.preview.outline() {
+                                        let text = format!("{}{}", "    ".repeat(indent as usize), label);
+                                        if ui.selectable_label(Some(sel) == selected, text).clicked() {
+                                                self.preview.select(Some(sel));
+                                        }
+                                }
+                        }
+                });
         }
 
         fn inspector_panel(&mut self, ui: &mut egui::Ui) {

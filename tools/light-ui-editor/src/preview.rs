@@ -489,6 +489,115 @@ impl Preview {
                 self.show_page(idx);
         }
 
+        // --- page-level properties (the current page's window) -------------------------------
+
+        /// The current page's window layout (`stack`/`row`/`linear`).
+        pub fn page_layout(&self) -> String {
+                self.design.pages.get(self.current()).map_or_else(|| "stack".to_owned(), |p| p.layout.clone())
+        }
+
+        /// Set the current page's window layout.
+        pub fn set_page_layout(&mut self, layout: &str) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.layout = layout.to_owned();
+                }
+                self.recompile();
+        }
+
+        /// The current page's gap between children.
+        pub fn page_gap(&self) -> u8 {
+                self.design.pages.get(self.current()).map_or(6, |p| p.gap)
+        }
+
+        /// Set the current page's gap between children.
+        pub fn set_page_gap(&mut self, gap: u8) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.gap = gap;
+                }
+                self.recompile();
+        }
+
+        /// Whether the current page's window scrolls vertically.
+        pub fn page_scroll(&self) -> bool {
+                self.design.pages.get(self.current()).is_some_and(|p| p.scroll)
+        }
+
+        /// Set whether the current page's window scrolls vertically.
+        pub fn set_page_scroll(&mut self, on: bool) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.scroll = on;
+                }
+                self.recompile();
+        }
+
+        /// Whether the current page reserves a subtitle/status row under the title.
+        pub fn page_subtitle(&self) -> bool {
+                self.design.pages.get(self.current()).is_some_and(|p| p.subtitle)
+        }
+
+        /// Set whether the current page reserves a subtitle/status row under the title.
+        pub fn set_page_subtitle(&mut self, on: bool) {
+                let cur = self.current();
+                if let Some(p) = self.design.pages.get_mut(cur) {
+                        p.subtitle = on;
+                }
+                self.recompile();
+        }
+
+        // --- design-level properties (whole-interface) --------------------------------------
+
+        /// Which page opens first (the root).
+        pub fn root(&self) -> usize {
+                self.design.root
+        }
+
+        /// Set which page opens first.
+        pub fn set_root(&mut self, root: usize) {
+                if root < self.design.pages.len() {
+                        self.design.root = root;
+                        self.recompile();
+                }
+        }
+
+        /// The screen's rounded-corner radius carried in the design (device metadata; 0 = square).
+        pub fn device_corner_radius(&self) -> u16 {
+                self.design.device.corner_radius
+        }
+
+        /// Set the screen's rounded-corner radius (device metadata compiled into the blob header).
+        pub fn set_device_corner_radius(&mut self, radius: u16) {
+                self.design.device.corner_radius = radius;
+                self.recompile();
+        }
+
+        /// Switch the interface between portrait and landscape, rebuilding the preview at the new
+        /// orientation (swapped dimensions and layout axis) exactly as the firmware lays it out.
+        pub fn set_orientation(&mut self, landscape: bool) {
+                self.design.orientation = landscape.then(|| "landscape".to_owned());
+                self.rebuild_device();
+        }
+
+        /// Rebuild the preview surface for the current device dimensions and orientation: a fresh
+        /// display buffer, frame layer and layout axis, then a recompile. Used when the orientation
+        /// changes the panel's effective size.
+        fn rebuild_device(&mut self) {
+                let landscape = self.design.landscape();
+                let (pw, ph) = (self.design.device.width.max(1), self.design.device.height.max(1));
+                let (dev_w, dev_h) = if landscape { (ph, pw) } else { (pw, ph) };
+                self.dev_w = dev_w;
+                self.dev_h = dev_h;
+                let buf: &'static mut [u8] = Vec::leak(vec![0u8; PixelFormat::Rgb565.buffer_len(dev_w, dev_h)]);
+                self.display = Display::new(NullDriver, buf, dev_w, dev_h, PixelFormat::Rgb565, now_us);
+                self.layer = FrameLayer::new(dev_w, dev_h, PixelFormat::Rgb565);
+                self.layer.bg = self.theme.bg;
+                self.ui.set_layout_axis(if landscape { light_ui::Axis::Horizontal } else { light_ui::Axis::Vertical });
+                self.ui.fit(&self.layer);
+                self.recompile();
+        }
+
         // --- theme editing -------------------------------------------------------------------
 
         /// Recompile the edited theme (resolving its extends chain), restyle the preview live, and
