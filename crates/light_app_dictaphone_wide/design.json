@@ -9,7 +9,7 @@
   "actions": [
     { "name": "RecToggle", "event": 1 },
     { "name": "PlayToggle", "event": 2 },
-    { "name": "FilesOpen", "event": 3, "goto": 1 },
+    { "name": "FilesOpen", "event": 3, "goto": 1, "transition": "bottom" },
     { "name": "FilesNext", "event": 4 },
     { "name": "FilesPrev", "event": 5 },
     { "name": "Back", "event": 6, "back": true },

@@ -153,17 +153,35 @@ impl Preview {
 
         fn goto(&mut self, idx: usize) {
                 if idx < self.lui.page_count() {
+                        let leaving = self.current();
                         self.history.push(idx);
                         self.selected = None;
-                        self.build_current();
+                        self.animate_to(idx, false, leaving);
                 }
         }
 
         fn back(&mut self) {
                 if self.history.len() > 1 {
+                        let leaving = self.current();
                         self.history.pop();
+                        let target = self.current();
                         self.selected = None;
-                        self.build_current();
+                        self.animate_to(target, true, leaving);
+                }
+        }
+
+        /// Slide to `target` the way the firmware would ([`Ui::navigate_lui`]): the transition is the
+        /// target page's authored descent going forward, and the page we are LEAVING going back, so a
+        /// page departs the way it arrived. This is the run-mode animation; edit-mode rebuilds snap.
+        fn animate_to(&mut self, target: usize, back: bool, leaving: usize) {
+                let target = target.min(self.lui.page_count().saturating_sub(1));
+                let descent = if back {
+                        self.lui.page(leaving).and_then(|p| p.descent())
+                } else {
+                        self.lui.page(target).and_then(|p| p.descent())
+                };
+                if let Some(page) = self.lui.page(target) {
+                        let _ = self.ui.navigate_lui(&page, back, descent, |i, _| Some(i as u16));
                 }
         }
 

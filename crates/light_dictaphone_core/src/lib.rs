@@ -726,7 +726,14 @@ impl<D: DisplayDriver, C: Clock, X: Copy + core::fmt::Debug + 'static> DisplayMo
                         warn!("dictaphone: the design has no page {page}");
                         return;
                 };
-                if let Err(e) = self.ui.navigate_lui(&p, back, map_ui_event::<X>) {
+                //   The transition is the target page's authored descent going forward; going back
+                // we hand navigate_lui the page we are LEAVING so it mirrors that entry as an exit.
+                let descent = if back {
+                        lui.page(self.page).and_then(|from| from.descent())
+                } else {
+                        p.descent()
+                };
+                if let Err(e) = self.ui.navigate_lui(&p, back, descent, map_ui_event::<X>) {
                         warn!("dictaphone: design page {page} did not build: {e:?}");
                         return;
                 }

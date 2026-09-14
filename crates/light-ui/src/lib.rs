@@ -3407,13 +3407,14 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
         /// names both the target page and the direction. Buttons emit `emit(index, child)`, exactly
         /// as [`build_lui_with`](Self::build_lui_with) builds them; the difference is the slide.
         ///
-        /// The transition's axis is seeded from the entering page's layout and the tree's
-        /// [`layout_axis`](Self::set_layout_axis) -- a `Row`, or a `Linear` tree set horizontal,
-        /// rises from the bottom; anything else slides in from the right -- unless
-        /// [`set_default_descent`](Self::set_default_descent) pins the flow. It mirrors forward and
-        /// back correctly when a tree's pages share an axis, which is what the layout-axis model
-        /// encourages (the same seed the const-`Page` path uses for a `Linear` tree).
-        pub fn navigate_lui(&mut self, page: &LuiPage<'static>, back: bool, emit: impl Fn(usize, &LuiChild<'static>) -> Option<A>) -> Result<(), Error> {
+        /// `descent` is the transition -- the edge the incoming page enters from -- which `back`
+        /// reverses to mirror. A caller passes the target page's own [`descent`](LuiPage::descent)
+        /// going forward, and the LEAVING page's going back, so a page departs the way it arrived.
+        /// `None` falls back to [`set_default_descent`](Self::set_default_descent), then to a seed
+        /// from the entering page's layout and the tree's [`layout_axis`](Self::set_layout_axis) -- a
+        /// `Row`, or a `Linear` tree set horizontal, rises from the bottom; anything else slides in
+        /// from the right.
+        pub fn navigate_lui(&mut self, page: &LuiPage<'static>, back: bool, descent: Option<Descent>, emit: impl Fn(usize, &LuiChild<'static>) -> Option<A>) -> Result<(), Error> {
                 //   start the transition before the tree changes, as show_page does for a const
                 // Page: the outgoing image is captured at the first render step, off the live panel,
                 // so destroying the old widget tree now (inside build_lui_with) is fine
@@ -3427,7 +3428,7 @@ impl<A: Copy + 'static, const N: usize> Ui<A, N> {
                                 _ => false,
                         };
                         let seed = if horizontal { Descent::FromBottom } else { Descent::FromRight };
-                        self.page_move_descent = self.default_descent.unwrap_or(seed);
+                        self.page_move_descent = descent.or(self.default_descent).unwrap_or(seed);
                 }
                 self.build_lui_with(page, emit)?;
                 self.invalidate_all();
@@ -3889,6 +3890,7 @@ mod tests {
                         b.push(2); // gap
                         b.push(0); // scroll
                         b.push(0); // subtitle
+                        b.push(0); // descent
                         b.push(1); // one child
                         b.push(crate::lui::code::KIND_BUTTON);
                         b.push(crate::lui::code::NAV_NONE);
@@ -3906,8 +3908,8 @@ mod tests {
                 let bodies = [page("One", "Go", 7), page("Two", "Back", 8)];
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
-                blob.push(1); // schema version
-                blob.push(0); // reserved
+                blob.push(2); // schema version
+                blob.push(0); // orientation (portrait)
                 blob.extend_from_slice(&2u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
                 blob.extend_from_slice(&64u16.to_le_bytes()); // width
@@ -3951,11 +3953,11 @@ mod tests {
                         }
                 };
                 //   first page: nothing to slide from, so it snaps; the button maps its blob event
-                ui.navigate_lui(&lui.page(0).unwrap(), false, map).unwrap();
+                ui.navigate_lui(&lui.page(0).unwrap(), false, None, map).unwrap();
                 assert!(!ui.is_animating(), "the first page does not slide");
                 assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Go"));
                 //   forward: a Linear tree on the default vertical axis slides on the horizontal
-                ui.navigate_lui(&lui.page(1).unwrap(), false, map).unwrap();
+                ui.navigate_lui(&lui.page(1).unwrap(), false, None, map).unwrap();
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert!(ui.is_animating(), "forward navigation slides");
@@ -3964,7 +3966,7 @@ mod tests {
                 settle(&mut ui, &mut layer, &mut display, &mut now);
                 assert_eq!(ui.widget_text(ui.find(1).unwrap()), Some("Back"));
                 //   back: the mirror -- same axis, reversed direction
-                ui.navigate_lui(&lui.page(0).unwrap(), true, map).unwrap();
+                ui.navigate_lui(&lui.page(0).unwrap(), true, None, map).unwrap();
                 now += 50_000;
                 ui.render(&mut layer, &mut display, &styled(&font), now);
                 assert_eq!((ui.page_move_dx, ui.page_move_dy), (-fwd.0, 0), "back mirrors forward");
@@ -3997,6 +3999,7 @@ mod tests {
                 body.push(2); // gap
                 body.push(0); // scroll
                 body.push(0); // subtitle
+                body.push(0); // descent
                 body.push(2); // two top-level children
                 prefix(&mut body, crate::lui::code::KIND_BUTTON, 5, false);
                 put_str(&mut body, "top");
@@ -4014,8 +4017,8 @@ mod tests {
 
                 let mut blob = StdVec::new();
                 blob.extend_from_slice(b"LUI3");
-                blob.push(1); // schema version
-                blob.push(0); // reserved
+                blob.push(2); // schema version
+                blob.push(0); // orientation (portrait)
                 blob.extend_from_slice(&1u16.to_le_bytes()); // page_count
                 blob.extend_from_slice(&0u16.to_le_bytes()); // root
                 blob.extend_from_slice(&64u16.to_le_bytes()); // width

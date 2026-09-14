@@ -58,6 +58,12 @@ pub struct ActionDef {
         /// Navigate back when taken.
         #[serde(default, skip_serializing_if = "is_false")]
         pub back: bool,
+        /// The transition for the navigation this action performs: the edge the incoming page enters
+        /// from -- `top`/`bottom`/`left`/`right` (same vocabulary as a theme's descent; `bottom`
+        /// rises up to cover). Compiled onto the target page, so `back` navigation mirrors it. Absent
+        /// leaves the toolkit's layout-derived default.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub transition: Option<String>,
 }
 
 /// The target device screen -- what the preview renders at, and its physical shape.

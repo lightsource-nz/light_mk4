@@ -27,13 +27,19 @@ pub mod code {
         /// Header orientation byte (byte 5): how the interface is laid out and previewed.
         pub const ORIENT_PORTRAIT: u8 = 0;
         pub const ORIENT_LANDSCAPE: u8 = 1;
+        /// A page's descent byte: the edge it enters from, or 0 for the toolkit default.
+        pub const DESCENT_NONE: u8 = 0;
+        pub const DESCENT_TOP: u8 = 1;
+        pub const DESCENT_BOTTOM: u8 = 2;
+        pub const DESCENT_LEFT: u8 = 3;
+        pub const DESCENT_RIGHT: u8 = 4;
 }
 
 const MAGIC: [u8; 4] = *b"LUI3";
 /// The schema version carried in the header (byte 4), matching crush's `lui::VERSION` -- the shared
-/// blob-header convention across LGF fonts, LTH themes and LUI UIs. Version 1 is the layout once
-/// called LUIv3; a future incompatible change bumps this, not the magic.
-pub const VERSION: u8 = 1;
+/// blob-header convention across LGF fonts, LTH themes and LUI UIs. Version 2 adds a per-page descent
+/// byte (the entry transition) over version 1; a future incompatible change bumps this, not the magic.
+pub const VERSION: u8 = 2;
 const HEADER_LEN: usize = 16;
 /// A child's common prefix: kind, nav, nav_page, event, tag, min_w, min_h, max_w, max_h, grow.
 const CHILD_PREFIX_LEN: usize = 16;
@@ -110,7 +116,7 @@ impl<'a> Lui<'a> {
         }
 }
 
-/// A page view: a window (title, layout, gap, scroll, subtitle) and its children.
+/// A page view: a window (title, layout, gap, scroll, subtitle, descent) and its children.
 #[derive(Clone, Copy)]
 pub struct LuiPage<'a> {
         blob: &'a [u8],
@@ -119,6 +125,7 @@ pub struct LuiPage<'a> {
         gap: u8,
         scroll: bool,
         subtitle: bool,
+        descent: u8,
         child_count: usize,
         children_at: usize,
 }
@@ -130,8 +137,9 @@ impl<'a> LuiPage<'a> {
                 let gap = *blob.get(at + 1)?;
                 let scroll = *blob.get(at + 2)? != 0;
                 let subtitle = *blob.get(at + 3)? != 0;
-                let child_count = usize::from(*blob.get(at + 4)?);
-                Some(Self { blob, title, layout, gap, scroll, subtitle, child_count, children_at: at + 5 })
+                let descent = *blob.get(at + 4)?;
+                let child_count = usize::from(*blob.get(at + 5)?);
+                Some(Self { blob, title, layout, gap, scroll, subtitle, descent, child_count, children_at: at + 6 })
         }
 
         pub fn title(&self) -> &'a str {
@@ -148,6 +156,18 @@ impl<'a> LuiPage<'a> {
         }
         pub fn subtitle(&self) -> bool {
                 self.subtitle
+        }
+
+        /// The edge this page enters from when navigated to, or `None` for the toolkit's default. A
+        /// navigator uses it as the transition and mirrors it for back (see [`Ui::navigate_lui`]).
+        pub fn descent(&self) -> Option<crate::Descent> {
+                match self.descent {
+                        code::DESCENT_TOP => Some(crate::Descent::FromTop),
+                        code::DESCENT_BOTTOM => Some(crate::Descent::FromBottom),
+                        code::DESCENT_LEFT => Some(crate::Descent::FromLeft),
+                        code::DESCENT_RIGHT => Some(crate::Descent::FromRight),
+                        _ => None,
+                }
         }
 
         /// The children in order (a page's children may be frames).
@@ -443,6 +463,7 @@ mod tests {
                 body0.push(6); // gap
                 body0.push(0); // scroll
                 body0.push(0); // subtitle
+                body0.push(0); // descent
                 body0.push(2); // children
                 push_child(&mut body0, code::KIND_BUTTON, code::NAV_GOTO, 1, 0, 0, "Go");
                 push_child(&mut body0, code::KIND_LABEL, code::NAV_NONE, 0, 0, 0, "hi");
@@ -453,6 +474,7 @@ mod tests {
                 body1.push(4); // gap
                 body1.push(0); // scroll
                 body1.push(0); // subtitle
+                body1.push(0); // descent
                 body1.push(0); // children
 
                 assemble(&[body0, body1])
@@ -494,6 +516,7 @@ mod tests {
                 body.push(6); // gap
                 body.push(0); // scroll
                 body.push(0); // subtitle
+                body.push(0); // descent
                 body.push(3); // three top-level children
                 push_child(&mut body, code::KIND_BUTTON, code::NAV_NONE, 0, 0, 0, "Go");
                 // a frame: prefix, then layout/gap/scroll/count, then two leaves
@@ -541,6 +564,18 @@ mod tests {
         }
 
         #[test]
+        fn reads_the_page_descent() {
+                let mut data = blob();
+                let off = u32::from_le_bytes([data[16], data[17], data[18], data[19]]) as usize;
+                //   page 0 "Main": title (5 bytes) then layout/gap/scroll/subtitle (4), so the descent
+                // byte is at off + 9
+                data[off + 9] = code::DESCENT_BOTTOM;
+                let lui = Lui::parse(&data).unwrap();
+                assert_eq!(lui.page(0).unwrap().descent(), Some(crate::Descent::FromBottom));
+                assert!(lui.page(1).unwrap().descent().is_none(), "0 is the toolkit default");
+        }
+
+        #[test]
         fn rejects_a_non_lui_blob() {
                 assert!(matches!(Lui::parse(b"nope............"), Err(LuiError::BadMagic)));
                 assert!(matches!(Lui::parse(&[]), Err(LuiError::BadMagic)));
@@ -562,6 +597,7 @@ mod tests {
                         b.push(6); // gap
                         b.push(0); // scroll
                         b.push(0); // subtitle
+                        b.push(0); // descent
                         b.push(1); // children
                         push_child(&mut b, code::KIND_BUTTON, nav, nav_page, 0, 0, btn);
                         b

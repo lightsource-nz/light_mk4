@@ -9,7 +9,8 @@
 //!   `page_count` u16, `root` u16, device `width`/`height`/`corner_radius` u16 each.
 //! - Page-offset table: `page_count` * u32, each the byte offset of a page from the blob start.
 //! - Pages: each is `title` (u8 len + bytes), `layout` u8, `gap` u8, `scroll` u8, `subtitle` u8,
-//!   `child_count` u8, then each child.
+//!   `descent` u8 (the entry transition edge; 0 = the toolkit default), `child_count` u8, then each
+//!   child.
 //! - Child: a common prefix -- `kind` u8, `nav` u8, `nav_page` u16, `event` u16, `tag` u8, `min_w`
 //!   u16, `min_h` u16, `max_w` u16, `max_h` u16, `grow` u8 -- then, by kind:
 //!   - a FRAME: `layout` u8, `gap` u8, `scroll` u8 (flags), `child_count` u8, then that many LEAF
@@ -25,10 +26,10 @@ use crate::design::Design;
 /// The blob magic: "LUI3", Light UI. The magic is now the frozen format-family tag; the schema
 /// revision is carried in the [`VERSION`] header byte, not by bumping the magic.
 pub const MAGIC: &[u8; 4] = b"LUI3";
-/// The schema version in the header, matching light-ui's `lui::VERSION`. Version 1 is the layout
-/// historically called LUIv3 (one-level frame nesting, per-child max-size/grow); the shared
-/// blob-header convention with LGF fonts and LTH themes.
-pub const VERSION: u8 = 1;
+/// The schema version in the header, matching light-ui's `lui::VERSION`. Version 2 adds a per-page
+/// descent byte (the entry transition) over version 1 (the one-level nesting layout once called
+/// LUIv3); the shared blob-header convention with LGF fonts and LTH themes.
+pub const VERSION: u8 = 2;
 /// The fixed header length.
 pub const HEADER_LEN: usize = 16;
 
@@ -55,6 +56,23 @@ pub const SCROLL_HORIZONTAL: u8 = 1 << 1;
 pub const NAV_NONE: u8 = 0;
 pub const NAV_BACK: u8 = 1;
 pub const NAV_GOTO: u8 = 2;
+
+// A page's descent byte: the edge the page enters from, or 0 for the toolkit default.
+pub const DESCENT_NONE: u8 = 0;
+pub const DESCENT_TOP: u8 = 1;
+pub const DESCENT_BOTTOM: u8 = 2;
+pub const DESCENT_LEFT: u8 = 3;
+pub const DESCENT_RIGHT: u8 = 4;
+
+fn descent_code(edge: Option<&str>) -> u8 {
+        match edge {
+                Some("top") => DESCENT_TOP,
+                Some("bottom") => DESCENT_BOTTOM,
+                Some("left") => DESCENT_LEFT,
+                Some("right") => DESCENT_RIGHT,
+                _ => DESCENT_NONE,
+        }
+}
 
 fn layout_code(s: &str) -> u8 {
         match s {
@@ -136,15 +154,32 @@ pub fn compile(design: &Design) -> Result<Vec<u8>, String> {
                 return Err("too many pages for the format".to_owned());
         }
 
+        //   each navigating action's transition lands on the page it opens, so the transition is
+        // authored on the action but stored per-page (where navigate_lui reads it, and back mirrors
+        // it). Two actions opening one page with different transitions is a contradiction.
+        let mut page_descent: Vec<Option<&str>> = vec![None; design.pages.len()];
+        for action in &design.actions {
+                if let (Some(p), Some(t)) = (action.goto, action.transition.as_deref()) {
+                        if p >= design.pages.len() {
+                                return Err(format!("action '{}' opens page {p}, which does not exist", action.name));
+                        }
+                        match page_descent[p] {
+                                Some(prev) if prev != t => return Err(format!("page {p} is opened with conflicting transitions '{prev}' and '{t}'")),
+                                _ => page_descent[p] = Some(t),
+                        }
+                }
+        }
+
         //   each page's body is built first, so the offset table can point at them
         let mut bodies: Vec<Vec<u8>> = Vec::with_capacity(design.pages.len());
-        for page in &design.pages {
+        for (i, page) in design.pages.iter().enumerate() {
                 let mut b = Vec::new();
                 put_str(&mut b, &page.title)?;
                 b.push(layout_code(&page.layout));
                 b.push(page.gap);
                 b.push(page.scroll as u8);
                 b.push(page.subtitle as u8);
+                b.push(descent_code(page_descent[i]));
                 if page.children.len() > u8::MAX as usize {
                         return Err(format!("page '{}' has too many children for the format", page.title));
                 }
@@ -218,9 +253,10 @@ mod tests {
                 assert_eq!(blob[off0 + 6], 6, "gap");
                 assert_eq!(blob[off0 + 7], 0, "no scroll");
                 assert_eq!(blob[off0 + 8], 1, "subtitle");
-                assert_eq!(blob[off0 + 9], 2, "child count");
+                assert_eq!(blob[off0 + 9], DESCENT_NONE, "no descent");
+                assert_eq!(blob[off0 + 10], 2, "child count");
                 // first child: button "Go" goto 1, event 5, tag 9; the common prefix is 16 bytes then text
-                let c0 = off0 + 10;
+                let c0 = off0 + 11;
                 assert_eq!(blob[c0], KIND_BUTTON);
                 assert_eq!(blob[c0 + 1], NAV_GOTO);
                 assert_eq!(u16::from_le_bytes([blob[c0 + 2], blob[c0 + 3]]), 1, "goto page 1");
@@ -242,8 +278,8 @@ mod tests {
                 .unwrap();
                 let blob = compile(&d).unwrap();
                 let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
-                // page body: title "P" (2), layout/gap/scroll/subtitle (4), child_count (1)
-                let c = off + 2 + 4 + 1;
+                // page body: title "P" (2), layout/gap/scroll/subtitle/descent (5), child_count (1)
+                let c = off + 2 + 5 + 1;
                 assert_eq!(blob[c], KIND_FRAME);
                 // common prefix: max_w at +11, grow at +15
                 assert_eq!(u16::from_le_bytes([blob[c + 11], blob[c + 12]]), 50, "frame max_w");
@@ -272,11 +308,37 @@ mod tests {
                 .unwrap();
                 let blob = compile(&d).unwrap();
                 let off = u32::from_le_bytes([blob[16], blob[17], blob[18], blob[19]]) as usize;
-                let c = off + 2 + 4 + 1; // title "A", the 4 page bytes, child_count
+                let c = off + 2 + 5 + 1; // title "A", the 5 page bytes, child_count
                 assert_eq!(blob[c], KIND_BUTTON);
                 assert_eq!(blob[c + 1], NAV_GOTO, "the action's goto");
                 assert_eq!(u16::from_le_bytes([blob[c + 2], blob[c + 3]]), 1, "goto page 1");
                 assert_eq!(u16::from_le_bytes([blob[c + 4], blob[c + 5]]), 3, "the action's event");
+                //   the action's transition landed on the page it opens (page 1)
+                let off1 = u32::from_le_bytes([blob[20], blob[21], blob[22], blob[23]]) as usize;
+                let with_t = design::parse(
+                        r#"{ "actions": [ { "name": "FilesOpen", "event": 3, "goto": 1, "transition": "bottom" } ], "pages": [
+                                { "title": "A", "children": [ { "button": "Go", "action": "FilesOpen" } ] },
+                                { "title": "B", "children": [] }
+                        ] }"#,
+                )
+                .unwrap();
+                let blob2 = compile(&with_t).unwrap();
+                let p1 = u32::from_le_bytes([blob2[20], blob2[21], blob2[22], blob2[23]]) as usize;
+                // page 1 body: title "B"(2), layout/gap/scroll/subtitle(4), then descent
+                assert_eq!(blob2[p1 + 2 + 4], DESCENT_BOTTOM, "the transition landed on the opened page");
+                let _ = off1;
+        }
+
+        #[test]
+        fn conflicting_transitions_to_one_page_error() {
+                let d = design::parse(
+                        r#"{ "actions": [
+                                { "name": "A", "goto": 1, "transition": "bottom" },
+                                { "name": "B", "goto": 1, "transition": "right" }
+                        ], "pages": [ { "title": "P", "children": [] }, { "title": "Q", "children": [] } ] }"#,
+                )
+                .unwrap();
+                assert!(compile(&d).is_err(), "one page opened two ways is a contradiction");
         }
 
         #[test]
