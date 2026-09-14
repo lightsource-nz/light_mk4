@@ -22,6 +22,7 @@ use preview::{Preview, Sel};
 enum Mode {
         Edit,
         Run,
+        Actions,
         Theme,
 }
 
@@ -59,12 +60,15 @@ struct EditorApp {
         title_buf: String,
         last_sel: Option<Sel>,
         last_page: usize,
+        //   one edit buffer per action name (committed on focus loss), kept in step with the action
+        // count so the Actions view edits names without recompiling on every keystroke
+        action_bufs: Vec<String>,
 }
 
 impl EditorApp {
         fn new(preview: Preview) -> Self {
                 let title_buf = preview.page_title(preview.current_page()).to_owned();
-                Self { preview, mode: Mode::Edit, tex: None, label_buf: String::new(), title_buf, last_sel: None, last_page: 0 }
+                Self { preview, mode: Mode::Edit, tex: None, label_buf: String::new(), title_buf, last_sel: None, last_page: 0, action_bufs: Vec::new() }
         }
 
         /// Keep the text buffers in step with the current selection and page.
@@ -98,17 +102,22 @@ impl eframe::App for EditorApp {
                 let animating = self.preview.render(now_us());
                 self.upload_preview(ctx);
 
+                let compile_err = self.preview.compile_error().map(str::to_owned);
                 egui::TopBottomPanel::top("bar").show(ctx, |ui| {
                         ui.horizontal(|ui| {
                                 ui.selectable_value(&mut self.mode, Mode::Edit, "Edit");
                                 if ui.selectable_value(&mut self.mode, Mode::Run, "Run").clicked() {
                                         self.preview.start_run();
                                 }
+                                ui.selectable_value(&mut self.mode, Mode::Actions, "Actions");
                                 ui.selectable_value(&mut self.mode, Mode::Theme, "Theme");
                                 ui.separator();
                                 let (dw, dh) = self.preview.size();
                                 ui.label(format!("{dw}x{dh}  {}", if self.preview.is_landscape() { "landscape" } else { "portrait" }));
                         });
+                        if let Some(err) = &compile_err {
+                                ui.colored_label(egui::Color32::from_rgb(0xE0, 0x60, 0x50), format!("⚠ does not compile: {err}  — file not saved"));
+                        }
                 });
 
                 egui::SidePanel::left("pages").default_width(180.0).show(ctx, |ui| {
@@ -168,6 +177,10 @@ impl EditorApp {
         fn inspector_panel(&mut self, ui: &mut egui::Ui) {
                 if self.mode == Mode::Theme {
                         self.theme_panel(ui);
+                        return;
+                }
+                if self.mode == Mode::Actions {
+                        self.actions_panel(ui);
                         return;
                 }
                 ui.add_space(4.0);
@@ -396,6 +409,91 @@ impl EditorApp {
                 ui.small("Saved to theme.json beside the design.");
         }
 
+        fn actions_panel(&mut self, ui: &mut egui::Ui) {
+                ui.add_space(4.0);
+                ui.label(egui::RichText::new("ACTIONS").weak());
+                ui.small("The app's event + navigation mappings a button names. Defined once here; the firmware mirrors them.");
+                ui.separator();
+
+                let actions = self.preview.actions();
+                let pages = self.preview.page_count();
+                let page_titles: Vec<String> = (0..pages).map(|p| self.preview.page_title(p).to_owned()).collect();
+                //   keep one name buffer per action so a rename commits on focus loss, not per keystroke
+                if self.action_bufs.len() != actions.len() {
+                        self.action_bufs = actions.iter().map(|a| a.name.clone()).collect();
+                }
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut to_remove: Option<usize> = None;
+                        for (i, a) in actions.iter().enumerate() {
+                                ui.group(|ui| {
+                                        ui.horizontal(|ui| {
+                                                ui.label("Name");
+                                                if ui.text_edit_singleline(&mut self.action_bufs[i]).lost_focus() {
+                                                        self.preview.set_action_name(i, &self.action_bufs[i].clone());
+                                                        //   reflect the applied name (a blank or duplicate is rejected)
+                                                        self.action_bufs[i] = self.preview.action_name(i).unwrap_or_default();
+                                                }
+                                        });
+                                        ui.horizontal(|ui| {
+                                                let mut ev = a.event;
+                                                if ui.add(egui::DragValue::new(&mut ev).range(0..=u16::MAX).prefix("event ")).changed() {
+                                                        self.preview.set_action_event(i, ev);
+                                                }
+                                                ui.label("(0 = none)");
+                                        });
+                                        ui.horizontal(|ui| {
+                                                ui.label("Nav");
+                                                let cur = if let Some(g) = a.goto {
+                                                        format!("goto {}", page_titles.get(g).map_or("?", |s| s.as_str()))
+                                                } else if a.back {
+                                                        "back".to_owned()
+                                                } else {
+                                                        "none".to_owned()
+                                                };
+                                                egui::ComboBox::from_id_salt((i, "nav")).selected_text(cur).show_ui(ui, |ui| {
+                                                        if ui.selectable_label(a.goto.is_none() && !a.back, "none").clicked() {
+                                                                self.preview.set_action_nav(i, None, false);
+                                                        }
+                                                        if ui.selectable_label(a.back, "back").clicked() {
+                                                                self.preview.set_action_nav(i, None, true);
+                                                        }
+                                                        for (p, title) in page_titles.iter().enumerate() {
+                                                                if ui.selectable_label(a.goto == Some(p), format!("goto {title}")).clicked() {
+                                                                        self.preview.set_action_nav(i, Some(p), false);
+                                                                }
+                                                        }
+                                                });
+                                        });
+                                        ui.horizontal(|ui| {
+                                                ui.label("Transition");
+                                                let cur = a.transition.clone().unwrap_or_else(|| "default".to_owned());
+                                                egui::ComboBox::from_id_salt((i, "trans")).selected_text(cur).show_ui(ui, |ui| {
+                                                        if ui.selectable_label(a.transition.is_none(), "default").clicked() {
+                                                                self.preview.set_action_transition(i, None);
+                                                        }
+                                                        for opt in ["top", "bottom", "left", "right"] {
+                                                                if ui.selectable_label(a.transition.as_deref() == Some(opt), opt).clicked() {
+                                                                        self.preview.set_action_transition(i, Some(opt));
+                                                                }
+                                                        }
+                                                });
+                                        });
+                                        if ui.button("Delete action").clicked() {
+                                                to_remove = Some(i);
+                                        }
+                                });
+                                ui.add_space(4.0);
+                        }
+                        if let Some(i) = to_remove {
+                                self.preview.remove_action(i);
+                        }
+                        if ui.button("+ Add action").clicked() {
+                                self.preview.add_action();
+                        }
+                });
+        }
+
         fn stage(&mut self, ui: &mut egui::Ui) {
                 let Some(tex) = self.tex.clone() else { return };
                 let (dw, dh) = self.preview.size();
@@ -441,8 +539,8 @@ impl EditorApp {
                                         painter.rect_stroke(sel, 0.0, egui::Stroke::new(2.0, ACCENT));
                                 }
                         }
-                        //   Theme mode just shows the design under the edited look; no interaction
-                        Mode::Theme => {}
+                        //   Theme and Actions modes just show the design; the editing is in the panels
+                        Mode::Theme | Mode::Actions => {}
                 }
         }
 }

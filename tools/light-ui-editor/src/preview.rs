@@ -15,7 +15,7 @@ use light_host_gui::{now_us, NullDriver};
 use light_ui::lui::code;
 use light_ui::{Fonts, Lui, Rect, Style, Theme, Touch, Ui, WidgetId};
 
-use crate::design::{self, ChildDef, Design};
+use crate::design::{self, ActionDef, ChildDef, Design};
 use crate::font;
 
 /// A selected node in the current page: a top-level child (`sub` = `None`), or the `sub`-th child
@@ -73,6 +73,10 @@ pub struct Preview {
         /// The framework theme directory (`themes/`), found by walking up from the design, where an
         /// `extends: "name"` base lives; `None` when editing outside the repo.
         themes_dir: Option<PathBuf>,
+        /// The last recompile's error, if the current design does not compile (e.g. two actions
+        /// giving one page conflicting transitions). While set, the preview holds the last good blob
+        /// and the JSON is not saved, so a half-finished edit never corrupts the file.
+        compile_error: Option<String>,
 }
 
 impl Preview {
@@ -118,9 +122,19 @@ impl Preview {
                 }
                 ui.fit(&layer);
 
-                let lui = compile_blob(&design);
+                //   a hand-broken file that no longer compiles opens on the starter design with the
+                // error shown, rather than panicking; the editor itself only ever saves designs that
+                // compile, so this is the corrupt-file corner
+                let (design, lui, compile_error) = match compile_blob(&design) {
+                        Ok(lui) => (design, lui, None),
+                        Err(e) => {
+                                let starter = design::parse(STARTER_JSON).expect("the starter design parses");
+                                let lui = compile_blob(&starter).expect("the starter design compiles");
+                                (starter, lui, Some(e))
+                        }
+                };
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path, base_dir, themes_dir };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path, base_dir, themes_dir, compile_error };
                 this.build_current();
                 this
         }
@@ -597,9 +611,23 @@ impl Preview {
 
         /// Recompile the design to a fresh blob, rebuild the current page, and save.
         fn recompile(&mut self) {
-                self.lui = compile_blob(&self.design);
-                self.build_current();
-                self.save();
+                match compile_blob(&self.design) {
+                        Ok(lui) => {
+                                self.lui = lui;
+                                self.compile_error = None;
+                                self.build_current();
+                                self.save();
+                        }
+                        //   keep the last good blob on screen and leave the file untouched: the edit
+                        // lives in memory until it is made valid (then it recompiles and saves)
+                        Err(e) => self.compile_error = Some(e),
+                }
+        }
+
+        /// The current design's compile error, if it does not compile -- shown as a banner so an
+        /// invalid edit (e.g. conflicting transitions to one page) is visible, not silent.
+        pub fn compile_error(&self) -> Option<&str> {
+                self.compile_error.as_deref()
         }
 
         /// Build the current page from the blob into the widget tree.
@@ -766,6 +794,84 @@ impl Preview {
                 self.recompile();
         }
 
+        // --- action registry editing (the Actions view) --------------------------------------
+
+        /// The design's actions -- the app's event + navigation mappings a button names. A snapshot
+        /// the Actions view reads; edits go through the setters below.
+        pub fn actions(&self) -> Vec<ActionDef> {
+                self.design.actions.clone()
+        }
+
+        /// The action name at `i`, for resyncing an edit buffer after a rename is applied (or rejected).
+        pub fn action_name(&self, i: usize) -> Option<String> {
+                self.design.actions.get(i).map(|a| a.name.clone())
+        }
+
+        /// Append a new action with a fresh unique name, ready to fill in.
+        pub fn add_action(&mut self) {
+                let name = self.unique_action_name();
+                self.design.actions.push(ActionDef { name, event: 0, goto: None, back: false, transition: None });
+                self.recompile();
+        }
+
+        /// Remove the action at `i`, clearing it from any button that named it (so no button is left
+        /// pointing at an action that no longer exists).
+        pub fn remove_action(&mut self, i: usize) {
+                if i >= self.design.actions.len() {
+                        return;
+                }
+                let name = self.design.actions.remove(i).name;
+                for page in &mut self.design.pages {
+                        clear_action_ref(&mut page.children, &name);
+                }
+                self.recompile();
+        }
+
+        /// Rename the action at `i`, following the rename through every button that named it so the
+        /// references stay live. A blank or duplicate name is ignored.
+        pub fn set_action_name(&mut self, i: usize, name: &str) {
+                let name = name.trim();
+                let Some(old) = self.design.actions.get(i).map(|a| a.name.clone()) else { return };
+                if name.is_empty() || name == old || self.design.actions.iter().any(|a| a.name == name) {
+                        return;
+                }
+                self.design.actions[i].name = name.to_owned();
+                for page in &mut self.design.pages {
+                        rename_action_ref(&mut page.children, &old, name);
+                }
+                self.recompile();
+        }
+
+        /// Set the action's app event id (0 = none).
+        pub fn set_action_event(&mut self, i: usize, event: u16) {
+                if let Some(a) = self.design.actions.get_mut(i) {
+                        a.event = event;
+                }
+                self.recompile();
+        }
+
+        /// Set the action's navigation: `goto` a page, or `back`, or neither (mutually exclusive).
+        pub fn set_action_nav(&mut self, i: usize, goto: Option<usize>, back: bool) {
+                if let Some(a) = self.design.actions.get_mut(i) {
+                        a.goto = goto;
+                        a.back = back && goto.is_none();
+                }
+                self.recompile();
+        }
+
+        /// Set the action's transition -- the edge its target page enters from (`back` mirrors it).
+        pub fn set_action_transition(&mut self, i: usize, transition: Option<&str>) {
+                if let Some(a) = self.design.actions.get_mut(i) {
+                        a.transition = transition.map(str::to_owned);
+                }
+                self.recompile();
+        }
+
+        /// A default action name not already taken (`Action1`, `Action2`, ...).
+        fn unique_action_name(&self) -> String {
+                (1..).map(|n| format!("Action{n}")).find(|c| !self.design.actions.iter().any(|a| &a.name == c)).unwrap_or_default()
+        }
+
         /// The current page's widgets as a selectable tree: `(path, indent, label)`, a frame's
         /// children indented under it. For an inspector list that selects without hunting the preview.
         pub fn outline(&self) -> Vec<(Sel, u8, String)> {
@@ -834,10 +940,31 @@ fn find_themes_dir(start: &Path) -> Option<PathBuf> {
 }
 
 /// Compile a design to an LUI blob, leak it `'static`, and parse it -- the blob the preview reads.
-fn compile_blob(design: &Design) -> Lui<'static> {
-        let bytes = crush_core::lui::compile(design).expect("the design compiles to LUI");
+/// Follow an action rename through the widget tree: every button that named `old` now names `new`.
+/// Recurses one level into frames (the format's only nesting).
+fn rename_action_ref(children: &mut [ChildDef], old: &str, new: &str) {
+        for c in children.iter_mut() {
+                if c.action.as_deref() == Some(old) {
+                        c.action = Some(new.to_owned());
+                }
+                rename_action_ref(&mut c.children, old, new);
+        }
+}
+
+/// Clear a removed action from the widget tree: every button that named it loses its action.
+fn clear_action_ref(children: &mut [ChildDef], name: &str) {
+        for c in children.iter_mut() {
+                if c.action.as_deref() == Some(name) {
+                        c.action = None;
+                }
+                clear_action_ref(&mut c.children, name);
+        }
+}
+
+fn compile_blob(design: &Design) -> Result<Lui<'static>, String> {
+        let bytes = crush_core::lui::compile(design)?;
         let leaked: &'static [u8] = Vec::leak(bytes);
-        Lui::parse(leaked).expect("the compiled LUI blob parses")
+        Lui::parse(leaked).map_err(|e| format!("the compiled blob did not parse: {e:?}"))
 }
 
 /// The design file to open: the given `arg`, or one found in the current working directory. With no
