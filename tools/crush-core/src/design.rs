@@ -3,12 +3,21 @@
 //! into a live light-ui tree (the editor) or a binary blob (crush, see [`crate::lui`]) is done
 //! elsewhere.
 
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 /// A whole design: the target device screen, a list of pages, and which one opens first.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Design {
+        /// A parent design this one extends and overrides -- named either by the CRATE whose
+        /// `design.json` is the parent, or by a relative PATH to the parent design file. The child's
+        /// fields deep-merge over the parent's (objects by key, arrays element-wise by index, scalars
+        /// replace), so one shared design takes per-board overrides (device size, titles, metrics).
+        /// Resolved by [`resolve_file`]; a fully resolved design carries none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub extends: Option<String>,
         #[serde(default)]
         pub device: Device,
         /// How the interface is laid out and shown: `portrait` (the default) stacks a `linear`
@@ -245,6 +254,156 @@ pub fn parse(json: &str) -> Result<Design, String> {
         serde_json::from_str(json).map_err(|e| e.to_string())
 }
 
+/// The deepest an `extends` chain may go before it is called a cycle.
+const MAX_EXTENDS_DEPTH: u8 = 8;
+
+/// Resolve a design FILE and its [`extends`](Design::extends) chain into one merged [`Design`]. A
+/// child's fields deep-merge over its parent's: objects by key, arrays element-wise by index (an
+/// empty `{}` leaves that element untouched, extra elements append), scalars replace. `crates_dir`
+/// is where an `extends` given by CRATE NAME finds `<name>/design.json`; an `extends` given as a
+/// path (it contains a slash or ends `.json`) resolves relative to the child's own directory.
+pub fn resolve_file(path: &Path, crates_dir: Option<&Path>) -> Result<Design, String> {
+        let merged = resolve_file_value(path, crates_dir, MAX_EXTENDS_DEPTH)?;
+        serde_json::from_value(merged).map_err(|e| format!("'{}': {e}", path.display()))
+}
+
+/// Resolve a design file to its merged JSON value, following `extends`. Kept at the value level so a
+/// child need not be a valid standalone design (it may carry only the fields it overrides).
+fn resolve_file_value(path: &Path, crates_dir: Option<&Path>, depth: u8) -> Result<serde_json::Value, String> {
+        if depth == 0 {
+                return Err(format!("'{}': the extends chain is too deep (a cycle?)", path.display()));
+        }
+        let text = std::fs::read_to_string(path).map_err(|e| format!("could not read '{}': {e}", path.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("'{}': {e}", path.display()))?;
+        let extends = value.get("extends").and_then(serde_json::Value::as_str).map(str::to_owned);
+        if let Some(base) = extends {
+                let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+                let base_path = extends_path(&base, base_dir, crates_dir).map_err(|e| format!("'{}': {e}", path.display()))?;
+                let mut merged = resolve_file_value(&base_path, crates_dir, depth - 1)?;
+                merge_value(&mut merged, value);
+                //   the merged design is fully resolved -- drop the chain marker so it is not read again
+                if let Some(obj) = merged.as_object_mut() {
+                        obj.remove("extends");
+                }
+                return Ok(merged);
+        }
+        Ok(value)
+}
+
+/// Where a design's `extends` points: a relative PATH (it contains a slash or ends `.json`) resolves
+/// from the child's directory; a bare CRATE NAME resolves to `<crates_dir>/<name>/design.json`.
+fn extends_path(base: &str, base_dir: &std::path::Path, crates_dir: Option<&std::path::Path>) -> Result<std::path::PathBuf, String> {
+        if base.contains('/') || base.contains('\\') || base.ends_with(".json") {
+                Ok(base_dir.join(base))
+        } else {
+                let dir = crates_dir.ok_or_else(|| format!("extends '{base}' by crate name, but no crates directory was given"))?;
+                Ok(dir.join(base).join("design.json"))
+        }
+}
+
+/// The `extends` target of the design at `path` and its resolved PARENT (the chain above it), or
+/// `None` when it does not extend anything. An editor uses the name to re-emit `extends` on save, and
+/// the resolved parent as the base a child is diffed against ([`diff_overlay`]).
+pub fn resolve_parent(path: &Path, crates_dir: Option<&Path>) -> Result<Option<(String, Design)>, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("could not read '{}': {e}", path.display()))?;
+        let value: serde_json::Value = serde_json::from_str(&text).map_err(|e| format!("'{}': {e}", path.display()))?;
+        let Some(base) = value.get("extends").and_then(serde_json::Value::as_str) else {
+                return Ok(None);
+        };
+        let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
+        let base_path = extends_path(base, base_dir, crates_dir).map_err(|e| format!("'{}': {e}", path.display()))?;
+        let parent = resolve_file(&base_path, crates_dir)?;
+        Ok(Some((base.to_owned(), parent)))
+}
+
+/// Deep-merge `overlay` into `base` (see [`resolve_file`]).
+fn merge_value(base: &mut serde_json::Value, overlay: serde_json::Value) {
+        use serde_json::Value;
+        match (base, overlay) {
+                (Value::Object(b), Value::Object(o)) => {
+                        for (k, v) in o {
+                                merge_value(b.entry(k).or_insert(Value::Null), v);
+                        }
+                }
+                (Value::Array(b), Value::Array(o)) => {
+                        for (i, v) in o.into_iter().enumerate() {
+                                match b.get_mut(i) {
+                                        Some(slot) => merge_value(slot, v),
+                                        None => b.push(v),
+                                }
+                        }
+                }
+                (b, o) => *b = o,
+        }
+}
+
+/// The minimal overlay that, deep-merged over `parent`, reproduces `child` -- the inverse of the
+/// resolve merge. An editor uses it to save a design that `extends` a parent as just its overrides:
+/// a field equal to the parent's is dropped; an object recurses; an array keeps its changed elements
+/// by index (unchanged leading ones become `{}` placeholders to hold the index). Returns a JSON
+/// object (empty when `child` equals `parent`), ready to receive an `"extends"` key.
+///
+/// One thing the merge cannot express, so nor can this: REMOVING an element the parent has (the
+/// merge only overrides or appends). A child that drops an inherited page or widget cannot be saved
+/// as an overlay -- the editor authors those on the parent.
+pub fn diff_overlay(parent: &Design, child: &Design) -> serde_json::Value {
+        let p = serde_json::to_value(parent).unwrap_or(serde_json::Value::Null);
+        let c = serde_json::to_value(child).unwrap_or(serde_json::Value::Null);
+        diff_value(&p, &c).unwrap_or_else(|| serde_json::Value::Object(serde_json::Map::new()))
+}
+
+/// The JSON an editor writes for a design that `extends` `base`: its overrides against `parent` (see
+/// [`diff_overlay`]) with the `extends` key restored at the front, so the file stays a minimal
+/// override rather than a flattened copy.
+pub fn overlay_json(base: &str, parent: &Design, child: &Design) -> String {
+        let mut ordered = serde_json::Map::new();
+        ordered.insert("extends".to_owned(), serde_json::Value::String(base.to_owned()));
+        if let serde_json::Value::Object(obj) = diff_overlay(parent, child) {
+                ordered.extend(obj);
+        }
+        serde_json::to_string_pretty(&serde_json::Value::Object(ordered)).unwrap_or_default()
+}
+
+/// The minimal value to overlay so that merging it over `parent` yields `child`; `None` when they are
+/// already equal (nothing to override).
+fn diff_value(parent: &serde_json::Value, child: &serde_json::Value) -> Option<serde_json::Value> {
+        use serde_json::Value;
+        if parent == child {
+                return None;
+        }
+        match (parent, child) {
+                (Value::Object(p), Value::Object(c)) => {
+                        let mut out = serde_json::Map::new();
+                        for (k, cv) in c {
+                                match p.get(k) {
+                                        Some(pv) => {
+                                                if let Some(d) = diff_value(pv, cv) {
+                                                        out.insert(k.clone(), d);
+                                                }
+                                        }
+                                        None => {
+                                                out.insert(k.clone(), cv.clone());
+                                        }
+                                }
+                        }
+                        (!out.is_empty()).then_some(Value::Object(out))
+                }
+                (Value::Array(p), Value::Array(c)) => {
+                        //   the last index that differs bounds the overlay; unchanged leading elements
+                        // become `{}` to hold their position, trailing unchanged ones are dropped
+                        let last = (0..c.len()).rev().find(|&i| p.get(i).map_or(true, |pv| pv != &c[i]))?;
+                        let out = (0..=last)
+                                .map(|i| match p.get(i) {
+                                        Some(pv) => diff_value(pv, &c[i]).unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+                                        None => c[i].clone(),
+                                })
+                                .collect();
+                        Some(Value::Array(out))
+                }
+                _ => Some(child.clone()),
+        }
+}
+
 /// Serialise a design back to pretty JSON.
 pub fn to_json(design: &Design) -> String {
         serde_json::to_string_pretty(design).unwrap_or_default()
@@ -279,5 +438,97 @@ mod tests {
         fn device_defaults_when_omitted() {
                 let d = parse(r#"{ "pages": [ { "title": "P" } ] }"#).unwrap();
                 assert_eq!((d.device.width, d.device.height, d.device.corner_radius), (240, 400, 0));
+        }
+
+        #[test]
+        fn merge_replaces_scalars_recurses_objects_and_indexes_arrays() {
+                let mut base = serde_json::json!({
+                        "device": { "width": 172, "height": 640 },
+                        "pages": [
+                                { "title": "Main", "children": [ { "button": "A" }, { "button": "B" } ] },
+                                { "title": "List", "children": [ { "button": "R", "min_h": 44 }, { "button": "R", "min_h": 44 } ] }
+                        ]
+                });
+                //   change the device, the first page's title, and the second page's row heights,
+                // leaving the first page's children and everything else as the base has them
+                let overlay = serde_json::json!({
+                        "orientation": "landscape",
+                        "device": { "width": 480, "height": 480 },
+                        "pages": [
+                                { "title": "mk4 4.0" },
+                                { "children": [ { "min_h": 64 }, { "min_h": 64 } ] }
+                        ]
+                });
+                merge_value(&mut base, overlay);
+                let d: Design = serde_json::from_value(base).unwrap();
+                assert_eq!((d.device.width, d.device.height), (480, 480), "the overlay's device replaces the base's");
+                assert!(d.landscape(), "a field only the overlay has is added");
+                assert_eq!(d.pages[0].title, "mk4 4.0");
+                assert_eq!(d.pages[0].children.len(), 2, "an untouched page keeps its children");
+                assert_eq!(d.pages[0].children[0].button.as_deref(), Some("A"));
+                assert_eq!((d.pages[1].children[0].min_h, d.pages[1].children[1].min_h), (64, 64));
+                assert_eq!(d.pages[1].children[0].button.as_deref(), Some("R"), "the merged child keeps its base fields");
+        }
+
+        #[test]
+        fn diff_overlay_round_trips_through_merge() {
+                let parent: Design = serde_json::from_str(r#"{
+                        "device": { "width": 172, "height": 640 },
+                        "pages": [
+                                { "title": "Main", "children": [ { "button": "A" }, { "button": "B" } ] },
+                                { "title": "List", "children": [ { "button": "R", "min_h": 44 }, { "button": "R", "min_h": 44 } ] }
+                        ]
+                }"#).unwrap();
+                //   the child overrides the first page title and the second page's row heights
+                let mut child = parent.clone();
+                child.pages[0].title = "mk4 4.0".to_owned();
+                child.device.width = 480;
+                child.pages[1].children[0].min_h = 64;
+                child.pages[1].children[1].min_h = 64;
+
+                let overlay = diff_overlay(&parent, &child);
+                //   the overlay is minimal: it does not carry the untouched first page's children
+                let obj = overlay.as_object().unwrap();
+                assert!(obj.contains_key("device") && obj.contains_key("pages"));
+                assert!(!obj.contains_key("root"), "an unchanged field is dropped");
+
+                //   and merging it back over the parent reproduces the child exactly
+                let mut merged = serde_json::to_value(&parent).unwrap();
+                merge_value(&mut merged, overlay);
+                let round: Design = serde_json::from_value(merged).unwrap();
+                assert_eq!(serde_json::to_value(&round).unwrap(), serde_json::to_value(&child).unwrap());
+        }
+
+        #[test]
+        fn diff_overlay_is_empty_when_equal() {
+                let d: Design = serde_json::from_str(r#"{ "pages": [ { "title": "P" } ] }"#).unwrap();
+                assert!(diff_overlay(&d, &d).as_object().unwrap().is_empty());
+        }
+
+        #[test]
+        fn extends_resolves_by_path_and_by_crate_name() {
+                //   a temp layout: crates/parent_demo/design.json is the base; a child extends it by
+                // crate name, and another child extends the base file by relative path
+                let root = std::env::temp_dir().join(format!("crush_extends_{}", std::process::id()));
+                let crates = root.join("crates");
+                let parent_dir = crates.join("parent_demo");
+                std::fs::create_dir_all(&parent_dir).unwrap();
+                std::fs::write(parent_dir.join("design.json"), r#"{ "device": { "width": 172, "height": 640 }, "pages": [ { "title": "Base", "children": [ { "button": "A" } ] } ] }"#).unwrap();
+
+                let by_name = root.join("by_name.design.json");
+                std::fs::write(&by_name, r#"{ "extends": "parent_demo", "pages": [ { "title": "Named" } ] }"#).unwrap();
+                let d = resolve_file(&by_name, Some(&crates)).unwrap();
+                assert_eq!(d.pages[0].title, "Named", "the child title wins");
+                assert_eq!(d.device.width, 172, "the base device is inherited");
+                assert_eq!(d.pages[0].children[0].button.as_deref(), Some("A"), "the base children are inherited");
+                assert!(d.extends.is_none(), "a resolved design carries no chain marker");
+
+                let by_path = root.join("by_path.design.json");
+                std::fs::write(&by_path, r#"{ "extends": "crates/parent_demo/design.json", "device": { "width": 480 } }"#).unwrap();
+                let d = resolve_file(&by_path, None).unwrap();
+                assert_eq!(d.device.width, 480, "the path child overrides the device width");
+                assert_eq!(d.pages[0].title, "Base", "and inherits the base pages");
+
+                let _ = std::fs::remove_dir_all(&root);
         }
 }

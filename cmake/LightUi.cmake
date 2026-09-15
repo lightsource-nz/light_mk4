@@ -6,6 +6,16 @@
 # cargo-prebuild target depends on the compile, and cargo tracks the blob through include_bytes!, so
 # editing the design recompiles it and rebuilds the crate. A UI is data: a design file and this one
 # call, no firmware source touched. light-ui reads the blob with its `lui` module.
+#
+#   A design may `"extends"` a parent design and override it -- named either by the CRATE whose
+# design.json is the parent (found under crates/), or by a relative path to the parent file. So one
+# shared design takes per-board overrides (device size, titles, touch-target metrics) the way a theme
+# extends a base. The compile depends on every crates/*/design.json, so editing a parent rebuilds
+# every consumer. (The dependency list is globbed at configure time: a brand-new parent design wants
+# one reconfigure before edits to it retrigger builds.)
+
+#   captured at include time, when CMAKE_CURRENT_LIST_DIR is this file's directory
+set(LIGHT_MK4_CRATES_DIR "${CMAKE_CURRENT_LIST_DIR}/../crates" CACHE INTERNAL "framework crates directory")
 
 function(light_mk4_add_ui NAME)
         set(one UI CRATE ENV)
@@ -20,11 +30,12 @@ function(light_mk4_add_ui NAME)
         endif()
 
         get_filename_component(design_abs "${U_UI}" ABSOLUTE)
+        file(GLOB parent_designs "${LIGHT_MK4_CRATES_DIR}/*/design.json")
         set(lui "${CMAKE_CURRENT_BINARY_DIR}/${NAME}.lui")
         add_custom_command(
                 OUTPUT "${lui}"
-                COMMAND $<TARGET_FILE:crush> ui compile "${design_abs}" "${lui}"
-                DEPENDS crush "${design_abs}"
+                COMMAND $<TARGET_FILE:crush> ui compile "${design_abs}" "${lui}" --crates "${LIGHT_MK4_CRATES_DIR}"
+                DEPENDS crush "${design_abs}" ${parent_designs}
                 COMMENT "crush: ui ${NAME} -> LUI"
                 VERBATIM
         )

@@ -20,7 +20,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode};
+use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode, UiSource};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::{PowerManager, PowerMechanism};
@@ -641,7 +641,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         // OVER the last -- the window interiors cover what the clear used to
                         draw_over: true,
                         rotation_map,
-                        main_page: &PAGE_MAIN,
+                        source: UiSource::Const(&PAGE_MAIN),
+                        backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook { beam_waits: 0 },
         ));

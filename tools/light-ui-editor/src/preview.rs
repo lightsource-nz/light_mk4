@@ -77,6 +77,12 @@ pub struct Preview {
         /// giving one page conflicting transitions). While set, the preview holds the last good blob
         /// and the JSON is not saved, so a half-finished edit never corrupts the file.
         compile_error: Option<String>,
+        /// The parent this design `extends`, if any (a crate name or a path) -- `design` is then the
+        /// resolved result, and a save writes back only this design's overrides against [`parent`].
+        extends: Option<String>,
+        /// The resolved parent design, when this design extends one: the base a save diffs against so
+        /// the file stays a minimal override, not a flattened copy.
+        parent: Option<Design>,
 }
 
 impl Preview {
@@ -84,11 +90,19 @@ impl Preview {
         /// not exist yet starts from [`STARTER_JSON`] and is created on the first save. The build
         /// compiles the design to a blob, so the editor writes only the JSON.
         pub fn new(path: PathBuf) -> Self {
-                let design = std::fs::read_to_string(&path)
-                        .ok()
-                        .as_deref()
-                        .and_then(|j| design::parse(j).ok())
-                        .unwrap_or_else(|| design::parse(STARTER_JSON).expect("the starter design parses"));
+                let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+                let crates_dir = find_crates_dir(&base_dir);
+                //   resolve the design's `extends` chain the way the build does, so a design that
+                // extends a parent previews as the full merged result -- not the bare override it is
+                // on disk. A save then writes only this design's own overrides back (see `save`).
+                let design = design::resolve_file(&path, crates_dir.as_deref())
+                        .or_else(|_| std::fs::read_to_string(&path).map_err(|e| e.to_string()).and_then(|j| design::parse(&j)))
+                        .or_else(|_| design::parse(STARTER_JSON))
+                        .expect("the starter design parses");
+                let (extends, parent) = match design::resolve_parent(&path, crates_dir.as_deref()) {
+                        Ok(Some((base, parent))) => (Some(base), Some(parent)),
+                        _ => (None, None),
+                };
 
                 //   a landscape design is authored against the panel turned onto its long edge:
                 // swap the panel dimensions for the preview and lay the tree out along the
@@ -101,7 +115,6 @@ impl Preview {
                 //   the theme the crate would BUILD: theme.json beside the design if it has one
                 // (its extends chain resolved against themes/, as the build does), else a fresh
                 // theme extending the framework default. Editing it is live on the preview.
-                let base_dir = path.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
                 let theme_path = base_dir.join("theme.json");
                 let themes_dir = find_themes_dir(&base_dir);
                 let theme_src = std::fs::read_to_string(&theme_path)
@@ -134,7 +147,7 @@ impl Preview {
                         }
                 };
                 let root = lui.root().min(lui.page_count().saturating_sub(1));
-                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path, base_dir, themes_dir, compile_error };
+                let mut this = Self { ui, display, layer, theme, font, design, lui, history: vec![root], selected: None, dev_w, dev_h, path, theme_src, theme_path, base_dir, themes_dir, compile_error, extends, parent };
                 this.build_current();
                 this
         }
@@ -749,9 +762,15 @@ impl Preview {
         }
 
         fn save(&self) {
-                //   only the JSON: the build compiles it to a blob, so a stray .lui beside the
-                // source would just be clutter
-                if let Err(e) = std::fs::write(&self.path, design::to_json(&self.design)) {
+                //   only the JSON: the build compiles it to a blob, so a stray .lui beside the source
+                // would just be clutter. A design that extends a parent is written as just its
+                // overrides against that parent (with the `extends` restored), so the file stays a
+                // minimal override; a flat design is written whole.
+                let json = match (&self.extends, &self.parent) {
+                        (Some(base), Some(parent)) => design::overlay_json(base, parent, &self.design),
+                        _ => design::to_json(&self.design),
+                };
+                if let Err(e) = std::fs::write(&self.path, json) {
                         eprintln!("light-ui-editor: could not save '{}': {e}", self.path.display());
                 }
         }
@@ -1003,6 +1022,12 @@ impl Preview {
                 self.design.landscape()
         }
 
+        /// The parent this design extends, if any -- for the chrome to show that edits are saved as
+        /// overrides against it (as the Theme tab shows a theme's base).
+        pub fn design_extends(&self) -> Option<&str> {
+                self.extends.as_deref()
+        }
+
         pub fn selected_rect(&self) -> Option<Rect> {
                 let id = self.selected_widget()?;
                 self.ui.get(id).map(|w| w.rect)
@@ -1037,9 +1062,20 @@ fn compile_theme(src: &crush_core::theme::ThemeSource, base_dir: &Path, themes_d
 /// Find the framework theme directory (`themes/`) by walking up from `start` -- where an
 /// `extends: "name"` base lives. `None` outside a checkout that has one.
 fn find_themes_dir(start: &Path) -> Option<PathBuf> {
+        find_ancestor_dir(start, "themes")
+}
+
+/// The framework `crates/` directory, walked up from a design, where an `extends: "crate"` finds its
+/// parent `design.json`; `None` outside the repo.
+fn find_crates_dir(start: &Path) -> Option<PathBuf> {
+        find_ancestor_dir(start, "crates")
+}
+
+/// The nearest ancestor directory (including `start`) that contains a subdirectory `name`.
+fn find_ancestor_dir(start: &Path, name: &str) -> Option<PathBuf> {
         let mut cur = Some(start);
         while let Some(dir) = cur {
-                let candidate = dir.join("themes");
+                let candidate = dir.join(name);
                 if candidate.is_dir() {
                         return Some(candidate);
                 }

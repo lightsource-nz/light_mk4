@@ -15,13 +15,13 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
-use light_ui::{Fonts, Style, Theme, Ui};
+use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
@@ -286,6 +286,10 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
 /// color support. A board-specific override would be a local theme file extending it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The demo interface, authored as data: light_app_ui_demo's shared design compiled to an LUI blob,
+/// with this board's title overlaid. The demo core builds its tree from this instead of a const page
+/// tree -- the UI-as-data path the dictaphone already runs on.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -382,14 +386,9 @@ const FPS: u32 = 30;
 /// mapped below the driver's cutoff and read as OFF.
 const BACKLIGHT_DIM: u16 = 250;
 
-demo_pages! {
-        event: AppEvent,
-        title: "mk4 3.49",
-        row_gap: 6,
-        //   a 640-tall list has room; rows sized for a finger on the narrow bar
-        list_min_row: 56,
-        backlight_dim: BACKLIGHT_DIM
-}
+//   the widget tree is no longer a const page tree here: this board runs the demo from its LUI
+// design blob (UI_BLOB). The title, row gap and list-row height that demo_pages! once baked in are
+// the design's now -- the shared design this board's design.json extends.
 
 /// Portrait only, MEASURED: the bar rests near-landscape on its long edge, so ordinary
 /// handling flapped LandscapeL/R -- a 180-degree relayout per touch, and every tap then
@@ -1386,6 +1385,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+        //   the interface as data: the demo core builds its tree from this blob and navigates off the
+        // design's goto/back. A bad blob is a build-system bug worth halting on.
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI blob does not parse: {e:?}"),
+        };
         type BoardDisplayMod = DisplayMod<Axs15231b<PioQspiDisplayBus>, SysClock, Ext, Hook>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(
@@ -1403,7 +1408,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         repush: true,
                         draw_over: false,
                         rotation_map,
-                        main_page: &PAGE_MAIN,
+                        source: UiSource::Blob(lui),
+                        backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook,
         ));

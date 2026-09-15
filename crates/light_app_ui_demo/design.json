@@ -1,0 +1,62 @@
+{
+  "device": { "width": 172, "height": 640, "corner_radius": 0 },
+  "root": 0,
+  "actions": [
+    { "name": "Toggle0", "event": 1 },
+    { "name": "Toggle1", "event": 2 },
+    { "name": "Toggle2", "event": 3 },
+    { "name": "MoreOpen", "goto": 1 },
+    { "name": "ListOpen", "goto": 2 },
+    { "name": "Dim", "event": 4 },
+    { "name": "Bright", "event": 5 },
+    { "name": "Back", "back": true },
+    { "name": "Item1", "event": 16 },
+    { "name": "Item2", "event": 17 },
+    { "name": "Item3", "event": 18 },
+    { "name": "Item4", "event": 19 },
+    { "name": "Item5", "event": 20 },
+    { "name": "Item6", "event": 21 },
+    { "name": "Item7", "event": 22 }
+  ],
+  "pages": [
+    {
+      "title": "mk4 demo",
+      "layout": "stack",
+      "gap": 6,
+      "children": [
+        { "button": "Alpha", "action": "Toggle0", "tag": 1 },
+        { "button": "Beta", "action": "Toggle1", "tag": 2 },
+        { "button": "Gamma", "action": "Toggle2", "tag": 3 },
+        { "button": "More >", "action": "MoreOpen" },
+        { "button": "List >", "action": "ListOpen" }
+      ]
+    },
+    {
+      "title": "More",
+      "layout": "stack",
+      "gap": 6,
+      "children": [
+        { "label": "swipe right to go back" },
+        { "button": "Dim", "action": "Dim" },
+        { "button": "Bright", "action": "Bright" },
+        { "button": "< Back", "action": "Back" }
+      ]
+    },
+    {
+      "title": "List",
+      "layout": "stack",
+      "gap": 6,
+      "scroll": true,
+      "children": [
+        { "button": "Item 1", "action": "Item1", "min_h": 56 },
+        { "button": "Item 2", "action": "Item2", "min_h": 56 },
+        { "button": "Item 3", "action": "Item3", "min_h": 56 },
+        { "button": "Item 4", "action": "Item4", "min_h": 56 },
+        { "button": "Item 5", "action": "Item5", "min_h": 56 },
+        { "button": "Item 6", "action": "Item6", "min_h": 56 },
+        { "button": "Item 7", "action": "Item7", "min_h": 56 },
+        { "button": "< Back", "action": "Back", "min_h": 56 }
+      ]
+    }
+  ]
+}

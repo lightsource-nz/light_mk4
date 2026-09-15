@@ -16,7 +16,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod};
+use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, UiSource};
 use light_input::cst328::{self, Cst328};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -415,7 +415,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         repush: true,
                         draw_over: false,
                         rotation_map,
-                        main_page: &PAGE_MAIN,
+                        source: UiSource::Const(&PAGE_MAIN),
+                        backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook,
         ));

@@ -147,6 +147,9 @@ impl EditorApp {
                         if edit {
                                 ui.add_space(4.0);
                                 ui.label(egui::RichText::new("DESIGN").weak());
+                                if let Some(base) = self.preview.design_extends() {
+                                        ui.small(format!("extends {base} — saved as overrides against it"));
+                                }
                                 ui.horizontal(|ui| {
                                         ui.label("Orientation");
                                         let landscape = self.preview.is_landscape();

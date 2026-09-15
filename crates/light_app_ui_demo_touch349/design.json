@@ -1,0 +1,6 @@
+{
+  "extends": "light_app_ui_demo",
+  "pages": [
+    { "title": "mk4 3.49" }
+  ]
+}

@@ -75,6 +75,10 @@ pub enum UiCmd {
                 input: PathBuf,
                 /// Where the LUI blob goes
                 output: PathBuf,
+                /// The crates directory, where a design's `extends: "<crate>"` finds its parent
+                /// `<crate>/design.json`. A design that extends by path, or not at all, needs none.
+                #[arg(long = "crates")]
+                crates: Option<PathBuf>,
         },
 }
 
@@ -257,16 +261,15 @@ pub fn run_command(ctx: &mut Context, command: Command) -> CmdResult {
                         ThemeCmd::Compile { input, output, themes, default } => theme::compile(&input, &output, themes.as_deref(), default.as_deref()),
                 },
                 Command::Ui { cmd } => match cmd {
-                        UiCmd::Compile { input, output } => ui_compile(&input, &output),
+                        UiCmd::Compile { input, output, crates } => ui_compile(&input, &output, crates.as_deref()),
                 },
                 Command::Console(_) => Err("console cannot be nested".into()),
         }
 }
 
-/// Compile a JSON design to an LUI blob.
-fn ui_compile(input: &std::path::Path, output: &std::path::Path) -> CmdResult {
-        let text = std::fs::read_to_string(input).map_err(|e| format!("could not read '{}': {e}", input.display()))?;
-        let design = crush_core::design::parse(&text)?;
+/// Compile a JSON design to an LUI blob, resolving its `extends` chain first.
+fn ui_compile(input: &std::path::Path, output: &std::path::Path, crates: Option<&std::path::Path>) -> CmdResult {
+        let design = crush_core::design::resolve_file(input, crates)?;
         let blob = crush_core::lui::compile(&design)?;
         if let Some(dir) = output.parent() {
                 std::fs::create_dir_all(dir).map_err(|e| format!("could not create '{}': {e}", dir.display()))?;
