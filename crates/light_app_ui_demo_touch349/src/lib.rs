@@ -13,7 +13,6 @@
 #![no_std]
 
 use core::cell::RefCell;
-use core::fmt::Write;
 use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
@@ -31,7 +30,7 @@ use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
 use light_fs::{Fat, File as FsFile, FsError};
 use light_sd::{SdError, SpiSd};
-use light_board_touch349::{board, PowerManager};
+use light_board_touch349::{board, panic_report, service_core1, PowerManager, ShellInfo};
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
@@ -41,9 +40,6 @@ use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
 
 unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
         /// From this board's psram_info.c: what the SDK's runtime init detected on CS1.
         fn light_board_psram_size() -> u32;
 }
@@ -268,12 +264,6 @@ fn fs_command(sd: &mut SpiSd<Spi1Bus, Output>, op: FsOp, path: &str, arg: &str) 
         }
 }
 
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
-
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
 /// Two frame buffers, 215 KB each -- 430 KB of the RP2350's 520: tight but linkable. If a
@@ -357,22 +347,11 @@ static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
 // --- core 1 --------------------------------------------------------------------------------
 
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
-
+//   the shell ABI glue (clocks, core-1 log/console pump, panic) is shared by every touch349 app in
+// light_board_touch349::shell; core 1's pump feeds this app's console mailbox
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                demo::push_console_byte(b as u8);
-        }
+        service_core1(demo::push_console_byte);
 }
 
 // --- the interface, as data ---------------------------------------------------------------
@@ -1438,30 +1417,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         }
 }
 
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        const fn new() -> Self {
-                Self { buf: [0; N], len: 0 }
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let take = s.len().min(N - self.len);
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }

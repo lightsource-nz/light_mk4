@@ -8,9 +8,9 @@
 
 #![no_std]
 
-use core::fmt::Write;
 
 use light_board_touch349::board::{self, DISPLAY_HEIGHT, DISPLAY_WIDTH, TOUCH_MAP};
+use light_board_touch349::{panic_report, service_core1, ShellInfo};
 use light_core::{info, log, warn, ConstStaticCell, Module, Poll, Runtime};
 use light_display::axs15231b::Axs15231b;
 use light_display::{Display, FrameLayer};
@@ -24,17 +24,6 @@ use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
 use light_ui::{Fonts, Lui, LuiRuntime, Style, Theme, Ui};
 
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
 
 /// The compiled assets, embedded: the font, the theme, and the UI design as an LUI blob.
 static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
@@ -190,48 +179,16 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 
 // --- shell glue: logging on core 1, panic handoff ------------------------------------------
 
-struct StackString<const N: usize> {
-        buf: [u8; N],
-        len: usize,
-}
-
-impl<const N: usize> StackString<N> {
-        fn new() -> Self {
-                Self { buf: [0; N], len: 0 }
-        }
-}
-
-impl<const N: usize> Write for StackString<N> {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-                let room = N - self.len;
-                let take = room.min(s.len());
-                self.buf[self.len..self.len + take].copy_from_slice(&s.as_bytes()[..take]);
-                self.len += take;
-                Ok(())
-        }
-}
-
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        unsafe { light_shell_log(line.buf.as_ptr(), line.len) }
-}
-
+//   the shell ABI glue is shared by every touch349 app in light_board_touch349::shell; this demo
+// has no console, so its core-1 pump discards the drained input (still drained so the shell's
+// buffer never backs up)
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        log::drain(4, log_sink);
-        //   no console on this demo; drain any input so the shell's buffer never backs up
-        for _ in 0..32 {
-                if unsafe { light_shell_read_byte() } < 0 {
-                        break;
-                }
-        }
+        service_core1(|_| {});
 }
 
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        unsafe { light_shell_panic(msg.buf.as_ptr(), msg.len) }
+        panic_report(info)
 }

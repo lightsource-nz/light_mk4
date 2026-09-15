@@ -10,9 +10,8 @@
 #![no_std]
 
 use core::cell::RefCell;
-use core::fmt::Write;
 use light_app_dictaphone_wide as dict;
-use dict::{dictaphone_commands, keep_recording, AudioStatus, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, StackString, UiSource};
+use dict::{dictaphone_commands, keep_recording, AudioStatus, AudioSlots, Command, Descent, DisplayConfig, DisplayMod, Event, FilePicker, Order, UiSource};
 use light_input::axs15231b::{self as axs, Axs15231bTouch};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
@@ -27,7 +26,7 @@ use light_audio::Es8311;
 use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
 use light_sd::{SdError, SpiSd};
-use light_board_touch349::{board, PowerManager};
+use light_board_touch349::{board, core1_ticks, panic_report, service_core1, stack_free, stack_paint, PowerManager, ShellInfo};
 use board::*;
 use light_rp2::gpio::{Input, Output};
 use light_rp2::i2c::{I2c0, I2c1};
@@ -35,18 +34,6 @@ use light_rp2::i2s::PioI2sOut;
 use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
 use light_rp2::{Breathe, Clocks, SysClock};
-
-unsafe extern "C" {
-        fn light_shell_panic(msg: *const u8, len: usize) -> !;
-        fn light_shell_log(msg: *const u8, len: usize);
-        fn light_shell_read_byte() -> i32;
-}
-
-#[repr(C)]
-pub struct ShellInfo {
-        clk_sys_hz: u32,
-        clk_peri_hz: u32,
-}
 
 const FRAME_BYTES: usize = PixelFormat::Rgb565.buffer_len(DISPLAY_WIDTH, DISPLAY_HEIGHT);
 
@@ -80,64 +67,11 @@ type AppEvent = Event<Ext>;
 
 static EVENTS: EventBus<AppEvent, 16, 6> = EventBus::new();
 
-/// Core 1's pulse, counted every `light_app_core1_service` pass and reported by `stats`:
-/// the console cannot report its own death (a dead core 1 IS a dead console), so core 0
-/// carries the diagnosis.
-static CORE1_TICKS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
-
-/// The base of SCRATCH_X. Core 0's stack fills SCRATCH_Y above it, and with the shell
-/// giving core 1 a stack in ordinary RAM (see `light_mk4_shell/src/main.c` -- a deep
-/// core-0 call chain once landed on core 1's frames here and killed the console
-/// silently), SCRATCH_X is vacant runway. The watermark paints it plus the bottom of
-/// core 0's own bank, so `stats` shows how deep the deepest call chain really reaches.
-const PAINT_BASE: u32 = 0x2008_0000;
-/// All of SCRATCH_X plus the bottom kilobyte of SCRATCH_Y: 5 KB.
-const PAINT_WORDS: usize = 1280;
-const PAINT: u32 = 0xC0DE_55AA;
-
-/// Paint the runway. Called FIRST in `light_app_main`, whose own frame sits at the top
-/// of core 0's bank, far above the painted region; core 1's stack is elsewhere entirely.
-fn stack_paint() {
-        let p = PAINT_BASE as *mut u32;
-        for i in 0..PAINT_WORDS {
-                // SAFETY: vacant SCRATCH_X and the unlived bottom of this core's own bank
-                unsafe { core::ptr::write_volatile(p.add(i), PAINT) };
-        }
-}
-
-/// Untouched painted bytes above the runway's base. The nominal stack floor sits at
-/// 4096; below that core 0 is living on the runway.
-fn stack_free() -> u32 {
-        let p = PAINT_BASE as *const u32;
-        for i in 0..PAINT_WORDS {
-                // SAFETY: reads the painted region
-                if unsafe { core::ptr::read_volatile(p.add(i)) } != PAINT {
-                        return (i * 4) as u32;
-                }
-        }
-        (PAINT_WORDS * 4) as u32
-}
-
-// --- core 1 --------------------------------------------------------------------------------
-
-fn log_sink(record: &log::Record) {
-        let mut line = StackString::<160>::new();
-        let _ = write!(line, "{record}");
-        let b = line.as_bytes();
-        unsafe { light_shell_log(b.as_ptr(), b.len()) }
-}
-
+//   the shell ABI glue (clocks, core-1 log/console pump, panic, stack watermark) is shared by every
+// touch349 app in light_board_touch349::shell; core 1's pump feeds this app's console mailbox
 #[unsafe(no_mangle)]
 pub extern "C" fn light_app_core1_service() {
-        CORE1_TICKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        log::drain(4, log_sink);
-        for _ in 0..32 {
-                let b = unsafe { light_shell_read_byte() };
-                if b < 0 {
-                        break;
-                }
-                dict::push_console_byte(b as u8);
-        }
+        service_core1(dict::push_console_byte);
 }
 
 // --- the interface, as data ---------------------------------------------------------------
@@ -508,7 +442,7 @@ impl Module for BoardMod {
                                         //   the instruments that convicted a core-1 stack
                                         // kill once: core 1's pulse, and how deep core 0's
                                         // deepest call chain reached
-                                        info!("cores: core1 ticks {}, core0 stack low-water {} B above the runway base", CORE1_TICKS.load(core::sync::atomic::Ordering::Relaxed), stack_free());
+                                        info!("cores: core1 ticks {}, core0 stack low-water {} B above the runway base", core1_ticks(), stack_free());
                                 }
                                 AppEvent::Ext(Ext::Sd) => {
                                         busy = true;
@@ -746,8 +680,5 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
-        let mut msg = StackString::<160>::new();
-        let _ = write!(msg, "{info}");
-        let b = msg.as_bytes();
-        unsafe { light_shell_panic(b.as_ptr(), b.len()) }
+        panic_report(info)
 }
