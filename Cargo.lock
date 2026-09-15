@@ -950,36 +950,20 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 name = "dictaphone_touch349_app"
 version = "0.1.0"
 dependencies = [
- "light-audio",
  "light-board-touch349",
- "light-core",
- "light-display",
  "light-draw",
- "light-font",
  "light-input",
- "light-rp2",
- "light-rtc",
- "light-sd",
- "light-ui",
- "light_app_dictaphone",
+ "light_dictaphone_touch349",
 ]
 
 [[package]]
 name = "dictaphone_wide_touch349_app"
 version = "0.1.0"
 dependencies = [
- "light-audio",
  "light-board-touch349",
- "light-core",
- "light-display",
  "light-draw",
- "light-font",
  "light-input",
- "light-rp2",
- "light-rtc",
- "light-sd",
- "light-ui",
- "light_app_dictaphone_wide",
+ "light_dictaphone_touch349",
 ]
 
 [[package]]
@@ -2330,6 +2314,25 @@ dependencies = [
  "light-input",
  "light-ui",
  "light_ui_components",
+]
+
+[[package]]
+name = "light_dictaphone_touch349"
+version = "0.1.0"
+dependencies = [
+ "light-audio",
+ "light-board-touch349",
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-fs",
+ "light-input",
+ "light-rp2",
+ "light-rtc",
+ "light-sd",
+ "light-ui",
+ "light_dictaphone_core",
 ]
 
 [[package]]

@@ -6,21 +6,13 @@ name = "dictaphone_touch349_app"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "the dictaphone on the Waveshare RP2350-Touch-LCD-3.49: the hardware-bound instantiation -- pins, QSPI panel, codec transport, TF slot, shell glue -- around the light_app_dictaphone application"
+description = "the portrait dictaphone executable on the Waveshare RP2350-Touch-LCD-3.49: the embedded blobs and orientation config over the shared light_dictaphone_touch349 board wiring"
 
 [lib]
 crate-type = ["staticlib"]
 
 [dependencies]
-light_app_dictaphone = { path = "../../../crates/light_app_dictaphone" }
-light-core = { path = "../../../crates/light-core" }
-light-draw = { path = "../../../crates/light-draw" }
-light-display = { path = "../../../crates/light-display" }
-light-input = { path = "../../../crates/light-input" }
-light-ui = { path = "../../../crates/light-ui" }
-light-audio = { path = "../../../crates/light-audio" }
-light-rp2 = { path = "../../../crates/light-rp2", features = ["rp2350"] }
+light_dictaphone_touch349 = { path = "../../../crates/light_dictaphone_touch349" }
 light-board-touch349 = { path = "../../../crates/light-board-touch349" }
-light-rtc = { path = "../../../crates/light-rtc" }
-light-sd = { path = "../../../crates/light-sd" }
-light-font = { path = "../../../crates/light-font" }
+light-draw = { path = "../../../crates/light-draw" }
+light-input = { path = "../../../crates/light-input" }

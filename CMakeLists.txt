@@ -149,7 +149,7 @@ if(LIGHT_PLATFORM STREQUAL "HOST")
                 message(FATAL_ERROR "cargo not found -- install rustup (see README.md)")
         endif()
         add_test(NAME cargo_test
-                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_ui_demo_touch169 --exclude light_app_ui_demo_touch28 --exclude light_app_ui_demo_touch349 --exclude dictaphone_touch349_app --exclude dictaphone_wide_touch349_app --exclude light_app_lui_touch349 --exclude light_app_ui_demo_touch4 --exclude light_app_pico2 --exclude crossfire_pico_app --exclude crossfire_pico2_app --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-board-touch349 --exclude light-stm32h7 --exclude light-stm32f4 --exclude light-host-gui --exclude light-ui-editor
+                COMMAND ${LIGHT_CARGO} test --workspace --exclude light_app_ui_demo_touch169 --exclude light_app_ui_demo_touch28 --exclude light_app_ui_demo_touch349 --exclude dictaphone_touch349_app --exclude dictaphone_wide_touch349_app --exclude light_app_lui_touch349 --exclude light_app_ui_demo_touch4 --exclude light_app_pico2 --exclude crossfire_pico_app --exclude crossfire_pico2_app --exclude light_app_h7 --exclude light_app_f411 --exclude light-rp2 --exclude light-board-touch349 --exclude light_dictaphone_touch349 --exclude light-stm32h7 --exclude light-stm32f4 --exclude light-host-gui --exclude light-ui-editor
                 WORKING_DIRECTORY ${CMAKE_CURRENT_LIST_DIR}
         )
 endif()

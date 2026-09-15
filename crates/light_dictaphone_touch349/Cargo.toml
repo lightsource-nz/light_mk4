@@ -1,0 +1,21 @@
+[package]
+name = "light_dictaphone_touch349"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the dictaphone's shared board wiring for the Waveshare RP2350-Touch-LCD-3.49: the panel, touch, IMU, RTC, audio transport, card, power and runtime both dictaphone executables (portrait and landscape) build against, over the light_dictaphone_core engine"
+
+[dependencies]
+light_dictaphone_core = { path = "../light_dictaphone_core" }
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+light-display = { path = "../light-display" }
+light-input = { path = "../light-input" }
+light-ui = { path = "../light-ui" }
+light-audio = { path = "../light-audio" }
+light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
+light-board-touch349 = { path = "../light-board-touch349" }
+light-rtc = { path = "../light-rtc" }
+light-sd = { path = "../light-sd" }
+light-fs = { path = "../light-fs" }
+light-font = { path = "../light-font" }

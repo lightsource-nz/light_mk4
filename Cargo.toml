@@ -25,6 +25,7 @@ members = [
         # orientation over it
         "crates/light_app_crossfire",
         "crates/light_dictaphone_core",
+        "crates/light_dictaphone_touch349",
         "crates/light_app_dictaphone",
         "crates/light_app_dictaphone_wide",
         "crates/light_app_ui_demo",
