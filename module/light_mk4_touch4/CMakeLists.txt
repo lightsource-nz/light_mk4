@@ -10,7 +10,7 @@ target_link_libraries(light_mk4_touch4 PRIVATE
         pico_multicore
         pico_bootrom
         hardware_psram
-        light_app_touch4
+        light_app_ui_demo_touch4
 )
 
 #   PSRAM on the XIP CS1 pin, if this board variant carries one: the SDK's runtime init
@@ -26,7 +26,7 @@ light_mk4_add_font(light_mk4_touch4_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch4 WIDTH 480 HEIGHT 480 DIMENSION 71.9x71.9
         POINT_SIZE 14 PIXEL_SIZE 16
-        CRATE light_app_touch4 ENV LIGHT_FONT_LGF
+        CRATE light_app_ui_demo_touch4 ENV LIGHT_FONT_LGF
 )
 
 #   the scanout NEEDS 240 MHz, like the vendor's examples: at stock 150 the PCLK divider is
@@ -44,7 +44,14 @@ target_compile_definitions(light_mk4_touch4 PRIVATE
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
 light_mk4_add_theme(light_mk4_touch4_theme
-        CRATE light_app_touch4 ENV LIGHT_THEME_LTH
+        CRATE light_app_ui_demo_touch4 ENV LIGHT_THEME_LTH
+)
+
+#   the demo interface as data: the app crate's design.json extends light_app_ui_demo's shared
+# design (overriding title, device size, gap and list-row height) and compiles to an LUI blob.
+light_mk4_add_ui(light_mk4_touch4_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_ui_demo_touch4/design.json
+        CRATE light_app_ui_demo_touch4 ENV LIGHT_UI_LUI
 )
 
 light_mk4_shell_configure(light_mk4_touch4)

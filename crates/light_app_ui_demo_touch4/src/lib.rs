@@ -20,7 +20,7 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode, UiSource};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DemoView, DisplayConfig, DisplayMod, RenderMode, UiSource};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, InputPin, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::{PowerManager, PowerMechanism};
@@ -33,7 +33,7 @@ use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_input::touch::Tracker;
 use light_rtc::{Datetime, Pcf85063a};
-use light_ui::{Fonts, Style, Theme, Ui};
+use light_ui::{Fonts, Lui, Style, Theme, Ui};
 mod board;
 use board::*;
 use light_rp2::adc::Adc;
@@ -92,6 +92,10 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// The look-and-feel: the framework's steel theme, the default for every board with
 /// color support. A board-specific override would be a local theme file extending it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The demo interface, authored as data: light_app_ui_demo's shared design with this board's
+/// overrides (title, device size, gap, list-row height), compiled to an LUI blob. The demo core
+/// builds its tree from this instead of a const page tree -- the UI-as-data path the dictaphone runs.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -137,13 +141,9 @@ pub extern "C" fn light_app_core1_service() {
 const FPS: u32 = 30;
 const BACKLIGHT_DIM: u16 = 250;
 
-demo_pages! {
-        event: AppEvent,
-        title: "mk4 4.0",
-        row_gap: 8,
-        list_min_row: 64,
-        backlight_dim: BACKLIGHT_DIM
-}
+//   the widget tree is no longer a const page tree here: this board runs the demo from its LUI
+// design blob (UI_BLOB). The title, row gap and list-row height demo_pages! once baked in are the
+// design's now -- the shared design this board's design.json extends.
 
 /// A square canvas: every rotation is free. Suspect until the axis map is measured.
 fn rotation_map(o: Orientation) -> Option<Rotation> {
@@ -620,6 +620,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         };
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
+        //   the interface as data: the demo core builds its tree from this blob and navigates off the
+        // design's goto/back. A bad blob is a build-system bug worth halting on.
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI blob does not parse: {e:?}"),
+        };
         type BoardDisplayMod = DisplayMod<Scanout, SysClock, Ext, Hook>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
         let display_mod = DISPLAY_MOD.init(DisplayMod::new(
@@ -641,7 +647,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         // OVER the last -- the window interiors cover what the clear used to
                         draw_over: true,
                         rotation_map,
-                        source: UiSource::Const(&PAGE_MAIN),
+                        source: UiSource::Blob(lui),
                         backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook { beam_waits: 0 },

@@ -1,0 +1,21 @@
+{
+  "extends": "light_app_ui_demo",
+  "device": { "width": 480, "height": 480 },
+  "pages": [
+    { "title": "mk4 4.0", "gap": 8 },
+    { "gap": 8 },
+    {
+      "gap": 8,
+      "children": [
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 },
+        { "min_h": 64 }
+      ]
+    }
+  ]
+}

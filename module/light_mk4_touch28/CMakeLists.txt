@@ -8,7 +8,7 @@ target_link_libraries(light_mk4_touch28 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
-        light_app_touch28
+        light_app_ui_demo_touch28
 )
 
 #   the demo's font: the 2.8" panel's real geometry (240x320 over 43.2x57.6 mm), 16 px --
@@ -17,13 +17,20 @@ light_mk4_add_font(light_mk4_touch28_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch28 WIDTH 240 HEIGHT 320 DIMENSION 43.2x57.6
         POINT_SIZE 14 PIXEL_SIZE 16
-        CRATE light_app_touch28 ENV LIGHT_FONT_LGF
+        CRATE light_app_ui_demo_touch28 ENV LIGHT_FONT_LGF
 )
 
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
 light_mk4_add_theme(light_mk4_touch28_theme
-        CRATE light_app_touch28 ENV LIGHT_THEME_LTH
+        CRATE light_app_ui_demo_touch28 ENV LIGHT_THEME_LTH
+)
+
+#   the demo interface as data: the app crate's design.json extends light_app_ui_demo's shared
+# design (overriding just the title and size) and compiles to an LUI blob.
+light_mk4_add_ui(light_mk4_touch28_ui
+        UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_ui_demo_touch28/design.json
+        CRATE light_app_ui_demo_touch28 ENV LIGHT_UI_LUI
 )
 
 light_mk4_shell_configure(light_mk4_touch28)

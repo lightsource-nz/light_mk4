@@ -2239,7 +2239,19 @@ dependencies = [
 ]
 
 [[package]]
-name = "light_app_touch169"
+name = "light_app_ui_demo"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-input",
+ "light-ui",
+]
+
+[[package]]
+name = "light_app_ui_demo_touch169"
 version = "0.1.0"
 dependencies = [
  "critical-section",
@@ -2256,7 +2268,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "light_app_touch28"
+name = "light_app_ui_demo_touch28"
 version = "0.1.0"
 dependencies = [
  "light-core",
@@ -2268,34 +2280,6 @@ dependencies = [
  "light-rp2",
  "light-ui",
  "light_app_ui_demo",
-]
-
-[[package]]
-name = "light_app_touch4"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-power-manager",
- "light-rp2",
- "light-rtc",
- "light-ui",
- "light_app_ui_demo",
-]
-
-[[package]]
-name = "light_app_ui_demo"
-version = "0.1.0"
-dependencies = [
- "light-core",
- "light-display",
- "light-draw",
- "light-font",
- "light-input",
- "light-ui",
 ]
 
 [[package]]
@@ -2313,6 +2297,22 @@ dependencies = [
  "light-rp2",
  "light-rtc",
  "light-sd",
+ "light-ui",
+ "light_app_ui_demo",
+]
+
+[[package]]
+name = "light_app_ui_demo_touch4"
+version = "0.1.0"
+dependencies = [
+ "light-core",
+ "light-display",
+ "light-draw",
+ "light-font",
+ "light-input",
+ "light-power-manager",
+ "light-rp2",
+ "light-rtc",
  "light-ui",
  "light_app_ui_demo",
 ]

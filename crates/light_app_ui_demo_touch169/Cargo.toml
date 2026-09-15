@@ -1,0 +1,24 @@
+[package]
+name = "light_app_ui_demo_touch169"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "the widget demo (light_app_ui_demo) on the Waveshare RP2350-Touch-LCD-1.69: the per-board app -- board wiring around the portable demo, plus this board's UI design override"
+
+[lib]
+#   a staticlib is what Corrosion hands to CMake for the C shell to link. No rlib: nothing
+# else in the workspace depends on this crate
+crate-type = ["staticlib"]
+
+[dependencies]
+light_app_ui_demo = { path = "../light_app_ui_demo" }
+light-core = { path = "../light-core" }
+light-draw = { path = "../light-draw" }
+light-display = { path = "../light-display" }
+light-input = { path = "../light-input" }
+light-ui = { path = "../light-ui" }
+light-audio = { path = "../light-audio" }
+light-rp2 = { path = "../light-rp2", features = ["rp2350"] }
+light-power-manager = { path = "../light-power-manager" }
+light-font = { path = "../light-font" }
+critical-section = "1.2"

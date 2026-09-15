@@ -13,13 +13,13 @@
 use core::cell::RefCell;
 use core::fmt::Write;
 use light_app_ui_demo as demo;
-use demo::{demo_commands, demo_pages, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
+use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
 use light_input::cst816t::{self, Cst816t};
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::st7789::St7789;
 use light_input::touch::Tracker;
-use light_ui::{Fonts, Style, Theme, Ui};
+use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
 use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_power_manager::{PowerManager, PowerMechanism};
@@ -72,6 +72,10 @@ static FONT_BLOB: &[u8] = include_bytes!(env!("LIGHT_FONT_LGF"));
 /// twice: a first guess of 20 and a later guess of 24 both left the frame's
 /// corners swallowed by the glass, invisibly in code -- only the sweep showed it.
 static THEME_BLOB: &[u8] = include_bytes!(env!("LIGHT_THEME_LTH"));
+/// The demo interface, authored as data: light_app_ui_demo's shared design with this board's
+/// overrides (device size, gap, list-row height), compiled to an LUI blob. The demo core builds its
+/// tree from this instead of a const page tree -- the UI-as-data path the dictaphone runs on.
+static UI_BLOB: &[u8] = include_bytes!(env!("LIGHT_UI_LUI"));
 
 // --- the event bus --------------------------------------------------------------------------
 
@@ -123,15 +127,9 @@ const FPS: u32 = 30;
 /// A tenth: the panel stays readable, the way an idle device dims rather than goes dark.
 const BACKLIGHT_DIM: u16 = BACKLIGHT_LEVEL_MAX / 10;
 
-demo_pages! {
-        event: AppEvent,
-        title: "mk4 demo",
-        row_gap: 2,
-        //   rows in the scrolling list are pinned to this, so the list overflows rather
-        // than shrinking
-        list_min_row: 44,
-        backlight_dim: BACKLIGHT_DIM
-}
+//   the widget tree is no longer a const page tree here: this board runs the demo from its LUI
+// design blob (UI_BLOB). The title, row gap and list-row height demo_pages! once baked in are the
+// design's now -- the shared design this board's design.json extends.
 
 /// Confirmed on this board: L is 270, R is 90; flat has no upright,
 /// so the canvas keeps whatever it had.
@@ -526,6 +524,12 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
         layer.bg = theme.bg;
         ui.set_style(&Style::new(theme, Fonts::uniform(&font)));
         ui.set_safe_inset(SAFE_INSET);
+        //   the interface as data: the demo core builds its tree from this blob and navigates off the
+        // design's goto/back. A bad blob is a build-system bug worth halting on.
+        let lui = match Lui::parse(UI_BLOB) {
+                Ok(l) => l,
+                Err(e) => panic!("the embedded UI blob does not parse: {e:?}"),
+        };
         // module state is 'static in any case: the runtime never returns
         type BoardDisplayMod = DisplayMod<St7789<Spi1Display>, SysClock, Ext, Hook>;
         static DISPLAY_MOD: StaticCell<BoardDisplayMod> = StaticCell::new();
@@ -544,7 +548,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                         repush: true,
                         draw_over: false,
                         rotation_map,
-                        source: UiSource::Const(&PAGE_MAIN),
+                        source: UiSource::Blob(lui),
                         backlight_dim: BACKLIGHT_DIM,
                 },
                 Hook,
