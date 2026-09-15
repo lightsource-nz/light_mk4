@@ -1,7 +1,7 @@
 #   the dictaphone on the Waveshare RP2350-Touch-LCD-3.49: a voice recorder with a
 # dedicated touch interface over the board's ES8311 codec, microphone and TF slot. The
 # application is the hardware-independent light_app_dictaphone crate; this module is its
-# 3.49 instantiation. Same board and shell configuration as light_mk4_touch349, built in
+# 3.49 instantiation. Same board and shell configuration as ui_demo_touch349, built in
 # the same tree, flashed as its own UF2.
 #
 #   the executable name matches the module directory: light-flash.ps1 and light-debug.ps1

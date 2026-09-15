@@ -1,10 +1,10 @@
 #   the Waveshare RP2350-Touch-LCD-2.8: the same shell and demo as the touch169, on the
 # bigger glass with the CST328 touch controller -- this firmware is that part's bring-up.
-add_executable(light_mk4_touch28
+add_executable(ui_demo_touch28
         ../light_mk4_shell/src/main.c
 )
 
-target_link_libraries(light_mk4_touch28 PRIVATE
+target_link_libraries(ui_demo_touch28 PRIVATE
         pico_stdlib
         pico_multicore
         pico_bootrom
@@ -13,7 +13,7 @@ target_link_libraries(light_mk4_touch28 PRIVATE
 
 #   the demo's font: the 2.8" panel's real geometry (240x320 over 43.2x57.6 mm), 16 px --
 # lower DPI than the 1.69, so the same pixel size reads a little larger on the glass
-light_mk4_add_font(light_mk4_touch28_font
+light_mk4_add_font(ui_demo_touch28_font
         FONT ${CMAKE_CURRENT_LIST_DIR}/../../tools/crush/tests/resources/fonts/TypeLightSans.ttf
         DISPLAY ws_touch28 WIDTH 240 HEIGHT 320 DIMENSION 43.2x57.6
         POINT_SIZE 14 PIXEL_SIZE 16
@@ -22,15 +22,15 @@ light_mk4_add_font(light_mk4_touch28_font
 
 #   the framework's default look-and-feel for a color board (steel); a board override
 # would be a local THEME file extending "default"
-light_mk4_add_theme(light_mk4_touch28_theme
+light_mk4_add_theme(ui_demo_touch28_theme
         CRATE light_app_ui_demo_touch28 ENV LIGHT_THEME_LTH
 )
 
 #   the demo interface as data: the app crate's design.json extends light_app_ui_demo's shared
 # design (overriding just the title and size) and compiles to an LUI blob.
-light_mk4_add_ui(light_mk4_touch28_ui
+light_mk4_add_ui(ui_demo_touch28_ui
         UI ${CMAKE_CURRENT_LIST_DIR}/../../crates/light_app_ui_demo_touch28/design.json
         CRATE light_app_ui_demo_touch28 ENV LIGHT_UI_LUI
 )
 
-light_mk4_shell_configure(light_mk4_touch28)
+light_mk4_shell_configure(ui_demo_touch28)

@@ -89,19 +89,19 @@ if(LIGHT_PLATFORM STREQUAL "TARGET")
                 endif()
                 corrosion_set_features(light_app_pico2 FEATURES ${_light_rp2_chip})
                 if(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_1.69")
-                        add_subdirectory(module/light_mk4_touch169)
+                        add_subdirectory(module/ui_demo_touch169)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_2.8")
-                        add_subdirectory(module/light_mk4_touch28)
+                        add_subdirectory(module/ui_demo_touch28)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_3.49")
                         #   three applications, one tree: same board, same shell
                         # configuration, each its own executable and UF2 -- flash the one
                         # you mean
-                        add_subdirectory(module/light_mk4_touch349)
+                        add_subdirectory(module/ui_demo_touch349)
                         add_subdirectory(module/dictaphone_touch349)
                         add_subdirectory(module/dictaphone_wide_touch349)
                         add_subdirectory(module/light_mk4_lui_touch349)
                 elseif(PICO_BOARD STREQUAL "waveshare_rp2350_touch_lcd_4")
-                        add_subdirectory(module/light_mk4_touch4)
+                        add_subdirectory(module/ui_demo_touch4)
                 elseif(PICO_BOARD STREQUAL "pico2" OR PICO_BOARD STREQUAL "pico")
                         #   two applications share the Picos: the pico2 demo, and crossfire
                         # with the native port in its host role. One per tree -- they
