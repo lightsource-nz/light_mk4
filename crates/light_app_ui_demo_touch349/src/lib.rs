@@ -730,9 +730,13 @@ impl Module for AudioMod {
                 let _ = self.codec.set_adc_to_dac(false);
                 static STREAM_A: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
                 static STREAM_B: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS]);
-                //   the POLLED path (no IRQ ring): this board is too RAM-tight for the
-                // prefetch ring and its audio is light -- beeps and tones a poll keeps fed
-                self.i2s.start_stream([STREAM_A.take(), STREAM_B.take()]);
+                //   the IRQ-drained prefetch ring, as the dictaphone runs: the DMA-completion
+                // interrupt refills the DAC buffers from it at hardware speed, so a slow poll (a card
+                // read on the play path) spends the ring's lead, not the codec's deadline -- and an
+                // idle stream drains to silence without the polled path's periodic restart churn. Its
+                // ~16 KB is freed by dropping the micdbg path's dead capture buffers (see below).
+                static RING: ConstStaticCell<[u32; light_rp2::i2s::STREAM_WORDS * 2]> = ConstStaticCell::new([0; light_rp2::i2s::STREAM_WORDS * 2]);
+                self.i2s.start_stream_irq([STREAM_A.take(), STREAM_B.take()], RING.take());
                 self.pa.set(true);
                 info!("audio up: es8311 master at {} Hz, PIO1 mclk+dout; the UART console pins now carry audio", AUDIO_SAMPLE_HZ);
                 Ok(())
@@ -834,15 +838,9 @@ impl Module for AudioMod {
                                                         break;
                                                 }
                                         }
-                                        static A: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                                        static B: ConstStaticCell<[u16; light_rp2::i2s::CAP_WORDS]> = ConstStaticCell::new([0; light_rp2::i2s::CAP_WORDS]);
-                                        let bufs = if self.cap_handed {
-                                                None
-                                        } else {
-                                                self.cap_handed = true;
-                                                Some([A.take(), B.take()])
-                                        };
-                                        let _ = bufs; // the probe uses the SM only, no DMA ring
+                                        //   the probe reads the PIO state machine and FIFO directly -- no DMA capture ring,
+                                        // so it needs no buffers (an earlier pair here was allocated and discarded, wasting
+                                        // ~19 KB, and its stray cap_handed flag would have starved a later real recording)
                                         let (highs, pc) = self.i2s.din_probe(4000);
                                         self.i2s.capture_sm_only();
                                         let fifo = self.i2s.din_fifo_probe();
@@ -857,7 +855,7 @@ impl Module for AudioMod {
                                         };
                                 }
                                 AppEvent::Command(Command::Stats) => {
-                                        info!("audio: {} stream underruns, {} capture overruns", self.i2s.underruns, self.i2s.cap_overruns);
+                                        info!("audio: {} stream underruns, {} capture overruns", self.i2s.stream_underruns(), self.i2s.cap_overruns);
                                 }
                                 _ => {}
                         }
@@ -892,71 +890,98 @@ impl Module for AudioMod {
                         self.rec_stop();
                 }
                 let playing = self.remaining > 0 || self.rec.is_some() || self.rec_null || self.play.is_some();
-                if let Some(play) = self.play.as_mut() {
-                        //   a file plays: ONE bulk read per DAC buffer into the .bss staging
-                        // buffer, then the ring is filled from RAM. Per-sample card reads in
-                        // this closure starved the stream (33 underruns / distorted speech)
+                if self.play.is_some() {
+                        //   a file plays: frame-aligned bulk reads into the .bss staging buffer, then
+                        // the ring is topped up from RAM. The IRQ copies the ring into the DAC buffers
+                        // on its own, so a slow card read here spends the ring's lead, not the codec's
+                        // deadline (per-sample card reads once starved it: 33 underruns / distortion).
+                        // One output WORD per frame, the 16-bit sample in both slots; `channels * 2`
+                        // bytes advance a frame (stereo's left channel is what plays).
+                        self.i2s.set_active(true);
+                        let i2s = &mut self.i2s;
+                        let play = self.play.as_mut().expect("play present");
+                        let stage = &mut *self.play_stage;
                         let fs = &mut play.fs;
                         let file = &mut play.file;
-                        let ch = usize::from(play.channels);
                         let data_end = play.data_end;
-                        let stage = &mut self.play_stage;
-                        let mut finished = false;
+                        let stride = usize::from(play.channels) * 2;
                         let mut failed = false;
-                        self.i2s.refill(|buf| {
-                                //   one WORD per frame: the sample in both halves plays it
-                                // on both slots (two words per sample here halved the pitch)
-                                let frames = buf.len();
-                                let want = (frames * ch * 2).min(stage.len());
-                                let remaining = data_end.saturating_sub(file.pos()) as usize;
-                                let want = want.min(remaining);
-                                let got = if finished || failed || want == 0 {
-                                        0
-                                } else {
-                                        match file.read(fs, &mut stage[..want]) {
-                                                Ok(n) => n,
-                                                Err(_) => {
-                                                        failed = true;
-                                                        0
+                        while i2s.stream_free() > 0 {
+                                let mut produced = 0usize;
+                                i2s.stream_push(&mut |dst| {
+                                        let want_words = dst.len().min(stage.len() / stride);
+                                        let remaining = data_end.saturating_sub(file.pos()) as usize;
+                                        let want_bytes = (want_words * stride).min(remaining - remaining % stride);
+                                        if want_bytes == 0 {
+                                                return 0;
+                                        }
+                                        let mut got = 0;
+                                        while got < want_bytes {
+                                                match file.read(fs, &mut stage[got..want_bytes]) {
+                                                        Ok(0) => break,
+                                                        Ok(n) => got += n,
+                                                        Err(_) => {
+                                                                failed = true;
+                                                                break;
+                                                        }
                                                 }
                                         }
-                                };
-                                if got < frames * ch * 2 {
-                                        finished = true;
+                                        let frames = got / stride;
+                                        for f in 0..frames {
+                                                let b = f * stride;
+                                                let sample = i16::from_le_bytes([stage[b], stage[b + 1]]);
+                                                let s = u32::from(sample as u16);
+                                                dst[f] = s << 16 | s;
+                                        }
+                                        produced = frames;
+                                        frames
+                                });
+                                if failed || produced == 0 {
+                                        break;
                                 }
-                                let mut si = 0usize;
-                                for slot in buf.iter_mut() {
-                                        //   the left channel of each frame; mono steps 2 bytes, stereo 4
-                                        let sample = if si + 1 < got { i16::from_le_bytes([stage[si], stage[si + 1]]) } else { 0 };
-                                        let s = u32::from(sample as u16);
-                                        *slot = s << 16 | s;
-                                        si += ch * 2;
-                                }
-                        });
+                        }
+                        //   finish only once the data chunk is spent AND the ring has drained, so the
+                        // tail is not cut; a card error ends it at once, clearing any queued tail
+                        let exhausted = self.play.as_ref().map(|p| p.file.pos() >= p.data_end).unwrap_or(true);
                         if failed {
                                 warn!("play: read failed; stopping");
+                                self.i2s.stream_clear();
+                                self.i2s.set_active(false);
                                 *self.play = None;
-                        } else if finished {
+                        } else if exhausted && self.i2s.stream_pending() == 0 {
                                 info!("play: finished");
+                                self.i2s.set_active(false);
                                 *self.play = None;
                         }
-                } else {
-                        //   pre-borrowed so the closure captures fields disjoint from self.i2s
+                } else if self.remaining > 0 {
+                        //   the test tone: synthesise sine straight into the ring, one word per frame,
+                        // capped at the frames left so the tone runs its exact length
+                        self.i2s.set_active(true);
+                        let i2s = &mut self.i2s;
                         let phase = &mut self.phase;
                         let inc = self.phase_inc;
                         let remaining = &mut self.remaining;
-                        self.i2s.refill(|buf| {
-                                for slot in buf.iter_mut() {
-                                        //   one word per frame, the sample on both slots
-                                        let s = if *remaining > 0 { SINE[(*phase >> 27) as usize] } else { 0 };
-                                        let s = u32::from(s as u16);
-                                        *slot = s << 16 | s;
-                                        if *remaining > 0 {
+                        while i2s.stream_free() > 0 && *remaining > 0 {
+                                let mut produced = 0usize;
+                                i2s.stream_push(&mut |dst| {
+                                        let n = dst.len().min(*remaining as usize);
+                                        for slot in dst[..n].iter_mut() {
+                                                let s = u32::from(SINE[(*phase >> 27) as usize] as u16);
+                                                *slot = s << 16 | s;
                                                 *phase = phase.wrapping_add(inc);
-                                                *remaining -= 1;
                                         }
+                                        *remaining -= n as u32;
+                                        produced = n;
+                                        n
+                                });
+                                if produced == 0 {
+                                        break;
                                 }
-                        });
+                        }
+                } else {
+                        //   idle (or recording): nothing to play. The IRQ drains the ring to silence
+                        // and underrun accounting is gated off, so that is not counted as starvation
+                        self.i2s.set_active(false);
                 }
                 if playing { Poll::Busy } else { Poll::Idle }
         }
