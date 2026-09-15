@@ -15,14 +15,14 @@
 use core::cell::RefCell;
 use light_app_ui_demo as demo;
 use demo::{demo_commands, BoardHook, Command, DemoEvent, DisplayConfig, DisplayMod, UiSource};
-use light_input::axs15231b::{self as axs, Axs15231bTouch};
+use light_input::axs15231b::Axs15231bTouch;
 use light_input::imu::{Imu, Orientation};
 use light_input::qmi8658::Qmi8658;
 use light_display::axs15231b::Axs15231b;
 use light_input::touch::Tracker;
 use light_ui::{Fonts, Lui, Style, Theme, Ui};
 use light_core::cli::{Cli, Command as CliCommand, Parsed, Words};
-use light_core::{debug, info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
+use light_core::{info, log, warn, ConstStaticCell, EventBus, Module, Poll, Runtime, StaticCell, Subscription};
 use light_display::{Display, FrameLayer};
 use light_draw::{PixelFormat, Rotation};
 use light_audio::Es8311;
@@ -30,10 +30,10 @@ use light_font::Font;
 use light_rtc::{Datetime, Pcf85063a};
 use light_fs::{Fat, File as FsFile, FsError};
 use light_sd::{SdError, SpiSd};
-use light_board_touch349::{board, panic_report, service_core1, PowerManager, ShellInfo};
+use light_board_touch349::{board, panic_report, service_core1, ImuMod, PowerManager, ShellInfo, TouchMod};
 use board::*;
-use light_rp2::gpio::{Input, Output};
-use light_rp2::i2c::{I2c0, I2c1};
+use light_rp2::gpio::Output;
+use light_rp2::i2c::I2c1;
 use light_rp2::i2s::PioI2sOut;
 use light_rp2::spi_bus::Spi1Bus;
 use light_rp2::qspi::PioQspiDisplayBus;
@@ -390,116 +390,9 @@ impl BoardHook<Axs15231b<PioQspiDisplayBus>, Ext> for Hook {}
 
 // --- the modules --------------------------------------------------------------------------
 
-/// Owns the AXS15231B's touch half: no reset line of its own (the panel's reset is the
-/// chip's), so a wedge is reported, never reset from here.
-struct TouchMod {
-        touch: Axs15231bTouch<I2c0, Input>,
-        tracker: Tracker,
-        events: Subscription,
-        moves: u32,
-}
-
-impl Module for TouchMod {
-        fn name(&self) -> &'static str {
-                "touch"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                //   after the display module's load has reset and initialised the shared
-                // chip; the touch read is the only probe this protocol offers
-                let mut clock = SysClock;
-                let mut result = self.touch.probe();
-                for _ in 0..2 {
-                        if result.is_ok() {
-                                break;
-                        }
-                        light_core::hal::Clock::delay_ms(&mut clock, 20);
-                        result = self.touch.probe();
-                }
-                match result {
-                        Ok(()) => info!("axs15231b touch answering on i2c0"),
-                        Err(e) => warn!("axs15231b touch did not answer the probe: {e:?}"),
-                }
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        match ev {
-                                AppEvent::Command(Command::Stats) => {
-                                        info!(
-                                                "touch: {} failed reads ({} nack, {} timeout, {} bus)",
-                                                self.touch.failures,
-                                                self.touch.nacks,
-                                                self.touch.timeouts,
-                                                self.touch.bus_errors
-                                        );
-                                }
-                                AppEvent::Ui(demo::UiAction::DragConsumed) => self.tracker.suppress(),
-                                _ => {}
-                        }
-                }
-                if demo::touch_reads_held() {
-                        return Poll::Idle;
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                let Some(ev) = self.touch.poll(now_ms) else { return Poll::Idle };
-                match ev {
-                        axs::Event::Down { x, y } => {
-                                self.moves = 0;
-                                debug!("touch down at {x},{y}");
-                        }
-                        axs::Event::Up => debug!("touch up after {} moves at {},{}", self.moves, self.touch.x, self.touch.y),
-                        axs::Event::Move { .. } => self.moves += 1,
-                        axs::Event::Reset => {}
-                }
-                if let Err(e) = EVENTS.publish(AppEvent::Touch(ev)) {
-                        warn!("event bus full; dropped {e:?}");
-                }
-                if let Some(g) = self.tracker.feed(ev, Some(&mut self.touch)) {
-                        let _ = EVENTS.publish(AppEvent::Gesture(g));
-                }
-                Poll::Busy
-        }
-}
-
-struct ImuMod {
-        imu: Imu<Qmi8658<&'static RefCell<I2c1>>>,
-        events: Subscription,
-}
-
-impl Module for ImuMod {
-        fn name(&self) -> &'static str {
-                "imu"
-        }
-        fn load(&mut self) -> Result<(), ()> {
-                match self.imu.driver().probe() {
-                        Ok(Some(id)) => info!("qmi8658 chip id confirmed: 0x{id:02x}"),
-                        Ok(None) => warn!("qmi8658 answered with an unexpected chip id"),
-                        Err(e) => warn!("qmi8658 did not answer the chip id read: {e:?}"),
-                }
-                if let Err(e) = self.imu.driver().configure() {
-                        warn!("qmi8658 configuration failed: {e:?}");
-                }
-                self.imu.set_axis_map(IMU_AXIS_MAP);
-                Ok(())
-        }
-        fn poll(&mut self) -> Poll {
-                while let Some(ev) = EVENTS.poll(&self.events) {
-                        if let AppEvent::Command(Command::Stats) = ev {
-                                let a = self.imu.accel_mg;
-                                info!("imu: accel {} {} {} mg, {:?}, {} failed reads, {}.{} C", a[0], a[1], a[2], self.imu.orientation, self.imu.failures, self.imu.temperature_mc / 1000, (self.imu.temperature_mc % 1000).abs() / 100);
-                        }
-                }
-                let now_ms = (light_rp2::now_us() / 1000) as u32;
-                if !self.imu.poll(now_ms) {
-                        return Poll::Idle;
-                }
-                if let Some(o) = self.imu.take_orientation() {
-                        info!("orientation: {o:?}");
-                        let _ = EVENTS.publish(AppEvent::Orientation(o));
-                }
-                Poll::Busy
-        }
-}
+//   the touch and IMU modules are the board's, shared by every touch349 app (see
+// light_board_touch349::input) and generic over the event bus through light_input::BoardEvent; only
+// the RTC and board modules below are the demo's own on this board
 
 /// The PCF85063A on the shared i2c1, beside the IMU. Battery-backed: it keeps time across
 /// power-off, and says so -- the oscillator-stop flag marks a time nobody set.
@@ -1325,7 +1218,7 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 sd,
                 events: EVENTS.subscribe().expect("subscriber slot"),
         };
-        let mut imu_mod = ImuMod { imu, events: EVENTS.subscribe().expect("subscriber slot") };
+        let mut imu_mod = ImuMod::new(imu, &EVENTS);
         let mut rtc_mod = RtcMod { rtc: Pcf85063a::new(imu_i2c), events: EVENTS.subscribe().expect("subscriber slot") };
         let mut audio_mod = AudioMod {
                 codec: Es8311::new(imu_i2c),
@@ -1392,8 +1285,8 @@ pub extern "C" fn light_app_main(info: &ShellInfo) -> ! {
                 },
                 Hook,
         ));
-        static TOUCH_MOD: StaticCell<TouchMod> = StaticCell::new();
-        let touch_mod = TOUCH_MOD.init(TouchMod { touch, tracker: Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), events: EVENTS.subscribe().expect("subscriber slot"), moves: 0 });
+        static TOUCH_MOD: StaticCell<TouchMod<AppEvent>> = StaticCell::new();
+        let touch_mod = TOUCH_MOD.init(TouchMod::new(touch, Tracker::new(DISPLAY_WIDTH, DISPLAY_HEIGHT), &EVENTS, demo::touch_reads_held));
         let mut console_mod = demo::ConsoleMod::new(&CLI, &EVENTS);
 
         let mut rt: Runtime<7> = Runtime::new();

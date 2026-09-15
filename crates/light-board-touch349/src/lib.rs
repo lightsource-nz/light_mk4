@@ -11,8 +11,10 @@
 #![no_std]
 
 pub mod board;
+pub mod input;
 pub mod shell;
 mod power;
 
+pub use input::{ImuMod, TouchMod};
 pub use power::PowerManager;
 pub use shell::{core1_ticks, panic_report, service_core1, stack_free, stack_paint, ShellInfo};

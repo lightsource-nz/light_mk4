@@ -91,6 +91,27 @@ pub enum Event<X: Copy> {
         Ext(X),
 }
 
+//   the contract a board's generic touch/IMU modules publish through (see light_input::BoardEvent):
+// this engine's events ARE those a touch panel and IMU raise, plus the stats/drag-consumed signals
+// those modules read
+impl<X: Copy> light_input::BoardEvent for Event<X> {
+        fn touch(sample: TouchSample) -> Self {
+                Event::Touch(sample)
+        }
+        fn gesture(gesture: Gesture) -> Self {
+                Event::Gesture(gesture)
+        }
+        fn orientation(orientation: Orientation) -> Self {
+                Event::Orientation(orientation)
+        }
+        fn is_stats(&self) -> bool {
+                matches!(self, Event::Command(Command::Stats))
+        }
+        fn drag_consumed(&self) -> bool {
+                matches!(self, Event::Ui(UiAction::DragConsumed))
+        }
+}
+
 /// What the audio module is doing, in the terms the interface shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStatus {

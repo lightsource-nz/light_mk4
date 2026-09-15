@@ -62,6 +62,27 @@ pub enum DemoEvent<X: Copy> {
         Ext(X),
 }
 
+//   the contract a board's generic touch/IMU modules publish through (see light_input::BoardEvent):
+// the demo's events ARE those a touch panel and IMU raise, plus the stats/drag-consumed signals
+// those modules read
+impl<X: Copy> light_input::BoardEvent for DemoEvent<X> {
+        fn touch(sample: TouchSample) -> Self {
+                DemoEvent::Touch(sample)
+        }
+        fn gesture(gesture: Gesture) -> Self {
+                DemoEvent::Gesture(gesture)
+        }
+        fn orientation(orientation: Orientation) -> Self {
+                DemoEvent::Orientation(orientation)
+        }
+        fn is_stats(&self) -> bool {
+                matches!(self, DemoEvent::Command(Command::Stats))
+        }
+        fn drag_consumed(&self) -> bool {
+                matches!(self, DemoEvent::Ui(UiAction::DragConsumed))
+        }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub enum Command {
         Stats,
